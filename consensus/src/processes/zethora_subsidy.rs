@@ -1,7 +1,12 @@
 //! Zethora block subsidy (ZTH-SPEC-001 Section 5), for the Kaspa-based prototype node.
 //!
 //! Spec rule: reward(n) = floor(Remaining_n / D), Remaining_{n+1} = Remaining_n - reward(n),
-//! Remaining_0 = CAP_UNITS. Integer math only.
+//! Remaining_0 = CAP_UNITS - SUPPLY_RESERVE. Integer math only.
+//!
+//! SUPPLY_RESERVE: in a BlockDAG, parallel blocks can share a DAA score and each earn that
+//! step's reward. The total overshoot this can cause is bounded by (max mergeset size) x
+//! (first reward), about 10 ZTHR at 1 block/sec. 1,000 ZTHR is never mined, so the
+//! 100,000,000 ZTHR hard cap holds with a wide margin.
 //!
 //! In the BlockDAG, `n` is the block's DAA score (one step per block in the DAA window, ~1 per second).
 //! Remaining_n is found from a checkpoint every 2^20 scores (~12 days) plus a short walk,
@@ -13,6 +18,10 @@ use std::sync::Mutex;
 pub const ZETS_PER_ZTHR: u64 = 10_000_000_000;
 /// 100,000,000 ZTHR in zets.
 pub const CAP_UNITS: u64 = 100_000_000 * ZETS_PER_ZTHR;
+/// Never mined; guarantees the hard cap under BlockDAG parallelism (see module docs).
+pub const SUPPLY_RESERVE: u64 = 1_000 * ZETS_PER_ZTHR;
+/// Remaining supply at genesis.
+pub const EMISSION_START: u64 = CAP_UNITS - SUPPLY_RESERVE;
 /// Divisor at 1 block per second: round(8 years in seconds / ln 2).
 pub const D: u64 = 364_223_944;
 /// Checkpoint spacing (2^20 DAA scores).
@@ -43,7 +52,7 @@ impl Default for ZethoraSubsidy {
 
 impl ZethoraSubsidy {
     pub fn new() -> Self {
-        Self { state: Mutex::new(State { checkpoints: vec![CAP_UNITS], last: (0, CAP_UNITS) }) }
+        Self { state: Mutex::new(State { checkpoints: vec![EMISSION_START], last: (0, EMISSION_START) }) }
     }
 
     /// Remaining supply (zets) before the block at `score` is rewarded.
@@ -89,15 +98,15 @@ mod tests {
     #[test]
     fn first_reward_matches_spec() {
         let z = ZethoraSubsidy::new();
-        assert_eq!(z.subsidy(0), CAP_UNITS / D); // ~0.2746 ZTHR
-        assert_eq!(z.subsidy(0), 2_745_563_592);
+        assert_eq!(z.subsidy(0), EMISSION_START / D); // ~0.2746 ZTHR
+        assert_eq!(z.subsidy(0), 2_745_536_136);
     }
 
     #[test]
     fn matches_plain_recurrence() {
         // Same numbers as tools/emission (the reference implementation).
         let z = ZethoraSubsidy::new();
-        let mut r = CAP_UNITS;
+        let mut r = EMISSION_START;
         for n in 0..3_000_000u64 {
             if n % 99_991 == 0 {
                 assert_eq!(z.remaining_at(n), r, "score {n}");
@@ -125,15 +134,23 @@ mod tests {
         for n in 0..1_000_000u64 {
             emitted = emitted.checked_add(z.subsidy(n)).unwrap();
         }
-        assert_eq!(emitted, CAP_UNITS - z.remaining_at(1_000_000));
+        assert_eq!(emitted, EMISSION_START - z.remaining_at(1_000_000));
         assert!(emitted <= CAP_UNITS);
+    }
+
+    #[test]
+    fn reserve_covers_worst_case_dag_overshoot() {
+        // Worst case: every one of up to 36 merged parallel blocks earns the first reward.
+        let worst_overshoot = 36 * (EMISSION_START / D);
+        assert!(SUPPLY_RESERVE > 50 * worst_overshoot);
+        assert_eq!(EMISSION_START + SUPPLY_RESERVE, CAP_UNITS);
     }
 
     #[test]
     fn half_mined_at_8_years() {
         let z = ZethoraSubsidy::new();
         let eight_years = 8 * 31_557_600u64;
-        let pct = 1.0 - z.remaining_at(eight_years) as f64 / CAP_UNITS as f64;
+        let pct = 1.0 - z.remaining_at(eight_years) as f64 / EMISSION_START as f64;
         assert!((pct - 0.5).abs() < 0.001, "got {pct}");
     }
 }
