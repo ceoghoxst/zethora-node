@@ -8,7 +8,8 @@ use kaspa_consensus_core::{
 };
 use std::convert::TryInto;
 
-use crate::{constants, model::stores::ghostdag::GhostdagData};
+use crate::{constants, model::stores::ghostdag::GhostdagData, processes::zethora_subsidy::ZethoraSubsidy};
+use std::sync::Arc;
 
 const LENGTH_OF_BLUE_SCORE: usize = size_of::<u64>();
 const LENGTH_OF_SUBSIDY: usize = size_of::<u64>();
@@ -41,6 +42,9 @@ pub struct CoinbaseManager {
     /// This score is required here long-term (and not only for the actual forking), in
     /// order to correctly determine the subsidy month from the live DAA score of the network   
     crescendo_activation_daa_score: u64,
+
+    /// Zethora: smooth-decay subsidy, ZTH-SPEC-001 Section 5
+    zethora_subsidy: Arc<ZethoraSubsidy>,
 }
 
 /// Struct used to streamline payload parsing
@@ -85,6 +89,7 @@ impl CoinbaseManager {
             subsidy_by_month_table_before,
             subsidy_by_month_table_after,
             crescendo_activation_daa_score: bps_history.activation().daa_score(),
+            zethora_subsidy: Arc::new(ZethoraSubsidy::new()),
         }
     }
 
@@ -220,6 +225,13 @@ impl CoinbaseManager {
     }
 
     pub fn calc_block_subsidy(&self, daa_score: u64) -> u64 {
+        // Zethora: reward = floor(Remaining / D), indexed by DAA score (ZTH-SPEC-001 Section 5)
+        self.zethora_subsidy.subsidy(daa_score)
+    }
+
+    /// Original Kaspa schedule, kept for reference and Kaspa's own tests.
+    #[allow(dead_code)]
+    pub fn kaspa_calc_block_subsidy(&self, daa_score: u64) -> u64 {
         if daa_score < self.deflationary_phase_daa_score {
             return self.pre_deflationary_phase_base_subsidy;
         }
