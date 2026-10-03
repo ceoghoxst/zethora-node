@@ -86,12 +86,13 @@ pub enum Prefix {
 }
 
 impl Prefix {
+    /// Zethora address prefixes (e.g. `zethora:...`, `zethoradev:...`)
     fn as_str(&self) -> &'static str {
         match self {
-            Prefix::Mainnet => "kaspa",
-            Prefix::Testnet => "kaspatest",
-            Prefix::Simnet => "kaspasim",
-            Prefix::Devnet => "kaspadev",
+            Prefix::Mainnet => "zethora",
+            Prefix::Testnet => "zethoratest",
+            Prefix::Simnet => "zethorasim",
+            Prefix::Devnet => "zethoradev",
             #[cfg(test)]
             Prefix::A => "a",
             #[cfg(test)]
@@ -119,10 +120,10 @@ impl TryFrom<&str> for Prefix {
 
     fn try_from(prefix: &str) -> Result<Self, Self::Error> {
         match prefix {
-            "kaspa" => Ok(Prefix::Mainnet),
-            "kaspatest" => Ok(Prefix::Testnet),
-            "kaspasim" => Ok(Prefix::Simnet),
-            "kaspadev" => Ok(Prefix::Devnet),
+            "zethora" => Ok(Prefix::Mainnet),
+            "zethoratest" => Ok(Prefix::Testnet),
+            "zethorasim" => Ok(Prefix::Simnet),
+            "zethoradev" => Ok(Prefix::Devnet),
             #[cfg(test)]
             "a" => Ok(Prefix::A),
             #[cfg(test)]
