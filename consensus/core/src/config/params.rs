@@ -780,9 +780,10 @@ pub const DEVNET_PARAMS: Params = Params {
     max_block_level: 250,
     pruning_proof_m: 1000,
 
-    blockrate: BlockrateParams::new::<10>(),
+    // Zethora: 1 block per second (ZTH-SPEC-005)
+    blockrate: BlockrateParams::new::<1>(),
 
-    pre_crescendo_target_time_per_block: TenBps::target_time_per_block(),
+    pre_crescendo_target_time_per_block: Bps::<1>::target_time_per_block(),
 
     crescendo_activation: ForkActivation::always(),
 };

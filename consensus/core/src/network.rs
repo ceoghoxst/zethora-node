@@ -44,7 +44,7 @@ impl NetworkType {
             NetworkType::Mainnet => 16110,
             NetworkType::Testnet => 16210,
             NetworkType::Simnet => 16510,
-            NetworkType::Devnet => 16610,
+            NetworkType::Devnet => 26610,
         }
     }
 
@@ -53,7 +53,7 @@ impl NetworkType {
             NetworkType::Mainnet => 17110,
             NetworkType::Testnet => 17210,
             NetworkType::Simnet => 17510,
-            NetworkType::Devnet => 17610,
+            NetworkType::Devnet => 27610,
         }
     }
 
@@ -62,7 +62,7 @@ impl NetworkType {
             NetworkType::Mainnet => 18110,
             NetworkType::Testnet => 18210,
             NetworkType::Simnet => 18510,
-            NetworkType::Devnet => 18610,
+            NetworkType::Devnet => 28610,
         }
     }
 
@@ -248,7 +248,7 @@ impl NetworkId {
                 None | Some(_) => 16411,
             },
             NetworkType::Simnet => 16511,
-            NetworkType::Devnet => 16611,
+            NetworkType::Devnet => 26611,
         }
     }
 
@@ -262,13 +262,13 @@ impl NetworkId {
         NETWORK_IDS.iter().copied()
     }
 
-    /// Returns a textual description of the network prefixed with `kaspa-`
+    /// Returns a textual description of the network prefixed with `zethora-`
     pub fn to_prefixed(&self) -> String {
-        format!("kaspa-{}", self)
+        format!("zethora-{}", self)
     }
 
     pub fn from_prefixed(prefixed: &str) -> Result<Self, NetworkIdError> {
-        if let Some(stripped) = prefixed.strip_prefix("kaspa-") {
+        if let Some(stripped) = prefixed.strip_prefix("zethora-") {
             Self::from_str(stripped)
         } else {
             Err(NetworkIdError::InvalidPrefix(prefixed.to_string()))
