@@ -7,6 +7,8 @@ pub mod matrix;
 pub mod wasm;
 #[doc(hidden)]
 pub mod xoshiro;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod randomz;
 
 use std::cmp::max;
 
@@ -21,6 +23,8 @@ pub struct State {
     pub(crate) target: Uint256,
     // PRE_POW_HASH || TIME || 32 zero byte padding; without NONCE
     pub(crate) hasher: PowHash,
+    pub(crate) pre_pow_hash: [u8; 32],
+    pub(crate) timestamp: u64,
 }
 
 impl State {
@@ -29,21 +33,44 @@ impl State {
         let target = Uint256::from_compact_target_bits(header.bits);
         // Zero out the time and nonce.
         let pre_pow_hash = hashing::header::hash_override_nonce_time(header, 0, 0);
-        // PRE_POW_HASH || TIME || 32 zero byte padding || NONCE
-        let hasher = PowHash::new(pre_pow_hash, header.timestamp);
-        let matrix = Matrix::generate(pre_pow_hash);
+        Self::from_parts(pre_pow_hash, header.timestamp, target)
+    }
 
-        Self { matrix, target, hasher }
+    pub fn from_parts(pre_pow_hash: kaspa_hashes::Hash, timestamp: u64, target: Uint256) -> Self {
+        // PRE_POW_HASH || TIME || 32 zero byte padding || NONCE
+        let hasher = PowHash::new(pre_pow_hash, timestamp);
+        let matrix = Matrix::generate(pre_pow_hash);
+        Self { matrix, target, hasher, pre_pow_hash: pre_pow_hash.as_bytes(), timestamp }
+    }
+
+    /// The target this block's PoW must meet.
+    pub fn target(&self) -> Uint256 {
+        self.target
+    }
+
+    /// Zethora: the 48-byte RandomX input for a nonce (see `randomz`).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn pow_input(&self, nonce: u64) -> [u8; 48] {
+        randomz::pow_input(&self.pre_pow_hash, self.timestamp, nonce)
     }
 
     #[inline]
     #[must_use]
     /// PRE_POW_HASH || TIME || 32 zero byte padding || NONCE
     pub fn calculate_pow(&self, nonce: u64) -> Uint256 {
-        // Hasher already contains PRE_POW_HASH || TIME || 32 zero byte padding; so only the NONCE is missing
-        let hash = self.hasher.clone().finalize_with_nonce(nonce);
-        let hash = self.matrix.heavy_hash(hash);
-        Uint256::from_le_bytes(hash.as_bytes())
+        // Zethora: RandomX proof of work on native builds (ZTH-SPEC-000 §4.4)
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            randomz::pow_value_light(&self.pow_input(nonce))
+        }
+        // Original kHeavyHash, kept only for the wasm SDK build
+        #[cfg(target_arch = "wasm32")]
+        {
+            // Hasher already contains PRE_POW_HASH || TIME || 32 zero byte padding; so only the NONCE is missing
+            let hash = self.hasher.clone().finalize_with_nonce(nonce);
+            let hash = self.matrix.heavy_hash(hash);
+            Uint256::from_le_bytes(hash.as_bytes())
+        }
     }
 
     #[inline]

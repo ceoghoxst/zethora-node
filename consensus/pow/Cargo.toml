@@ -23,6 +23,9 @@ wasm-bindgen.workspace = true
 workflow-wasm.workspace = true
 num.workspace = true
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+randomx-rs.workspace = true
+
 [dev-dependencies]
 criterion.workspace = true
 

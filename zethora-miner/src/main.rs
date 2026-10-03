@@ -1,7 +1,8 @@
 //! Zethora devnet CPU miner (prototype).
 //!
 //! Connects to a local Zethora node, asks it for a block template, searches for a
-//! valid nonce on all CPU threads, and submits the block. Repeats forever.
+//! valid nonce on all CPU threads with RandomX (fast mode), and submits the block.
+//! Repeats forever. Needs about 2.5 GB of RAM.
 //!
 //! Usage:  cargo run --release --bin zethora-miner
 //! The node must be running with:  --devnet --enable-unsynced-mining
@@ -24,7 +25,7 @@ use std::{
 const NODE_URL: &str = "grpc://127.0.0.1:26610";
 const KEY_FILE: &str = "zethora-miner-key.txt";
 /// Get a fresh template this often, so we always build on the newest blocks.
-const TEMPLATE_REFRESH: Duration = Duration::from_millis(500);
+const TEMPLATE_REFRESH: Duration = Duration::from_millis(1000);
 const ZETS_PER_ZTHR: f64 = 10_000_000_000.0;
 
 fn load_or_create_key() -> Keypair {
@@ -46,6 +47,11 @@ async fn main() {
     let address = Address::new(Prefix::from(NetworkType::Devnet), Version::PubKey, &kp.x_only_public_key().0.serialize());
     println!("Zethora devnet miner");
     println!("Paying rewards to: {address}");
+
+    println!("Preparing RandomX dataset (about 2 GB, takes a minute)...");
+    let t0 = Instant::now();
+    let dataset = kaspa_pow::randomz::new_mining_dataset();
+    println!("Dataset ready in {:.0}s", t0.elapsed().as_secs_f64());
 
     let client = GrpcClient::connect(NODE_URL.to_string()).await.expect("Cannot reach the node. Is it running with --devnet?");
     let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
@@ -75,13 +81,16 @@ async fn main() {
         let base: u64 = secp256k1::rand::random();
         let workers: Vec<_> = (0..threads as u64)
             .map(|t| {
-                let (state, found, winner, hashes) = (state.clone(), found.clone(), winner.clone(), hashes.clone());
+                let (state, found, winner, hashes, dataset) =
+                    (state.clone(), found.clone(), winner.clone(), hashes.clone(), dataset.clone());
                 std::thread::spawn(move || {
+                    let hasher = kaspa_pow::randomz::FastHasher::new(&dataset);
+                    let target = state.target();
                     let mut nonce = base.wrapping_add(t);
                     let mut n = 0u64;
                     while !found.load(Ordering::Relaxed) && Instant::now() < deadline {
-                        for _ in 0..256 {
-                            if state.check_pow(nonce).0 {
+                        for _ in 0..16 {
+                            if hasher.pow_value(&state.pow_input(nonce)) <= target {
                                 if !found.swap(true, Ordering::Relaxed) {
                                     winner.store(nonce, Ordering::Relaxed);
                                 }
