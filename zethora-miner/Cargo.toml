@@ -1,0 +1,15 @@
+[package]
+name = "zethora-miner"
+description = "Simple CPU miner for the Zethora devnet (prototype)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+kaspa-addresses.workspace = true
+kaspa-consensus-core.workspace = true
+kaspa-grpc-client.workspace = true
+kaspa-pow.workspace = true
+kaspa-rpc-core.workspace = true
+secp256k1.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
