@@ -172,35 +172,29 @@ pub const SIMNET_GENESIS: GenesisBlock = GenesisBlock {
     ],
 };
 
+/// Zethora private development network (prototype). 0 coins at genesis (ZTH-SPEC-001 §6).
+/// The real mainnet genesis is created at launch and also commits to the latest Bitcoin block hash.
 pub const DEVNET_GENESIS: GenesisBlock = GenesisBlock {
-    hash: Hash::from_bytes([
-        // Golang devnet genesis hash
-        // 0xb3, 0x13, 0x87, 0x0a, 0x32, 0xc7, 0x04, 0xbd, 0xf1, 0x21, 0x4a, 0x3b, 0x27, 0x0c, 0xc4, 0x75, 0xd9, 0x42, 0xc2, 0x09, 0x2d,
-        // 0x37, 0x9b, 0xc8, 0x70, 0x0a, 0xb0, 0x43, 0x31, 0x9e, 0xf8,
-        // 0x46,
-        // New rust devnet genesis hash updated according to the modified bits field (see below)
-        0x4c, 0xb4, 0x8d, 0x0b, 0x20, 0x73, 0xb8, 0x02, 0x36, 0x01, 0x45, 0xa1, 0x5a, 0xd1, 0xab, 0xdc, 0x01, 0xd8, 0x9b, 0x5c, 0x2f,
-        0xe4, 0x72, 0x26, 0x30, 0xab, 0x9b, 0x5f, 0xe9, 0xdf, 0xc4, 0xf2,
-    ]),
+    // Filled in from `print_zethora_devnet_genesis` (see tests below)
+    hash: ZERO_HASH,
     version: 0,
-    hash_merkle_root: Hash::from_bytes([
-        0x58, 0xab, 0xf2, 0x03, 0x21, 0xd7, 0x07, 0x16, 0x16, 0x2b, 0x6b, 0xf8, 0xd9, 0xf5, 0x89, 0xca, 0x33, 0xae, 0x6e, 0x32, 0xb3,
-        0xb1, 0x9a, 0xbb, 0x7f, 0xa6, 0x5d, 0x11, 0x41, 0xa3, 0xf9, 0x4d,
-    ]),
+    hash_merkle_root: ZERO_HASH,
     utxo_commitment: EMPTY_MUHASH,
-    timestamp: 0x11e9db49828,
-    // bits: 525264379, // Golang devnet genesis bits
-    bits: 0x1e21bc1c, // Bits with ~testnet-like difficulty for slow devnet start
-    nonce: 0x48e5e,
+    timestamp: 0x1a100cdff60, // Oct 3, 2026
+    bits: 0x1e21bc1c, // Low starting difficulty for a home-computer devnet
+    nonce: 0,
     daa_score: 0,
     #[rustfmt::skip]
     coinbase_payload: &[
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Blue score
-        0x00, 0xE1, 0xF5, 0x05, 0x00, 0x00, 0x00, 0x00, // Subsidy
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Subsidy: 0 (fair launch)
         0x00, 0x00, // Script version
-        0x01,                                                                   // Varint
-        0x00,                                                                   // OP-FALSE
-        0x6b, 0x61, 0x73, 0x70, 0x61, 0x2d, 0x64, 0x65, 0x76, 0x6e, 0x65, 0x74, // kaspa-devnet
+        0x01,       // Varint
+        0x00,       // OP-FALSE
+        0x7a, 0x65, 0x74, 0x68, 0x6f, 0x72, 0x61, 0x2d, 0x64, 0x65, 0x76, 0x6e, // zethora-devn
+        0x65, 0x74, 0x20, 0x7c, 0x20, 0x57, 0x61, 0x6b, 0x65, 0x20, 0x55, 0x70, // et | Wake Up
+        0x20, 0x46, 0x72, 0x6f, 0x6d, 0x20, 0x54, 0x68, 0x65, 0x20, 0x44, 0x72, //  From The Dr
+        0x65, 0x61, 0x6d, 0x20, 0x57, 0x6f, 0x72, 0x6c, 0x64, // eam World
     ],
 };
 
@@ -216,6 +210,24 @@ mod tests {
             assert_hashes_eq(calc_hash_merkle_root(block.transactions.iter()), block.header.hash_merkle_root, "hash_merkle_root");
             assert_hashes_eq(block.hash(), genesis.hash, "genesis hash");
         });
+    }
+
+    /// Computes Zethora devnet genesis values and writes them to zethora_genesis_values.txt
+    #[test]
+    fn print_zethora_devnet_genesis() {
+        let mut g = DEVNET_GENESIS;
+        let block: Block = (&g).into();
+        g.hash_merkle_root = calc_hash_merkle_root(block.transactions.iter());
+        let block: Block = (&g).into();
+        let out = format!(
+            "hash_merkle_root: {}\n{:#04x?}\nhash: {}\n{:#04x?}\n",
+            g.hash_merkle_root,
+            g.hash_merkle_root.as_bytes(),
+            block.hash(),
+            block.hash().as_bytes()
+        );
+        println!("{out}");
+        std::fs::write("zethora_genesis_values.txt", out).unwrap();
     }
 
     fn assert_hashes_eq(got: Hash, expected: Hash, field: &str) {
