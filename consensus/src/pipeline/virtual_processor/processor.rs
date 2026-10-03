@@ -1433,6 +1433,7 @@ impl VirtualStateProcessor {
                 &virtual_state.ghostdag_data,
                 &virtual_state.mergeset_rewards,
                 &virtual_state.mergeset_non_daa,
+                self.pool_state_of(virtual_state.ghostdag_data.selected_parent),
             )
             .unwrap();
         txs.insert(0, coinbase.tx);

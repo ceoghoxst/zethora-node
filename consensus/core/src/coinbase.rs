@@ -13,10 +13,21 @@ impl<T: AsRef<[u8]>> MinerData<T> {
     }
 }
 
+/// Zethora fee pool state, carried in every coinbase payload along the selected chain (ZTH-SPEC-008).
+#[derive(PartialEq, Eq, Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct PoolState {
+    /// Zets currently held in the fee pool (controlled by no key).
+    pub pool_balance: u64,
+    /// Total zets ever burned (SPEC-001 §15.2).
+    pub total_burned: u64,
+}
+
 #[derive(PartialEq, Eq, Debug)]
 pub struct CoinbaseData<T: AsRef<[u8]> = Vec<u8>> {
     pub blue_score: u64,
     pub subsidy: u64,
+    /// Zethora: pool state after this block
+    pub pool: PoolState,
     pub miner_data: MinerData<T>,
 }
 
@@ -24,12 +35,19 @@ pub struct CoinbaseData<T: AsRef<[u8]> = Vec<u8>> {
 pub struct BlockRewardData {
     pub subsidy: u64,
     pub total_fees: u64,
+    /// Zethora: the base-fee part of `total_fees`. The rest (tips) goes to the miner.
+    pub base_fees: u64,
     pub script_public_key: ScriptPublicKey,
 }
 
 impl BlockRewardData {
-    pub fn new(subsidy: u64, total_fees: u64, script_public_key: ScriptPublicKey) -> Self {
-        Self { subsidy, total_fees, script_public_key }
+    pub fn new(subsidy: u64, total_fees: u64, base_fees: u64, script_public_key: ScriptPublicKey) -> Self {
+        Self { subsidy, total_fees, base_fees, script_public_key }
+    }
+
+    /// Tips: the part of fees paid directly to the block's miner.
+    pub fn tips(&self) -> u64 {
+        self.total_fees - self.base_fees
     }
 }
 

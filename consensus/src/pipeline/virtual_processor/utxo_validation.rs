@@ -151,9 +151,13 @@ impl VirtualStateProcessor {
             ctx.multiset_hash.combine(&inner_multiset);
 
             let mut block_fee = 0u64;
+            let mut block_base_fee = 0u64; // Zethora: base-fee part (ZTH-SPEC-008)
             for (validated_tx, _) in validated_transactions.iter() {
                 ctx.mergeset_diff.add_transaction(validated_tx, pov_daa_score).unwrap();
                 block_fee += validated_tx.calculated_fee;
+                let compute_mass =
+                    self.transaction_validator.mass_calculator.calc_non_contextual_masses(validated_tx.tx).compute_mass;
+                block_base_fee += crate::processes::zethora_fees::base_fee(validated_tx.calculated_fee, compute_mass);
             }
 
             ctx.mergeset_acceptance_data.push(MergesetBlockAcceptanceData {
@@ -173,7 +177,7 @@ impl VirtualStateProcessor {
             let coinbase_data = self.coinbase_manager.deserialize_coinbase_payload(&txs[0].payload).unwrap();
             ctx.mergeset_rewards.insert(
                 merged_block,
-                BlockRewardData::new(coinbase_data.subsidy, block_fee, coinbase_data.miner_data.script_public_key),
+                BlockRewardData::new(coinbase_data.subsidy, block_fee, block_base_fee, coinbase_data.miner_data.script_public_key),
             );
         }
     }
@@ -284,12 +288,20 @@ impl VirtualStateProcessor {
     ) -> BlockProcessResult<()> {
         // Extract only miner data from the provided coinbase
         let miner_data = self.coinbase_manager.deserialize_coinbase_payload(&coinbase.payload).unwrap().miner_data;
+        let parent_pool = self.pool_state_of(ghostdag_data.selected_parent);
         let expected_coinbase = self
             .coinbase_manager
-            .expected_coinbase_transaction(daa_score, miner_data, ghostdag_data, mergeset_rewards, mergeset_non_daa)
+            .expected_coinbase_transaction(daa_score, miner_data, ghostdag_data, mergeset_rewards, mergeset_non_daa, parent_pool)
             .unwrap()
             .tx;
         if hashing::tx::hash(coinbase) != hashing::tx::hash(&expected_coinbase) { Err(BadCoinbaseTransaction) } else { Ok(()) }
+    }
+
+    /// Zethora: the fee pool state recorded in a block's coinbase (ZTH-SPEC-008).
+    /// The pool flows along the selected chain: each chain block reads its selected parent's state.
+    pub(crate) fn pool_state_of(&self, block: Hash) -> PoolState {
+        let txs = self.block_transactions_store.get(block).unwrap();
+        self.coinbase_manager.deserialize_coinbase_payload(&txs[0].payload).map(|d| d.pool).unwrap()
     }
 
     /// Validates transactions against the provided `utxo_view` and returns a vector with all transactions

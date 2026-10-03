@@ -112,6 +112,10 @@ async fn main() {
             let mut block = template.block;
             block.header.nonce = winner.load(Ordering::Relaxed);
             let daa = block.header.daa_score;
+            // Zethora pool state after this block: coinbase payload bytes 16..24 (pool) and 24..32 (burned)
+            let cb = &block.transactions[0].payload;
+            let read = |i: usize| cb.get(i..i + 8).map(|b| u64::from_le_bytes(b.try_into().unwrap())).unwrap_or(0);
+            let (pool_balance, total_burned) = (read(16), read(24));
             match client.submit_block(block, false).await {
                 Ok(r) if r.report.is_success() => {
                     mined += 1;
@@ -120,9 +124,11 @@ async fn main() {
                     total_reward += reward;
                     let rate = hashes.load(Ordering::Relaxed) as f64 / start.elapsed().as_secs_f64();
                     println!(
-                        "Block #{mined} mined | DAA score {daa} | reward ~{:.10} ZTHR | total ~{:.4} ZTHR | {:.0} hashes/sec",
+                        "Block #{mined} | DAA {daa} | reward ~{:.10} | mined ~{:.4} ZTHR | pool {} zets | burned {} zets | {:.0} H/s",
                         reward as f64 / ZETS_PER_ZTHR,
                         total_reward as f64 / ZETS_PER_ZTHR,
+                        pool_balance,
+                        total_burned,
                         rate
                     );
                 }
