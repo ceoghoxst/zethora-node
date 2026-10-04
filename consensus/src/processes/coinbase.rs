@@ -171,7 +171,10 @@ impl CoinbaseManager {
 
         // Zethora: build this block's supply ledger from what it really does, and refuse it if it does not balance
         let coinbase_out: u64 = outputs.iter().map(|o| o.value).sum();
-        let flows = BlockFlows { issued, unpaid, visible_change, coinbase_out, ..Default::default() };
+        // Zethora: value moved into / out of the private pool by the accepted transactions (the turnstile)
+        let shielded_in: u64 = mergeset_rewards.values().map(|r| r.pool_in).sum();
+        let shielded_out: u64 = mergeset_rewards.values().map(|r| r.pool_out).sum();
+        let flows = BlockFlows { issued, unpaid, visible_change, coinbase_out, shielded_in, shielded_out };
         let ledger =
             zethora_supply::ledger_step(parent_pool, pool.next, flows).map_err(|e| CoinbaseError::ZethoraSupply(e.to_string()))?;
 

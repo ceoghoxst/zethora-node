@@ -13,6 +13,7 @@ incrementalmerkletree = "0.9"
 blake2b_simd = "1"
 nonempty = "0.11"
 subtle = "2.6"
+rand = { version = "0.10", features = ["std", "sys_rng"] }
 
 [dev-dependencies]
 rand = { version = "0.10", features = ["chacha", "std", "std_rng", "sys_rng", "thread_rng"] }

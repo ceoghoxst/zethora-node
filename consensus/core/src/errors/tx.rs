@@ -112,6 +112,9 @@ pub enum TxRuleError {
 
     #[error("covenants error: {0}")]
     CovenantsError(#[from] CovenantsError),
+
+    #[error("invalid private payment: {0}")]
+    InvalidPrivatePayment(String),
 }
 
 #[derive(Error, Debug, Clone, PartialEq, Eq)]

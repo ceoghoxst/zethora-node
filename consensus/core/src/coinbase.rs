@@ -48,11 +48,22 @@ pub struct BlockRewardData {
     /// Zethora: the base-fee part of `total_fees`. The rest (tips) goes to the miner.
     pub base_fees: u64,
     pub script_public_key: ScriptPublicKey,
+    /// Zethora: zets this block's accepted transactions moved into the private pool (ZTH-SPEC-006 §7.1).
+    pub pool_in: u64,
+    /// Zethora: zets this block's accepted transactions moved out of the private pool.
+    pub pool_out: u64,
 }
 
 impl BlockRewardData {
     pub fn new(subsidy: u64, total_fees: u64, base_fees: u64, script_public_key: ScriptPublicKey) -> Self {
-        Self { subsidy, total_fees, base_fees, script_public_key }
+        Self { subsidy, total_fees, base_fees, script_public_key, pool_in: 0, pool_out: 0 }
+    }
+
+    /// Zethora: records the private pool flows of this block's accepted transactions.
+    pub fn with_pool_flows(mut self, pool_in: u64, pool_out: u64) -> Self {
+        self.pool_in = pool_in;
+        self.pool_out = pool_out;
+        self
     }
 
     /// Tips: the part of fees paid directly to the block's miner.

@@ -19,6 +19,7 @@ use orchard::{
 pub use orchard;
 
 pub mod codec;
+pub mod wallet;
 
 /// Private pool versions this node understands (ZTH-SPEC-006 §7.4). Each version has its own coin list,
 /// spent-coin tags and public balance, so a pool can be retired and replaced if a bug is ever found.

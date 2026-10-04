@@ -153,12 +153,18 @@ impl VirtualStateProcessor {
 
             let mut block_fee = 0u64;
             let mut block_base_fee = 0u64; // Zethora: base-fee part (ZTH-SPEC-008)
+            let (mut block_pool_in, mut block_pool_out) = (0u64, 0u64); // Zethora: private pool flows (ZTH-SPEC-006)
             for (validated_tx, _) in validated_transactions.iter() {
                 ctx.mergeset_diff.add_transaction(validated_tx, pov_daa_score).unwrap();
                 block_fee += validated_tx.calculated_fee;
                 let compute_mass =
                     self.transaction_validator.mass_calculator.calc_non_contextual_masses(validated_tx.tx).compute_mass;
                 block_base_fee += crate::processes::zethora_fees::base_fee(validated_tx.calculated_fee, compute_mass);
+                // Already validated, so the value balance is readable
+                if let Ok(Some((value_in, value_out))) = kaspa_consensus_core::zethora_private::pool_flows(&validated_tx.tx.payload) {
+                    block_pool_in += value_in;
+                    block_pool_out += value_out;
+                }
             }
 
             ctx.mergeset_acceptance_data.push(MergesetBlockAcceptanceData {
@@ -178,7 +184,8 @@ impl VirtualStateProcessor {
             let coinbase_data = self.coinbase_manager.deserialize_coinbase_payload(&txs[0].payload).unwrap();
             ctx.mergeset_rewards.insert(
                 merged_block,
-                BlockRewardData::new(coinbase_data.subsidy, block_fee, block_base_fee, coinbase_data.miner_data.script_public_key),
+                BlockRewardData::new(coinbase_data.subsidy, block_fee, block_base_fee, coinbase_data.miner_data.script_public_key)
+                    .with_pool_flows(block_pool_in, block_pool_out),
             );
         }
     }

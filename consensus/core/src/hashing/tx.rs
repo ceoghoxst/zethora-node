@@ -30,6 +30,20 @@ pub fn hash_pre_crescendo(tx: &Transaction) -> Hash {
     hasher.finalize()
 }
 
+/// Zethora (ZTH-SPEC-006): digest of everything in a transaction except signature scripts, mass
+/// commitments and the payload. A private payment (carried in the payload) signs this digest, so it is
+/// bound to the rest of its transaction and cannot be moved to another one. The transparent inputs'
+/// signatures in turn cover the payload, so the two sides lock each other in.
+pub fn zethora_private_payment_digest(tx: &Transaction) -> Hash {
+    let mut hasher = kaspa_hashes::TransactionID::new();
+    write_transaction(
+        &mut hasher,
+        tx,
+        TxEncodingFlags::EXCLUDE_SIGNATURE_SCRIPT | TxEncodingFlags::EXCLUDE_MASS_COMMIT | TxEncodingFlags::EXCLUDE_PAYLOAD,
+    );
+    hasher.finalize()
+}
+
 /// Not intended for direct use by clients. Instead use `tx.id()`
 pub fn id(tx: &Transaction) -> TransactionId {
     if tx.version == 0 { id_v0(tx) } else { id_v1(tx) }

@@ -1,0 +1,16 @@
+[package]
+name = "zethora-shield"
+description = "Devnet tool: move coins from the miner's address into the Zethora private pool (prototype)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+kaspa-addresses.workspace = true
+kaspa-consensus-core.workspace = true
+kaspa-grpc-client.workspace = true
+kaspa-rpc-core.workspace = true
+kaspa-txscript.workspace = true
+secp256k1.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+zethora-shielded = { path = "../zethora-shielded" }

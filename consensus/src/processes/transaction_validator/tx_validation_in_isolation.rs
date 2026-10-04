@@ -25,7 +25,8 @@ impl TransactionValidator {
         check_gas(tx)?;
         check_transaction_subnetwork(tx)?;
         check_transaction_version(tx)?;
-        check_tx_version_specific_fields(tx)
+        check_tx_version_specific_fields(tx)?;
+        check_private_payment(tx)
     }
 
     fn check_transaction_inputs_in_isolation(&self, tx: &Transaction) -> TxResult<()> {
@@ -118,6 +119,48 @@ fn check_duplicate_transaction_inputs(tx: &Transaction) -> TxResult<()> {
 }
 
 const ZEROES_19: &[u8; 19] = &[0; 19];
+
+/// Zethora: the verifying key for private payment proofs, built once (about a second) on first use.
+///
+/// The key is built on a separate plain thread: building uses rayon internally, and validation itself runs on
+/// rayon workers, so building it directly here could let a worker re-enter this initialisation and hang.
+fn private_payment_verifying_key() -> &'static zethora_shielded::orchard::circuit::VerifyingKey {
+    static VK: std::sync::OnceLock<zethora_shielded::orchard::circuit::VerifyingKey> = std::sync::OnceLock::new();
+    VK.get_or_init(|| {
+        std::thread::spawn(|| zethora_shielded::orchard::circuit::VerifyingKey::build(zethora_shielded::CIRCUIT))
+            .join()
+            .expect("building the private payment verifying key")
+    })
+}
+
+/// Zethora (ZTH-SPEC-006): a transaction whose payload carries a private payment must hold a well-formed
+/// payment whose signatures and proof check out, bound to this exact transaction.
+///
+/// Emergency switch (§7.3), level (a): spending private coins is OFF. Coins may only move INTO the private
+/// pool until the private coin list (anchors) and the double-spend guard (nullifiers) exist. Without those,
+/// a spend could point at a made-up coin list, so this rule is what keeps fake private coins out.
+fn check_private_payment(tx: &Transaction) -> TxResult<()> {
+    if tx.is_coinbase() {
+        return Ok(());
+    }
+    let Some(encoded) = kaspa_consensus_core::zethora_private::private_payment_bytes(&tx.payload) else {
+        return Ok(());
+    };
+    let invalid = TxRuleError::InvalidPrivatePayment;
+    if !tx.subnetwork_id.is_native() {
+        return Err(invalid("private payments must use the native subnetwork".to_string()));
+    }
+    let (bundle, _pool) = zethora_shielded::codec::decode(encoded).map_err(|e| invalid(e.to_string()))?;
+    if bundle.flags().spends_enabled() {
+        return Err(invalid("spending private coins is switched off (ZTH-SPEC-006 §7.3)".to_string()));
+    }
+    if *bundle.value_balance() > 0 {
+        return Err(invalid("value cannot leave the private pool while spending is switched off".to_string()));
+    }
+    let digest = kaspa_consensus_core::hashing::tx::zethora_private_payment_digest(tx);
+    zethora_shielded::verify_payment(&bundle, private_payment_verifying_key(), &digest.as_bytes())
+        .map_err(|e| invalid(format!("{e:?}")))
+}
 
 fn check_gas(tx: &Transaction) -> TxResult<()> {
     if tx.gas == 0 {
@@ -468,5 +511,74 @@ mod tests {
             tx.gas = 1;
             assert_match!((super::check_gas(&tx), gas_allowed), (Ok(()), true) | (Err(TxRuleError::TxHasGas(_)), false));
         }
+    }
+}
+
+#[cfg(test)]
+mod zethora_private_payment_tests {
+    use super::{TxRuleError, check_private_payment};
+    use kaspa_consensus_core::{
+        constants::TX_VERSION,
+        hashing::tx::zethora_private_payment_digest,
+        subnets::SUBNETWORK_ID_NATIVE,
+        tx::{ComputeCommit, ScriptPublicKey, Transaction, TransactionInput, TransactionOutpoint, TransactionOutput, scriptvec},
+        zethora_private::{ACTION_SIZE, PRIVATE_PAYMENT_MAGIC},
+    };
+    use kaspa_hashes::Hash;
+    use zethora_shielded::wallet::{PrivateWallet, shielding_payment};
+
+    fn base_tx() -> Transaction {
+        let input = TransactionInput {
+            previous_outpoint: TransactionOutpoint::new(Hash::from_u64_word(7), 0),
+            signature_script: vec![],
+            sequence: 0,
+            compute_commit: ComputeCommit::SigopCount(1.into()),
+        };
+        let output = TransactionOutput { value: 1_000_000, script_public_key: ScriptPublicKey::new(0, scriptvec![0x51]), covenant: None };
+        Transaction::new_non_finalized(TX_VERSION, vec![input], vec![output], 0, SUBNETWORK_ID_NATIVE, 0, vec![])
+    }
+
+    fn shielding_tx(amount: u64) -> Transaction {
+        let mut tx = base_tx();
+        let digest = zethora_private_payment_digest(&tx);
+        let payment = shielding_payment(PrivateWallet::from_seed(&[5; 32]).address(), amount, &digest.as_bytes()).unwrap();
+        tx.payload = PRIVATE_PAYMENT_MAGIC.iter().copied().chain(payment).collect();
+        tx
+    }
+
+    #[test]
+    fn action_size_matches_the_codec() {
+        assert_eq!(ACTION_SIZE, zethora_shielded::codec::ACTION_SIZE);
+    }
+
+    #[test]
+    fn ordinary_payloads_are_untouched() {
+        let mut tx = base_tx();
+        assert_eq!(check_private_payment(&tx), Ok(()));
+        tx.payload = b"just some data".to_vec();
+        assert_eq!(check_private_payment(&tx), Ok(()));
+    }
+
+    #[test]
+    fn valid_shielding_payment_is_accepted_and_bound_to_its_transaction() {
+        let tx = shielding_tx(500_000);
+        assert_eq!(check_private_payment(&tx), Ok(()));
+
+        // Change the visible part (send more to the output): the private payment no longer matches
+        let mut moved = tx.clone();
+        moved.outputs[0].value += 1;
+        assert!(matches!(check_private_payment(&moved), Err(TxRuleError::InvalidPrivatePayment(_))));
+
+        // Changing only signature scripts does not affect it (they are signed separately)
+        let mut resigned = tx.clone();
+        resigned.inputs[0].signature_script = vec![1, 2, 3];
+        assert_eq!(check_private_payment(&resigned), Ok(()));
+    }
+
+    #[test]
+    fn garbage_after_the_marker_is_rejected() {
+        let mut tx = base_tx();
+        tx.payload = PRIVATE_PAYMENT_MAGIC.iter().copied().chain([1u8, 2, 0, 9, 9]).collect();
+        assert!(matches!(check_private_payment(&tx), Err(TxRuleError::InvalidPrivatePayment(_))));
     }
 }

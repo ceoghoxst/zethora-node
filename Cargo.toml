@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "zethora-miner",
+    "zethora-shield",
     "zethora-shielded",
     "daemon",
     "cli",

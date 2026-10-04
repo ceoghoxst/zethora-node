@@ -277,3 +277,17 @@ fn malformed_bytes_are_rejected() {
 
     assert_eq!(codec::decode(&[]).unwrap_err(), DecodeError::Truncated);
 }
+
+#[test]
+fn wallet_builds_a_shielding_payment_the_node_accepts() {
+    use zethora_shielded::wallet::{PrivateWallet, shielding_payment};
+    let wallet = PrivateWallet::from_seed(&[9; 32]);
+    let bytes = shielding_payment(wallet.address(), 1_234_567, &TX).expect("payment builds");
+    let (bundle, pool) = codec::decode(&bytes).expect("decodes");
+    assert_eq!(pool, SupportedPool::Orchard1);
+    assert!(!bundle.flags().spends_enabled(), "spends must be off");
+    assert_eq!(*bundle.value_balance(), -1_234_567, "1,234,567 zets enter the private pool");
+    assert_eq!(verify_payment(&bundle, verifying_key(), &TX), Ok(()));
+    // Same seed, same private address
+    assert_eq!(PrivateWallet::from_seed(&[9; 32]).address(), wallet.address());
+}
