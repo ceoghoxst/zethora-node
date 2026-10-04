@@ -118,6 +118,9 @@ pub enum RuleError {
     #[error("outpoint {0} is spent more than once on the same block")]
     DoubleSpendInSameBlock(TransactionOutpoint),
 
+    #[error("Zethora: private coin tag (nullifier) {0} appears more than once in the same block")]
+    NullifierReusedInSameBlock(Hash),
+
     #[error("outpoint {0} is created and spent on the same block")]
     ChainedTransaction(TransactionOutpoint),
 

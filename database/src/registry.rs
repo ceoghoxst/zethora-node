@@ -61,6 +61,10 @@ pub enum DatabaseStorePrefixes {
     // ---- Zethora ----
     /// Private coin list (note commitment tree frontier) after each chain block (ZTH-SPEC-006 §6.1)
     ZethoraNoteTrees = 90,
+    /// Spent private coin tags (nullifiers) -> the chain blocks that accepted them (ZTH-SPEC-006 §6.3)
+    ZethoraNullifiers = 91,
+    /// Reverse index: chain block -> the private coin tags its mergeset accepted (used when pruning)
+    ZethoraBlockNullifiers = 92,
 
     // ---- Pruning metadata ----
     PruningUtxosetSyncFlag = 60,

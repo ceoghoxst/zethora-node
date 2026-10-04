@@ -151,6 +151,11 @@ fn check_private_payment(tx: &Transaction) -> TxResult<()> {
         return Err(invalid("private payments must use the native subnetwork".to_string()));
     }
     let (bundle, _pool) = zethora_shielded::codec::decode(encoded).map_err(|e| invalid(e.to_string()))?;
+    // No spent-coin tag may appear twice inside one payment (ZTH-SPEC-006 §6.3)
+    let mut seen = std::collections::HashSet::new();
+    if !bundle.actions().iter().all(|a| seen.insert(a.nullifier().to_bytes())) {
+        return Err(invalid("the same private coin tag appears twice in one payment".to_string()));
+    }
     if bundle.flags().spends_enabled() {
         return Err(invalid("spending private coins is switched off (ZTH-SPEC-006 §7.3)".to_string()));
     }

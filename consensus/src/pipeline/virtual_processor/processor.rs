@@ -43,7 +43,11 @@ use crate::{
     processes::{
         coinbase::CoinbaseManager,
         ghostdag::ordering::SortableBlock,
-        transaction_validator::{TransactionValidator, errors::TxResult, tx_validation_in_utxo_context::TxValidationFlags},
+        transaction_validator::{
+            TransactionValidator,
+            errors::{TxResult, TxRuleError},
+            tx_validation_in_utxo_context::TxValidationFlags,
+        },
         window::WindowManager,
     },
 };
@@ -139,6 +143,8 @@ pub struct VirtualStateProcessor {
     pub(super) utxo_multisets_store: Arc<DbUtxoMultisetsStore>,
     /// Zethora: private coin list after each chain block (ZTH-SPEC-006 §6.1)
     pub(super) zethora_note_trees_store: Arc<crate::model::stores::zethora_note_trees::DbZethoraNoteTreesStore>,
+    /// Zethora: spent private coin tags (ZTH-SPEC-006 §6.3)
+    pub(super) zethora_nullifiers_store: Arc<crate::model::stores::zethora_nullifiers::DbZethoraNullifiersStore>,
     pub(super) acceptance_data_store: Arc<DbAcceptanceDataStore>,
     pub(super) virtual_stores: Arc<RwLock<VirtualStores>>,
     pub(super) pruning_meta_stores: Arc<RwLock<PruningMetaStores>>,
@@ -223,6 +229,7 @@ impl VirtualStateProcessor {
             utxo_diffs_store: storage.utxo_diffs_store.clone(),
             utxo_multisets_store: storage.utxo_multisets_store.clone(),
             zethora_note_trees_store: storage.zethora_note_trees_store.clone(),
+            zethora_nullifiers_store: storage.zethora_nullifiers_store.clone(),
             acceptance_data_store: storage.acceptance_data_store.clone(),
             virtual_stores: storage.virtual_stores.clone(),
             pruning_meta_stores: storage.pruning_meta_stores.clone(),
@@ -479,6 +486,7 @@ impl VirtualStateProcessor {
                             self.commit_utxo_state(
                                 current,
                                 ctx.note_tree,
+                                ctx.nullifier_list,
                                 ctx.mergeset_diff,
                                 ctx.multiset_hash,
                                 ctx.mergeset_acceptance_data,
@@ -509,6 +517,7 @@ impl VirtualStateProcessor {
         &self,
         current: Hash,
         note_tree: zethora_shielded::NoteCommitmentTree,
+        nullifiers: Vec<[u8; 32]>,
         mergeset_diff: UtxoDiff,
         multiset: MuHash,
         acceptance_data: AcceptanceData,
@@ -516,10 +525,14 @@ impl VirtualStateProcessor {
         smt_build: Option<kaspa_smt_store::processor::SmtBuild>,
         blue_score: u64,
     ) {
+        // Zethora: the pruning thread also rewrites private coin tag records; hold the pruning lock (shared) so the two
+        // read-modify-write passes never interleave on the same record
+        let _prune_guard = self.pruning_lock.blocking_read();
         let mut batch = WriteBatch::default();
         self.utxo_diffs_store.insert_batch(&mut batch, current, Arc::new(mergeset_diff)).unwrap();
         self.utxo_multisets_store.insert_batch(&mut batch, current, multiset).unwrap();
         self.zethora_note_trees_store.set_batch(&mut batch, current, &note_tree).unwrap();
+        self.zethora_nullifiers_store.add_batch(&mut batch, current, &nullifiers).unwrap();
         self.acceptance_data_store.insert_batch(&mut batch, current, Arc::new(acceptance_data)).unwrap();
         // Note we call idempotent since this field can be populated during IBD with headers proof
         self.pruning_samples_store.insert_batch(&mut batch, current, pruning_sample_from_pov).idempotent().unwrap();
@@ -588,6 +601,7 @@ impl VirtualStateProcessor {
 
         // Zethora: the private coin list root after the virtual's mergeset (read before ctx's borrow ends)
         let note_root = ctx.note_tree.root().to_bytes();
+        let mergeset_nullifiers = std::mem::take(&mut ctx.nullifier_list);
 
         // Build the new virtual state
         let virtual_state = Arc::new(VirtualState::new(
@@ -602,6 +616,7 @@ impl VirtualStateProcessor {
             virtual_daa_window.mergeset_non_daa,
             virtual_ghostdag_data,
             note_root,
+            mergeset_nullifiers,
         ));
         Ok(virtual_state)
     }
@@ -1236,7 +1251,13 @@ impl VirtualStateProcessor {
                 args,
                 sp,
             )
-        })
+        })?;
+        // Zethora: refuse private payments whose coin tags are already spent (§6.3)
+        let pending: std::collections::HashSet<[u8; 32]> = virtual_state.mergeset_nullifiers.iter().copied().collect();
+        if self.private_double_spend(&mutable_tx.tx, sp, &pending) {
+            return Err(TxRuleError::InvalidPrivatePayment("private coin already spent".to_string()));
+        }
+        Ok(())
     }
 
     pub fn validate_mempool_transactions_in_parallel(
@@ -1250,6 +1271,7 @@ impl VirtualStateProcessor {
         let virtual_daa_score = virtual_state.daa_score;
         let virtual_past_median_time = virtual_state.past_median_time;
         let virtual_sp = virtual_state.ghostdag_data.selected_parent;
+        let pending: std::collections::HashSet<[u8; 32]> = virtual_state.mergeset_nullifiers.iter().copied().collect();
         self.thread_pool.install(|| {
             mutable_txs
                 .par_iter_mut()
@@ -1261,7 +1283,12 @@ impl VirtualStateProcessor {
                         virtual_past_median_time,
                         args.get(&mtx.id()),
                         virtual_sp,
-                    )
+                    )?;
+                    // Zethora: refuse private payments whose coin tags are already spent (§6.3)
+                    if self.private_double_spend(&mtx.tx, virtual_sp, &pending) {
+                        return Err(TxRuleError::InvalidPrivatePayment("private coin already spent".to_string()));
+                    }
+                    Ok(())
                 })
                 .collect::<Vec<TxResult<()>>>()
         })
@@ -1354,7 +1381,19 @@ impl VirtualStateProcessor {
         let virtual_utxo_view = &virtual_read.utxo_set;
 
         let mut invalid_transactions = HashMap::new();
+        // Zethora: private coin tags already used by the virtual's mergeset or by earlier template txs (§6.3)
+        let mut template_nullifiers: std::collections::HashSet<[u8; 32]> = virtual_state.mergeset_nullifiers.iter().copied().collect();
+        let mut tag_check = |tx: &Transaction, res: TxResult<u64>| -> TxResult<u64> {
+            let fee = res?;
+            let nfs = kaspa_consensus_core::zethora_private::nullifiers(&tx.payload);
+            if nfs.iter().any(|nf| template_nullifiers.contains(nf)) {
+                return Err(TxRuleError::InvalidPrivatePayment("private coin tag already used".to_string()));
+            }
+            template_nullifiers.extend(nfs);
+            Ok(fee)
+        };
         let results = self.validate_block_template_transactions_in_parallel(&txs, &virtual_state, &virtual_utxo_view);
+        let results: Vec<_> = txs.iter().zip(results).map(|(tx, res)| tag_check(tx, res)).collect();
         for (tx, res) in txs.iter().zip(results) {
             match res {
                 Err(e) => {
@@ -1377,6 +1416,7 @@ impl VirtualStateProcessor {
             let next_batch = tx_selector.select_transactions(); // Note that once next_batch is empty the loop will exit
             let next_batch_results =
                 self.validate_block_template_transactions_in_parallel(&next_batch, &virtual_state, &virtual_utxo_view);
+            let next_batch_results: Vec<_> = next_batch.iter().zip(next_batch_results).map(|(tx, res)| tag_check(tx, res)).collect();
             for (tx, res) in next_batch.into_iter().zip(next_batch_results) {
                 match res {
                     Err(e) => {
@@ -1519,6 +1559,7 @@ impl VirtualStateProcessor {
         self.commit_utxo_state(
             self.genesis.hash,
             zethora_shielded::NoteCommitmentTree::new(), // Zethora: no private coins at genesis
+            Vec::new(),                                  // ...and no spent private coin tags
             UtxoDiff::default(),
             MuHash::new(),
             AcceptanceData::default(),

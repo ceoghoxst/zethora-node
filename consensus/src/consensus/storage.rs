@@ -24,6 +24,7 @@ use crate::{
         utxo_multisets::DbUtxoMultisetsStore,
         virtual_state::{LkgVirtualState, VirtualStores},
         zethora_note_trees::DbZethoraNoteTreesStore,
+        zethora_nullifiers::DbZethoraNullifiersStore,
     },
     processes::{ghostdag::ordering::SortableBlock, reachability::inquirer as reachability, relations},
 };
@@ -67,6 +68,8 @@ pub struct ConsensusStorage {
     pub acceptance_data_store: Arc<DbAcceptanceDataStore>,
     /// Zethora: private coin list after each chain block (ZTH-SPEC-006 §6.1)
     pub zethora_note_trees_store: Arc<DbZethoraNoteTreesStore>,
+    /// Zethora: spent private coin tags -> accepting chain blocks (ZTH-SPEC-006 §6.3)
+    pub zethora_nullifiers_store: Arc<DbZethoraNullifiersStore>,
 
     // Block window caches
     pub block_window_cache_for_difficulty: Arc<BlockWindowCacheStore>,
@@ -219,6 +222,7 @@ impl ConsensusStorage {
         let utxo_diffs_store = Arc::new(DbUtxoDiffsStore::new(db.clone(), utxo_diffs_builder.build()));
         let utxo_multisets_store = Arc::new(DbUtxoMultisetsStore::new(db.clone(), block_data_builder.build()));
         let zethora_note_trees_store = Arc::new(DbZethoraNoteTreesStore::new(db.clone(), block_data_builder.build()));
+        let zethora_nullifiers_store = Arc::new(DbZethoraNullifiersStore::new(db.clone(), block_data_builder.build()));
         let acceptance_data_store = Arc::new(DbAcceptanceDataStore::new(db.clone(), acceptance_data_builder.build()));
 
         // Tips
@@ -274,6 +278,7 @@ impl ConsensusStorage {
             utxo_diffs_store,
             utxo_multisets_store,
             zethora_note_trees_store,
+            zethora_nullifiers_store,
             block_window_cache_for_difficulty,
             block_window_cache_for_past_median_time,
             smt_stores,

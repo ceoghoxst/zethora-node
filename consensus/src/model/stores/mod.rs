@@ -22,6 +22,7 @@ pub mod utxo_multisets;
 pub mod utxo_set;
 pub mod virtual_state;
 pub mod zethora_note_trees;
+pub mod zethora_nullifiers;
 
 pub use kaspa_database;
 pub use kaspa_database::prelude::DB;

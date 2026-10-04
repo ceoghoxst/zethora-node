@@ -22,6 +22,7 @@ impl BlockBodyProcessor {
         let mass = self.check_block_mass(block)?;
         self.check_duplicate_transactions(block)?;
         self.check_block_double_spends(block)?;
+        Self::check_block_nullifier_reuse(block)?;
         self.check_no_chained_transactions(block)?;
         Ok(mass)
     }
@@ -128,6 +129,17 @@ impl BlockBodyProcessor {
         for input in block.transactions.iter().flat_map(|tx| &tx.inputs) {
             if !existing.insert(input.previous_outpoint) {
                 return Err(RuleError::DoubleSpendInSameBlock(input.previous_outpoint));
+            }
+        }
+        Ok(())
+    }
+
+    /// Zethora (ZTH-SPEC-006 §6.3): a private coin tag (nullifier) may appear only once per block.
+    fn check_block_nullifier_reuse(block: &Block) -> BlockProcessResult<()> {
+        let mut existing = HashSet::new();
+        for nf in block.transactions.iter().skip(1).flat_map(|tx| kaspa_consensus_core::zethora_private::nullifiers(&tx.payload)) {
+            if !existing.insert(nf) {
+                return Err(RuleError::NullifierReusedInSameBlock(kaspa_hashes::Hash::from_bytes(nf)));
             }
         }
         Ok(())

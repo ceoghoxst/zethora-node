@@ -50,6 +50,20 @@ pub fn pool_flows(payload: &[u8]) -> Result<Option<(u64, u64)>, ()> {
     Ok(Some(if vb < 0 { (vb.unsigned_abs(), 0) } else { (0, vb as u64) }))
 }
 
+/// The spent-coin tags (nullifiers) a private payment reveals, one per action, in action order.
+/// Empty for ordinary transactions. Every nullifier may appear on the chain only once (ZTH-SPEC-006 §6.3):
+/// that is the double-spend guard. Only call on payments already checked in isolation.
+pub fn nullifiers(payload: &[u8]) -> Vec<[u8; 32]> {
+    let Some(encoded) = private_payment_bytes(payload) else { return Vec::new() };
+    let Some(n) = action_count(encoded) else { return Vec::new() };
+    (0..n)
+        .filter_map(|i| {
+            let at = 3 + i * ACTION_SIZE + 32; // value commitment (32), then the nullifier
+            encoded.get(at..at + 32).map(|b| b.try_into().expect("32 bytes"))
+        })
+        .collect()
+}
+
 /// Extra compute mass for the proof in this payload (0 for ordinary transactions).
 pub fn proof_mass(payload: &[u8]) -> u64 {
     private_payment_bytes(payload).and_then(action_count).map_or(0, |n| n as u64 * PROOF_MASS_PER_ACTION)
@@ -86,6 +100,16 @@ mod tests {
         assert_eq!(pool_flows(&fake(3, 0)), Ok(Some((0, 0))));
         assert_eq!(proof_mass(&fake(2, 0)), 30_000);
         assert_eq!(proof_mass(&fake(4, 0)), 60_000);
+    }
+
+    #[test]
+    fn reads_nullifiers_in_action_order() {
+        let mut p = fake(2, -5_000);
+        let base = 4 + 3; // magic + pool version + action count
+        p[base + 32..base + 64].copy_from_slice(&[0xAA; 32]);
+        p[base + ACTION_SIZE + 32..base + ACTION_SIZE + 64].copy_from_slice(&[0xBB; 32]);
+        assert_eq!(nullifiers(&p), vec![[0xAA; 32], [0xBB; 32]]);
+        assert!(nullifiers(b"ordinary payload").is_empty());
     }
 
     #[test]

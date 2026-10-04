@@ -476,6 +476,12 @@ impl PruningProcessor {
 
             if !keep_blocks.contains(&current) {
                 let mut batch = WriteBatch::default();
+                // Zethora: rewrite private coin tag records that point at this block, before its reachability is deleted
+                // (Every later query has the pruning point on its selected chain, so "chain ancestor of the pruning point"
+                // is exactly "on every future chain".)
+                let was_on_chain = reachability_read.try_is_chain_ancestor_of(current, new_pruning_point).unwrap();
+                self.zethora_nullifiers_store.prune_block_batch(&mut batch, current, was_on_chain).unwrap();
+
                 let mut relations_write = self.relations_store.write();
                 let mut reachability_relations_write = self.reachability_relations_store.write();
                 let mut staging_reachability_relations = StagingRelationsStore::new(&mut reachability_relations_write);

@@ -42,7 +42,10 @@ use kaspa_hashes::Hash;
 use kaspa_muhash::MuHash;
 use kaspa_utils::refs::Refs;
 
+use crate::model::services::reachability::ReachabilityService;
 use crate::model::services::seq_commit_accessor::SeqCommitAccessor;
+use kaspa_consensus_core::zethora_private;
+use std::collections::HashSet;
 use rayon::prelude::*;
 use smallvec::{SmallVec, smallvec};
 use std::{iter::once, ops::Deref};
@@ -84,6 +87,9 @@ pub(super) struct UtxoProcessingContext<'a> {
     pub pruning_sample_from_pov: Option<Hash>,
     /// Zethora: the private coin list after this block's mergeset (ZTH-SPEC-006 §6.1)
     pub note_tree: zethora_shielded::NoteCommitmentTree,
+    /// Zethora: private coin tags (nullifiers) accepted by this mergeset so far, as a set and in order (§6.3)
+    pub nullifiers: HashSet<[u8; 32]>,
+    pub nullifier_list: Vec<[u8; 32]>,
 }
 
 impl<'a> UtxoProcessingContext<'a> {
@@ -98,6 +104,8 @@ impl<'a> UtxoProcessingContext<'a> {
             mergeset_acceptance_data: Vec::with_capacity(mergeset_size),
             pruning_sample_from_pov: Default::default(),
             note_tree: zethora_shielded::NoteCommitmentTree::new(),
+            nullifiers: HashSet::new(),
+            nullifier_list: Vec::new(),
         }
     }
 
@@ -159,6 +167,7 @@ impl VirtualStateProcessor {
                 self.headers_store.get_daa_score(merged_block).unwrap(),
                 validation_flags,
                 ctx.selected_parent(),
+                &ctx.nullifiers,
             );
 
             ctx.multiset_hash.combine(&inner_multiset);
@@ -176,6 +185,16 @@ impl VirtualStateProcessor {
                 if let Ok(Some((value_in, value_out))) = kaspa_consensus_core::zethora_private::pool_flows(&validated_tx.tx.payload) {
                     block_pool_in += value_in;
                     block_pool_out += value_out;
+                }
+            }
+
+            // Zethora: remember the private coin tags this block's accepted transactions spent, so a later block in
+            // the same mergeset can't spend them again (ZTH-SPEC-006 §6.3). Within one block they are unique (body rule).
+            for (vtx, _) in validated_transactions.iter() {
+                for nf in zethora_private::nullifiers(&vtx.tx.payload) {
+                    if ctx.nullifiers.insert(nf) {
+                        ctx.nullifier_list.push(nf);
+                    }
                 }
             }
 
@@ -295,9 +314,15 @@ impl VirtualStateProcessor {
             TxValidationFlags::Full,
             ctx.selected_parent(),
         );
-        if validated_transactions.len() < txs.len() - 1 {
+        // Zethora: the block's own transactions may not spend private coin tags its mergeset already spent (§6.3)
+        let reused = validated_transactions
+            .iter()
+            .filter(|(vtx, _)| zethora_private::nullifiers(&vtx.tx.payload).iter().any(|nf| ctx.nullifiers.contains(nf)))
+            .count();
+        let valid = validated_transactions.len() - reused;
+        if valid < txs.len() - 1 {
             // Some non-coinbase transactions are invalid
-            return Err(InvalidTransactionsInUtxoContext(txs.len() - 1 - validated_transactions.len(), txs.len() - 1));
+            return Err(InvalidTransactionsInUtxoContext(txs.len() - 1 - valid, txs.len() - 1));
         }
 
         Ok(smt_build)
@@ -358,6 +383,23 @@ impl VirtualStateProcessor {
         added - removed - parent_coinbase
     }
 
+    /// Zethora: is this private coin tag already spent on the selected chain ending at `selected_parent`?
+    /// A tag counts as spent if any chain block that accepted it is a chain ancestor of (or is) `selected_parent`.
+    /// Records of pruned chain blocks are rewritten to `SPENT_FOR_GOOD` by the pruning processor, so every node
+    /// gives the same answer whether or not it has pruned. If reachability is unexpectedly missing, it counts as spent.
+    pub(crate) fn nullifier_spent_on_chain(&self, nullifier: &[u8; 32], selected_parent: Hash) -> bool {
+        use crate::model::stores::zethora_nullifiers::SPENT_FOR_GOOD;
+        self.zethora_nullifiers_store.accepting_blocks(nullifier).into_iter().any(|block| {
+            block == SPENT_FOR_GOOD || self.reachability_service.try_is_chain_ancestor_of(block, selected_parent).unwrap_or(true)
+        })
+    }
+
+    /// Zethora: does this transaction spend a private coin tag that is already spent, either on the chain of
+    /// `selected_parent` or in `pending` (tags accepted earlier in the same mergeset / block template)?
+    pub(crate) fn private_double_spend(&self, tx: &Transaction, selected_parent: Hash, pending: &HashSet<[u8; 32]>) -> bool {
+        zethora_private::nullifiers(&tx.payload).iter().any(|nf| pending.contains(nf) || self.nullifier_spent_on_chain(nf, selected_parent))
+    }
+
     /// Zethora: the fee pool state recorded in a block's coinbase (ZTH-SPEC-008).
     /// The pool flows along the selected chain: each chain block reads its selected parent's state.
     pub(crate) fn pool_state_of(&self, block: Hash) -> PoolState {
@@ -397,6 +439,7 @@ impl VirtualStateProcessor {
         block_daa_score: u64,
         flags: TxValidationFlags,
         selected_parent: Hash,
+        pending_nullifiers: &HashSet<[u8; 32]>,
     ) -> (SmallVec<[(ValidatedTransaction<'a>, u32); 2]>, MuHash) {
         self.thread_pool.install(|| {
             txs
@@ -404,6 +447,8 @@ impl VirtualStateProcessor {
                             // that all txs within each block are independent
                 .enumerate()
                 .skip(1) // Skip the coinbase tx.
+                // Zethora: a private coin tag already spent earlier in this mergeset makes the transaction not accepted
+                .filter(|(_, tx)| !zethora_private::nullifiers(&tx.payload).iter().any(|nf| pending_nullifiers.contains(nf)))
                 .filter_map(|(i, tx)| self.validate_transaction_in_utxo_context(tx, &utxo_view, pov_daa_score, block_daa_score, flags, selected_parent).ok().map(|vtx| {
                     let mh = MuHash::from_transaction(&vtx, pov_daa_score);
                     (smallvec![(vtx, i as u32)], mh)
@@ -430,6 +475,10 @@ impl VirtualStateProcessor {
         flags: TxValidationFlags,
         selected_parent: Hash,
     ) -> TxResult<ValidatedTransaction<'a>> {
+        // Zethora: a private coin tag already spent on the selected chain can never be spent again (§6.3)
+        if self.private_double_spend(transaction, selected_parent, &HashSet::new()) {
+            return Err(TxRuleError::InvalidPrivatePayment("private coin already spent".to_string()));
+        }
         let mut entries = Vec::with_capacity(transaction.inputs.len());
         for input in transaction.inputs.iter() {
             if let Some(entry) = utxo_view.get(&input.previous_outpoint) {
