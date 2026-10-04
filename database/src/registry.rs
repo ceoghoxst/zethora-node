@@ -58,6 +58,10 @@ pub enum DatabaseStorePrefixes {
     // ---- Retention Period Root ----
     RetentionPeriodRoot = 50,
 
+    // ---- Zethora ----
+    /// Private coin list (note commitment tree frontier) after each chain block (ZTH-SPEC-006 §6.1)
+    ZethoraNoteTrees = 90,
+
     // ---- Pruning metadata ----
     PruningUtxosetSyncFlag = 60,
     BodyMissingAnticone = 61,

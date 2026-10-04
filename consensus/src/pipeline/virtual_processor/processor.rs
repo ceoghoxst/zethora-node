@@ -137,6 +137,8 @@ pub struct VirtualStateProcessor {
     // Utxo-related stores
     pub(super) utxo_diffs_store: Arc<DbUtxoDiffsStore>,
     pub(super) utxo_multisets_store: Arc<DbUtxoMultisetsStore>,
+    /// Zethora: private coin list after each chain block (ZTH-SPEC-006 §6.1)
+    pub(super) zethora_note_trees_store: Arc<crate::model::stores::zethora_note_trees::DbZethoraNoteTreesStore>,
     pub(super) acceptance_data_store: Arc<DbAcceptanceDataStore>,
     pub(super) virtual_stores: Arc<RwLock<VirtualStores>>,
     pub(super) pruning_meta_stores: Arc<RwLock<PruningMetaStores>>,
@@ -220,6 +222,7 @@ impl VirtualStateProcessor {
             pruning_samples_store: storage.pruning_samples_store.clone(),
             utxo_diffs_store: storage.utxo_diffs_store.clone(),
             utxo_multisets_store: storage.utxo_multisets_store.clone(),
+            zethora_note_trees_store: storage.zethora_note_trees_store.clone(),
             acceptance_data_store: storage.acceptance_data_store.clone(),
             virtual_stores: storage.virtual_stores.clone(),
             pruning_meta_stores: storage.pruning_meta_stores.clone(),
@@ -475,6 +478,7 @@ impl VirtualStateProcessor {
                             // Commit UTXO + SMT data for current chain block
                             self.commit_utxo_state(
                                 current,
+                                ctx.note_tree,
                                 ctx.mergeset_diff,
                                 ctx.multiset_hash,
                                 ctx.mergeset_acceptance_data,
@@ -500,9 +504,11 @@ impl VirtualStateProcessor {
         diff_point
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn commit_utxo_state(
         &self,
         current: Hash,
+        note_tree: zethora_shielded::NoteCommitmentTree,
         mergeset_diff: UtxoDiff,
         multiset: MuHash,
         acceptance_data: AcceptanceData,
@@ -513,6 +519,7 @@ impl VirtualStateProcessor {
         let mut batch = WriteBatch::default();
         self.utxo_diffs_store.insert_batch(&mut batch, current, Arc::new(mergeset_diff)).unwrap();
         self.utxo_multisets_store.insert_batch(&mut batch, current, multiset).unwrap();
+        self.zethora_note_trees_store.set_batch(&mut batch, current, &note_tree).unwrap();
         self.acceptance_data_store.insert_batch(&mut batch, current, Arc::new(acceptance_data)).unwrap();
         // Note we call idempotent since this field can be populated during IBD with headers proof
         self.pruning_samples_store.insert_batch(&mut batch, current, pruning_sample_from_pov).idempotent().unwrap();
@@ -579,6 +586,9 @@ impl VirtualStateProcessor {
         // single-hash type instead of a Vec, once the on-disk format allows it.
         let accepted_id_digests = vec![self.compute_seq_commit(&ctx, &virtual_ghostdag_data, virtual_daa_window.daa_score)];
 
+        // Zethora: the private coin list root after the virtual's mergeset (read before ctx's borrow ends)
+        let note_root = ctx.note_tree.root().to_bytes();
+
         // Build the new virtual state
         let virtual_state = Arc::new(VirtualState::new(
             virtual_parents,
@@ -591,6 +601,7 @@ impl VirtualStateProcessor {
             ctx.mergeset_rewards,
             virtual_daa_window.mergeset_non_daa,
             virtual_ghostdag_data,
+            note_root,
         ));
         Ok(virtual_state)
     }
@@ -1435,6 +1446,7 @@ impl VirtualStateProcessor {
                 &virtual_state.mergeset_non_daa,
                 self.pool_state_of(virtual_state.ghostdag_data.selected_parent),
                 self.visible_change_of(&virtual_state.utxo_diff, virtual_state.ghostdag_data.selected_parent),
+                virtual_state.note_root,
             )
             .map_err(|e| match e {
                 kaspa_consensus_core::errors::coinbase::CoinbaseError::ZethoraSupply(reason) => RuleError::ZethoraSupplyMismatch(reason),
@@ -1504,7 +1516,16 @@ impl VirtualStateProcessor {
     /// Note that pruning point-related stores are initialized by `init`
     pub fn process_genesis(self: &Arc<Self>) {
         // Write the UTXO state of genesis
-        self.commit_utxo_state(self.genesis.hash, UtxoDiff::default(), MuHash::new(), AcceptanceData::default(), ZERO_HASH, None, 0);
+        self.commit_utxo_state(
+            self.genesis.hash,
+            zethora_shielded::NoteCommitmentTree::new(), // Zethora: no private coins at genesis
+            UtxoDiff::default(),
+            MuHash::new(),
+            AcceptanceData::default(),
+            ZERO_HASH,
+            None,
+            0,
+        );
 
         // Init the virtual selected chain store
         let mut batch = WriteBatch::default();

@@ -42,6 +42,9 @@ pub struct VirtualState {
     pub accepted_id_digests: Vec<Hash>,
     pub mergeset_rewards: BlockHashMap<BlockRewardData>,
     pub mergeset_non_daa: BlockHashSet,
+    /// Zethora: root of the private coin list after the virtual's mergeset (ZTH-SPEC-006 §6.1).
+    /// Committed in the coinbase of a block built on this virtual state.
+    pub note_root: [u8; 32],
 }
 
 impl VirtualState {
@@ -57,6 +60,7 @@ impl VirtualState {
         mergeset_rewards: BlockHashMap<BlockRewardData>,
         mergeset_non_daa: BlockHashSet,
         ghostdag_data: GhostdagData,
+        note_root: [u8; 32],
     ) -> Self {
         Self {
             parents,
@@ -69,6 +73,7 @@ impl VirtualState {
             accepted_id_digests,
             mergeset_rewards,
             mergeset_non_daa,
+            note_root,
         }
     }
 
@@ -88,6 +93,7 @@ impl VirtualState {
             accepted_id_digests,
             mergeset_rewards: BlockHashMap::new(),
             mergeset_non_daa: BlockHashSet::from_iter(std::iter::once(genesis.hash)),
+            note_root: zethora_shielded::NoteCommitmentTree::new().root().to_bytes(), // empty private coin list
         }
     }
 
@@ -147,6 +153,7 @@ impl From<PreToccataVirtualState> for VirtualState {
             accepted_id_digests: v.accepted_id_digests,
             mergeset_rewards: v.mergeset_rewards,
             mergeset_non_daa: v.mergeset_non_daa,
+            note_root: zethora_shielded::NoteCommitmentTree::new().root().to_bytes(),
         }
     }
 }
@@ -408,6 +415,7 @@ mod tests {
             accepted_id_digests: vec![Hash::from_bytes([0x10; 32])],
             mergeset_rewards: BlockHashMap::new(),
             mergeset_non_daa: BlockHashSet::default(),
+            note_root: [7; 32],
         });
 
         store.set(state.clone()).unwrap();

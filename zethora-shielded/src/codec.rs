@@ -128,6 +128,23 @@ fn point<T>(v: CtOption<T>, what: &'static str) -> Result<T, DecodeError> {
     Option::from(v).ok_or(DecodeError::BadPoint(what))
 }
 
+/// The new private coins (note commitments) an encoded payment creates, in action order.
+/// Cheap: reads them at fixed offsets without decoding the rest. Use only on payments already checked
+/// with [`decode`] (consensus checks every payment before accepting it).
+pub fn note_commitments(encoded: &[u8]) -> Result<Vec<ExtractedNoteCommitment>, DecodeError> {
+    let n = u16::from_le_bytes(encoded.get(1..3).ok_or(DecodeError::Truncated)?.try_into().expect("2 bytes")) as usize;
+    if n == 0 || n > MAX_ACTIONS_PER_TX {
+        return Err(DecodeError::BadActionCount(n));
+    }
+    (0..n)
+        .map(|i| {
+            let at = 3 + i * ACTION_SIZE + 96; // cv 32, nullifier 32, rk 32, then cmx
+            let bytes: [u8; 32] = encoded.get(at..at + 32).ok_or(DecodeError::Truncated)?.try_into().expect("32 bytes");
+            point(ExtractedNoteCommitment::from_bytes(&bytes), "note commitment")
+        })
+        .collect()
+}
+
 /// Reads a private payment from bytes, rejecting anything malformed.
 pub fn decode(bytes: &[u8]) -> Result<(Bundle<Authorized, i64>, SupportedPool), DecodeError> {
     let mut r = Reader { bytes };

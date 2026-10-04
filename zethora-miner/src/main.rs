@@ -119,6 +119,8 @@ async fn main() {
             let (pool_balance, total_burned) = (read(16), read(24));
             let (issued, visible, private) = (read(32), read(40), read(48));
             let balanced = visible as u128 + pool_balance as u128 + total_burned as u128 + private as u128 == issued as u128;
+            // Private coin list fingerprint (bytes 56..88): first 4 bytes are enough to see it change
+            let coin_list: String = cb.get(56..60).map(|b| b.iter().map(|x| format!("{x:02x}")).collect()).unwrap_or_default();
             match client.submit_block(block, false).await {
                 Ok(r) if r.report.is_success() => {
                     mined += 1;
@@ -135,7 +137,7 @@ async fn main() {
                         rate
                     );
                     println!(
-                        "    Supply check: visible {visible} + pool {pool_balance} + burned {total_burned} + private {private} = {} | issued {issued} zets | {}",
+                        "    Supply check: visible {visible} + pool {pool_balance} + burned {total_burned} + private {private} = {} | issued {issued} zets | {} | coin list {coin_list}",
                         visible as u128 + pool_balance as u128 + total_burned as u128 + private as u128,
                         if balanced { "BALANCED" } else { "MISMATCH" }
                     );

@@ -291,3 +291,33 @@ fn wallet_builds_a_shielding_payment_the_node_accepts() {
     // Same seed, same private address
     assert_eq!(PrivateWallet::from_seed(&[9; 32]).address(), wallet.address());
 }
+
+#[test]
+fn coin_list_survives_saving_and_loading() {
+    let p = payments();
+    let mut tree = NoteCommitmentTree::new();
+    assert_eq!(NoteCommitmentTree::from_bytes(&tree.to_bytes()).unwrap(), tree);
+    for bundle in [&p.shield, &p.unshield] {
+        // The cheap reader finds the same new coins as the full decoder
+        let bytes = codec::encode(bundle, SupportedPool::Orchard1);
+        let cheap = codec::note_commitments(&bytes).unwrap();
+        let full: Vec<_> = bundle.actions().iter().map(|a| *a.cmx()).collect();
+        assert_eq!(cheap.iter().map(|c| c.to_bytes()).collect::<Vec<_>>(), full.iter().map(|c| c.to_bytes()).collect::<Vec<_>>());
+        for cmx in &cheap {
+            tree.append(cmx).unwrap();
+            let reloaded = NoteCommitmentTree::from_bytes(&tree.to_bytes()).unwrap();
+            assert_eq!(reloaded, tree);
+            assert_eq!(reloaded.root(), tree.root());
+        }
+    }
+    assert_eq!(tree.size(), 4);
+    // Continuing from a reloaded tree gives the same result as never saving it
+    let mut a = tree.clone();
+    let mut b = NoteCommitmentTree::from_bytes(&tree.to_bytes()).unwrap();
+    let extra = *p.shield.actions().first().cmx();
+    a.append(&extra).unwrap();
+    b.append(&extra).unwrap();
+    assert_eq!(a.root(), b.root());
+    assert!(NoteCommitmentTree::from_bytes(&[2]).is_err());
+    assert!(NoteCommitmentTree::from_bytes(&[]).is_err());
+}

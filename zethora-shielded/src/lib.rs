@@ -132,7 +132,54 @@ impl NoteCommitmentTree {
     pub fn size(&self) -> u64 {
         self.frontier.tree_size()
     }
+
+    /// Compact bytes for storing the tree in the node's database:
+    /// `0` for an empty tree, or `1 || position (u64) || leaf (32) || ommer count (u8) || ommers (32 each)`.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        match self.frontier.value() {
+            None => vec![0],
+            Some(f) => {
+                let mut out = Vec::with_capacity(1 + 8 + 32 + 1 + 32 * f.ommers().len());
+                out.push(1);
+                out.extend_from_slice(&u64::from(f.position()).to_le_bytes());
+                out.extend_from_slice(&f.leaf().to_bytes());
+                out.push(f.ommers().len() as u8);
+                for o in f.ommers() {
+                    out.extend_from_slice(&o.to_bytes());
+                }
+                out
+            }
+        }
+    }
+
+    /// Reads bytes written by [`Self::to_bytes`].
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, TreeBytesError> {
+        let hash_at = |at: usize| -> Result<MerkleHashOrchard, TreeBytesError> {
+            let b: [u8; 32] = bytes.get(at..at + 32).ok_or(TreeBytesError)?.try_into().map_err(|_| TreeBytesError)?;
+            Option::from(MerkleHashOrchard::from_bytes(&b)).ok_or(TreeBytesError)
+        };
+        match bytes.first() {
+            Some(0) if bytes.len() == 1 => Ok(Self::new()),
+            Some(1) => {
+                let position = u64::from_le_bytes(bytes.get(1..9).ok_or(TreeBytesError)?.try_into().map_err(|_| TreeBytesError)?);
+                let leaf = hash_at(9)?;
+                let n = *bytes.get(41).ok_or(TreeBytesError)? as usize;
+                if bytes.len() != 42 + 32 * n {
+                    return Err(TreeBytesError);
+                }
+                let ommers = (0..n).map(|i| hash_at(42 + 32 * i)).collect::<Result<Vec<_>, _>>()?;
+                let frontier = Frontier::from_parts(incrementalmerkletree::Position::from(position), leaf, ommers)
+                    .map_err(|_| TreeBytesError)?;
+                Ok(Self { frontier })
+            }
+            _ => Err(TreeBytesError),
+        }
+    }
 }
+
+/// Stored tree bytes are malformed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TreeBytesError;
 
 #[cfg(test)]
 mod tests {

@@ -12,6 +12,7 @@ use crate::{
         daa::DaaStoreReader,
         ghostdag::{CompactGhostdagData, GhostdagData},
         headers::HeaderStoreReader,
+        zethora_note_trees::ZethoraNoteTreesStoreReader,
     },
     processes::{
         pruning::PruningPointReply,
@@ -81,6 +82,8 @@ pub(super) struct UtxoProcessingContext<'a> {
     pub mergeset_acceptance_data: Vec<MergesetBlockAcceptanceData>,
     pub mergeset_rewards: BlockHashMap<BlockRewardData>,
     pub pruning_sample_from_pov: Option<Hash>,
+    /// Zethora: the private coin list after this block's mergeset (ZTH-SPEC-006 §6.1)
+    pub note_tree: zethora_shielded::NoteCommitmentTree,
 }
 
 impl<'a> UtxoProcessingContext<'a> {
@@ -94,6 +97,7 @@ impl<'a> UtxoProcessingContext<'a> {
             mergeset_rewards: BlockHashMap::with_capacity(mergeset_size),
             mergeset_acceptance_data: Vec::with_capacity(mergeset_size),
             pruning_sample_from_pov: Default::default(),
+            note_tree: zethora_shielded::NoteCommitmentTree::new(),
         }
     }
 
@@ -110,6 +114,14 @@ impl VirtualStateProcessor {
         selected_parent_utxo_view: &V,
         pov_daa_score: u64,
     ) {
+        // Zethora: start from the selected parent's private coin list (ZTH-SPEC-006 §6.1)
+        let selected_parent = ctx.selected_parent();
+        ctx.note_tree = self.zethora_note_trees_store.get(selected_parent).unwrap_or_else(|e| {
+            panic!(
+                "Zethora: private coin list missing for {selected_parent} ({e}). Syncing from a pruning point is not supported yet; restart with --reset-db"
+            )
+        });
+
         let selected_parent_transactions = self.block_transactions_store.get(ctx.selected_parent()).unwrap();
         let validated_coinbase = ValidatedTransaction::new_coinbase(&selected_parent_transactions[0]);
 
@@ -164,6 +176,21 @@ impl VirtualStateProcessor {
                 if let Ok(Some((value_in, value_out))) = kaspa_consensus_core::zethora_private::pool_flows(&validated_tx.tx.payload) {
                     block_pool_in += value_in;
                     block_pool_out += value_out;
+                }
+            }
+
+            // Zethora: add this block's new private coins to the list, in block order (ZTH-SPEC-006 §6.1).
+            // Every node walks the mergeset in the same consensus order, so every node builds the same list.
+            let mut private_txs: Vec<_> = validated_transactions
+                .iter()
+                .filter(|(vtx, _)| kaspa_consensus_core::zethora_private::private_payment_bytes(&vtx.tx.payload).is_some())
+                .map(|(vtx, idx)| (*idx, vtx.tx))
+                .collect();
+            private_txs.sort_by_key(|(idx, _)| *idx);
+            for (_, tx) in private_txs {
+                let encoded = kaspa_consensus_core::zethora_private::private_payment_bytes(&tx.payload).expect("filtered above");
+                for cmx in zethora_shielded::codec::note_commitments(encoded).expect("accepted private payments are well-formed") {
+                    ctx.note_tree.append(&cmx).expect("private coin list is full: migrate to a new pool version");
                 }
             }
 
@@ -229,6 +256,7 @@ impl VirtualStateProcessor {
             &ctx.mergeset_rewards,
             &self.daa_excluded_store.get_mergeset_non_daa(header.hash).unwrap(),
             self.visible_change_of(&ctx.mergeset_diff, ctx.selected_parent()),
+            ctx.note_tree.root().to_bytes(),
         )?;
 
         // Verify the header pruning point
@@ -295,6 +323,7 @@ impl VirtualStateProcessor {
         mergeset_rewards: &BlockHashMap<BlockRewardData>,
         mergeset_non_daa: &BlockHashSet,
         visible_change: i128,
+        note_root: [u8; 32],
     ) -> BlockProcessResult<()> {
         // Extract only miner data from the provided coinbase
         let miner_data = self.coinbase_manager.deserialize_coinbase_payload(&coinbase.payload).unwrap().miner_data;
@@ -307,6 +336,7 @@ impl VirtualStateProcessor {
             mergeset_non_daa,
             parent_pool,
             visible_change,
+            note_root,
         ) {
             Ok(template) => template.tx,
             // Zethora: the block's coins do not add up, so it is invalid (ZTH-SPEC-006 §7.2)

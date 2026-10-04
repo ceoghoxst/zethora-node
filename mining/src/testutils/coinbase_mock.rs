@@ -19,7 +19,7 @@ impl CoinbaseManagerMock {
         const SUBSIDY: u64 = 500 * SOMPI_PER_KASPA;
         let output = TransactionOutput::new(SUBSIDY, miner_data.script_public_key.clone());
 
-        let payload = self.serialize_coinbase_payload(&CoinbaseData { blue_score: 1, subsidy: SUBSIDY, pool: Default::default(), miner_data });
+        let payload = self.serialize_coinbase_payload(&CoinbaseData { blue_score: 1, subsidy: SUBSIDY, pool: Default::default(), note_root: [0; 32], miner_data });
 
         CoinbaseTransactionTemplate {
             tx: Transaction::new(TX_VERSION, vec![], vec![output], 0, SUBNETWORK_ID_COINBASE, 0, payload),
@@ -36,6 +36,7 @@ impl CoinbaseManagerMock {
             .chain(data.pool.total_issued.to_le_bytes().iter().copied())                        // Zethora: total issued        (u64)
             .chain(data.pool.transparent_supply.to_le_bytes().iter().copied())                  // Zethora: transparent supply  (u64)
             .chain(data.pool.shielded_balance.to_le_bytes().iter().copied())                    // Zethora: shielded balance    (u64)
+            .chain(data.note_root.iter().copied())                                              // Zethora: private coin list root
             .chain(data.miner_data.script_public_key.version().to_le_bytes().iter().copied())   // Script public key version    (u16)
             .chain((script_pub_key_len as u8).to_le_bytes().iter().copied())                    // Script public key length     (u8)
             .chain(data.miner_data.script_public_key.script().iter().copied())                  // Script public key            
@@ -47,7 +48,7 @@ impl CoinbaseManagerMock {
 
     pub fn modify_coinbase_payload(&self, mut payload: Vec<u8>, miner_data: &MinerData) -> Vec<u8> {
         let script_pub_key_len = miner_data.script_public_key.script().len();
-        payload.truncate(LENGTH_OF_BLUE_SCORE + LENGTH_OF_SUBSIDY + 40); // + Zethora supply ledger (5 x u64)
+        payload.truncate(LENGTH_OF_BLUE_SCORE + LENGTH_OF_SUBSIDY + 40 + 32); // + Zethora supply ledger (5 x u64) + coin list root
         payload.extend(
             miner_data.script_public_key.version().to_le_bytes().iter().copied() // Script public key version (u16)
                 .chain((script_pub_key_len as u8).to_le_bytes().iter().copied()) // Script public key length  (u8)
