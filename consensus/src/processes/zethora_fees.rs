@@ -48,6 +48,7 @@ pub fn pool_step(parent: PoolState, base_total: u64) -> PoolStep {
     let next = PoolState {
         pool_balance: parent.pool_balance - payout + to_pool,
         total_burned: parent.total_burned.checked_add(burned).expect("burn counter overflow"),
+        ..parent // the supply ledger fields are updated by zethora_supply::ledger_step
     };
     PoolStep { payout, burned, next }
 }
@@ -71,7 +72,7 @@ mod tests {
         assert_eq!(s.burned, 400);
         assert_eq!(s.payout, 0);
         for base in [0u64, 1, 3, 7, 99, 12_345, 1 << 40] {
-            let parent = PoolState { pool_balance: 9_876_543_210, total_burned: 5 };
+            let parent = PoolState { pool_balance: 9_876_543_210, total_burned: 5, ..Default::default() };
             let s = pool_step(parent, base);
             // pool_in + base fees == pool_out + payout + burned
             assert_eq!(parent.pool_balance + base, s.next.pool_balance + s.payout + s.burned);
@@ -82,7 +83,7 @@ mod tests {
     #[test]
     fn pool_pays_out_over_about_30_days() {
         // One deposit, no new fees: after 30 days of blocks about 1/e (36.8%) remains.
-        let mut state = PoolState { pool_balance: 1_000_000 * 10_000_000_000, total_burned: 0 };
+        let mut state = PoolState { pool_balance: 1_000_000 * 10_000_000_000, ..Default::default() };
         let start = state.pool_balance;
         for _ in 0..POOL_PAYOUT_DIVISOR {
             state = pool_step(state, 0).next;

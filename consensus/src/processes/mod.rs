@@ -2,6 +2,7 @@ pub mod block_depth;
 pub mod coinbase;
 pub mod zethora_fees;
 pub mod zethora_subsidy;
+pub mod zethora_supply;
 pub mod difficulty;
 pub mod ghostdag;
 pub mod parents_builder;

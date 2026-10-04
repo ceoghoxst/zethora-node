@@ -4,7 +4,7 @@ use crate::{
         BlockProcessResult,
         RuleError::{
             BadAcceptedIDMerkleRoot, BadCoinbaseTransaction, BadUTXOCommitment, InvalidTransactionsInUtxoContext,
-            WrongHeaderPruningPoint, WrongSelectedParentOrder,
+            WrongHeaderPruningPoint, WrongSelectedParentOrder, ZethoraSupplyMismatch,
         },
     },
     model::stores::{
@@ -26,6 +26,7 @@ use kaspa_consensus_core::{
     acceptance_data::{AcceptedTxEntry, MergesetBlockAcceptanceData},
     api::args::TransactionValidationArgs,
     coinbase::*,
+    errors::coinbase::CoinbaseError,
     hashing,
     header::Header,
     muhash::MuHashExtensions,
@@ -213,13 +214,14 @@ impl VirtualStateProcessor {
 
         let txs = self.block_transactions_store.get(header.hash).unwrap();
 
-        // Verify coinbase transaction
+        // Verify coinbase transaction (including the Zethora supply ledger, measured from the real UTXO changes)
         self.verify_coinbase_transaction(
             &txs[0],
             header.daa_score,
             &ctx.ghostdag_data,
             &ctx.mergeset_rewards,
             &self.daa_excluded_store.get_mergeset_non_daa(header.hash).unwrap(),
+            self.visible_change_of(&ctx.mergeset_diff, ctx.selected_parent()),
         )?;
 
         // Verify the header pruning point
@@ -285,16 +287,38 @@ impl VirtualStateProcessor {
         ghostdag_data: &GhostdagData,
         mergeset_rewards: &BlockHashMap<BlockRewardData>,
         mergeset_non_daa: &BlockHashSet,
+        visible_change: i128,
     ) -> BlockProcessResult<()> {
         // Extract only miner data from the provided coinbase
         let miner_data = self.coinbase_manager.deserialize_coinbase_payload(&coinbase.payload).unwrap().miner_data;
         let parent_pool = self.pool_state_of(ghostdag_data.selected_parent);
-        let expected_coinbase = self
-            .coinbase_manager
-            .expected_coinbase_transaction(daa_score, miner_data, ghostdag_data, mergeset_rewards, mergeset_non_daa, parent_pool)
-            .unwrap()
-            .tx;
+        let expected_coinbase = match self.coinbase_manager.expected_coinbase_transaction(
+            daa_score,
+            miner_data,
+            ghostdag_data,
+            mergeset_rewards,
+            mergeset_non_daa,
+            parent_pool,
+            visible_change,
+        ) {
+            Ok(template) => template.tx,
+            // Zethora: the block's coins do not add up, so it is invalid (ZTH-SPEC-006 §7.2)
+            Err(CoinbaseError::ZethoraSupply(reason)) => return Err(ZethoraSupplyMismatch(reason)),
+            Err(e) => panic!("unexpected coinbase error: {e}"),
+        };
         if hashing::tx::hash(coinbase) != hashing::tx::hash(&expected_coinbase) { Err(BadCoinbaseTransaction) } else { Ok(()) }
+    }
+
+    /// Zethora: net change in visible coins from the transactions a mergeset accepts, measured from the
+    /// real UTXO diff. The diff also holds the selected parent's coinbase outputs, which are already
+    /// counted in the parent's ledger, so they are taken out here. With correct bookkeeping the result
+    /// is minus the mergeset's total fees (ZTH-SPEC-006 §7.2).
+    pub(crate) fn visible_change_of(&self, mergeset_diff: &UtxoDiff, selected_parent: Hash) -> i128 {
+        let added: i128 = mergeset_diff.add.values().map(|e| e.amount as i128).sum();
+        let removed: i128 = mergeset_diff.remove.values().map(|e| e.amount as i128).sum();
+        let parent_coinbase: i128 =
+            self.block_transactions_store.get(selected_parent).unwrap()[0].outputs.iter().map(|o| o.value as i128).sum();
+        added - removed - parent_coinbase
     }
 
     /// Zethora: the fee pool state recorded in a block's coinbase (ZTH-SPEC-008).

@@ -112,10 +112,13 @@ async fn main() {
             let mut block = template.block;
             block.header.nonce = winner.load(Ordering::Relaxed);
             let daa = block.header.daa_score;
-            // Zethora pool state after this block: coinbase payload bytes 16..24 (pool) and 24..32 (burned)
+            // Zethora supply ledger after this block, from the coinbase payload (ZTH-SPEC-006 §7.2):
+            // bytes 16 pool, 24 burned, 32 issued, 40 visible supply, 48 private pool
             let cb = &block.transactions[0].payload;
             let read = |i: usize| cb.get(i..i + 8).map(|b| u64::from_le_bytes(b.try_into().unwrap())).unwrap_or(0);
             let (pool_balance, total_burned) = (read(16), read(24));
+            let (issued, visible, private) = (read(32), read(40), read(48));
+            let balanced = visible as u128 + pool_balance as u128 + total_burned as u128 + private as u128 == issued as u128;
             match client.submit_block(block, false).await {
                 Ok(r) if r.report.is_success() => {
                     mined += 1;
@@ -130,6 +133,11 @@ async fn main() {
                         pool_balance,
                         total_burned,
                         rate
+                    );
+                    println!(
+                        "    Supply check: visible {visible} + pool {pool_balance} + burned {total_burned} + private {private} = {} | issued {issued} zets | {}",
+                        visible as u128 + pool_balance as u128 + total_burned as u128 + private as u128,
+                        if balanced { "BALANCED" } else { "MISMATCH" }
                     );
                 }
                 Ok(r) => println!("Block rejected: {:?}", r.report),

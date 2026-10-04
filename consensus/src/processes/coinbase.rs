@@ -11,14 +11,18 @@ use std::convert::TryInto;
 use crate::{
     constants,
     model::stores::ghostdag::GhostdagData,
-    processes::{zethora_fees, zethora_subsidy::ZethoraSubsidy},
+    processes::{
+        zethora_fees,
+        zethora_subsidy::ZethoraSubsidy,
+        zethora_supply::{self, BlockFlows},
+    },
 };
 use std::sync::Arc;
 
 const LENGTH_OF_BLUE_SCORE: usize = size_of::<u64>();
 const LENGTH_OF_SUBSIDY: usize = size_of::<u64>();
-/// Zethora: pool balance + total burned (2 x u64)
-const LENGTH_OF_POOL_STATE: usize = 2 * size_of::<u64>();
+/// Zethora supply ledger: pool balance, total burned, total issued, transparent supply, shielded balance (5 x u64)
+const LENGTH_OF_POOL_STATE: usize = 5 * size_of::<u64>();
 const LENGTH_OF_SCRIPT_PUB_KEY_VERSION: usize = size_of::<u16>();
 const LENGTH_OF_SCRIPT_PUB_KEY_LENGTH: usize = size_of::<u8>();
 
@@ -116,6 +120,7 @@ impl CoinbaseManager {
         mergeset_rewards: &BlockHashMap<BlockRewardData>,
         mergeset_non_daa: &BlockHashSet,
         parent_pool: PoolState,
+        visible_change: i128,
     ) -> CoinbaseResult<CoinbaseTransactionTemplate> {
         let mut outputs = Vec::with_capacity(ghostdag_data.mergeset_blues.len() + 1); // + 1 for possible red reward
 
@@ -123,13 +128,24 @@ impl CoinbaseManager {
         let base_total: u64 = mergeset_rewards.values().map(|r| r.base_fees).sum();
         let pool = zethora_fees::pool_step(parent_pool, base_total);
 
+        // Zethora supply ledger (ZTH-SPEC-006 §7.2): count every zet this coinbase creates or destroys
+        let mut issued = 0u64;
+        let mut unpaid = 0u64;
+
         // Add an output for each mergeset blue block (∩ DAA window), paying to the script reported by the block.
         // Note that combinatorically it is nearly impossible for a blue block to be non-DAA
         for blue in ghostdag_data.mergeset_blues.iter().filter(|h| !mergeset_non_daa.contains(h)) {
             let reward_data = mergeset_rewards.get(blue).unwrap();
+            issued += reward_data.subsidy;
             if reward_data.subsidy + reward_data.tips() > 0 {
                 outputs.push(TransactionOutput::new(reward_data.subsidy + reward_data.tips(), reward_data.script_public_key.clone()));
             }
+        }
+
+        // Zethora: a blue block outside the DAA window is paid nothing, so its tips are destroyed (counted as burned).
+        // Such a block may have no reward data at all (e.g. genesis in the very first virtual state): nothing is lost then.
+        for blue in ghostdag_data.mergeset_blues.iter().filter(|h| mergeset_non_daa.contains(h)) {
+            unpaid += mergeset_rewards.get(blue).map_or(0, |r| r.tips());
         }
 
         // Collect all rewards from mergeset reds ∩ DAA window and create a
@@ -142,6 +158,7 @@ impl CoinbaseManager {
                 red_reward += reward_data.tips();
             } else {
                 red_reward += reward_data.subsidy + reward_data.tips();
+                issued += reward_data.subsidy;
             }
         }
 
@@ -152,10 +169,16 @@ impl CoinbaseManager {
             outputs.push(TransactionOutput::new(red_reward, miner_data.script_public_key.clone()));
         }
 
+        // Zethora: build this block's supply ledger from what it really does, and refuse it if it does not balance
+        let coinbase_out: u64 = outputs.iter().map(|o| o.value).sum();
+        let flows = BlockFlows { issued, unpaid, visible_change, coinbase_out, ..Default::default() };
+        let ledger =
+            zethora_supply::ledger_step(parent_pool, pool.next, flows).map_err(|e| CoinbaseError::ZethoraSupply(e.to_string()))?;
+
         // Build the current block's payload
         let subsidy = self.calc_block_subsidy(daa_score);
         let payload =
-            self.serialize_coinbase_payload(&CoinbaseData { blue_score: ghostdag_data.blue_score, subsidy, pool: pool.next, miner_data })?;
+            self.serialize_coinbase_payload(&CoinbaseData { blue_score: ghostdag_data.blue_score, subsidy, pool: ledger, miner_data })?;
 
         Ok(CoinbaseTransactionTemplate {
             tx: Transaction::new(constants::TX_VERSION_TOCCATA, vec![], outputs, 0, subnets::SUBNETWORK_ID_COINBASE, 0, payload),
@@ -175,6 +198,9 @@ impl CoinbaseManager {
             .chain(data.subsidy.to_le_bytes().iter().copied())                                  // Subsidy                      (u64)
             .chain(data.pool.pool_balance.to_le_bytes().iter().copied())                        // Zethora: pool balance        (u64)
             .chain(data.pool.total_burned.to_le_bytes().iter().copied())                        // Zethora: total burned        (u64)
+            .chain(data.pool.total_issued.to_le_bytes().iter().copied())                        // Zethora: total issued        (u64)
+            .chain(data.pool.transparent_supply.to_le_bytes().iter().copied())                  // Zethora: transparent supply  (u64)
+            .chain(data.pool.shielded_balance.to_le_bytes().iter().copied())                    // Zethora: shielded balance    (u64)
             .chain(data.miner_data.script_public_key.version().to_le_bytes().iter().copied())   // Script public key version    (u16)
             .chain((script_pub_key_len as u8).to_le_bytes().iter().copied())                    // Script public key length     (u8)
             .chain(data.miner_data.script_public_key.script().iter().copied())                  // Script public key            
@@ -193,7 +219,7 @@ impl CoinbaseManager {
             ));
         }
 
-        // Keep only blue score, subsidy and the Zethora pool state. Note that truncate does not modify capacity, so
+        // Keep only blue score, subsidy and the Zethora supply ledger. Note that truncate does not modify capacity, so
         // the usual case where the payloads are the same size will not trigger a reallocation
         payload.truncate(LENGTH_OF_BLUE_SCORE + LENGTH_OF_SUBSIDY + LENGTH_OF_POOL_STATE);
         payload.extend(
@@ -221,6 +247,9 @@ impl CoinbaseManager {
         let subsidy = u64::from_le_bytes(parser.take(LENGTH_OF_SUBSIDY).try_into().unwrap());
         let pool_balance = u64::from_le_bytes(parser.take(8).try_into().unwrap());
         let total_burned = u64::from_le_bytes(parser.take(8).try_into().unwrap());
+        let total_issued = u64::from_le_bytes(parser.take(8).try_into().unwrap());
+        let transparent_supply = u64::from_le_bytes(parser.take(8).try_into().unwrap());
+        let shielded_balance = u64::from_le_bytes(parser.take(8).try_into().unwrap());
         let script_pub_key_version = u16::from_le_bytes(parser.take(LENGTH_OF_SCRIPT_PUB_KEY_VERSION).try_into().unwrap());
         let script_pub_key_len = u8::from_le_bytes(parser.take(LENGTH_OF_SCRIPT_PUB_KEY_LENGTH).try_into().unwrap());
 
@@ -245,7 +274,7 @@ impl CoinbaseManager {
         Ok(CoinbaseData {
             blue_score,
             subsidy,
-            pool: PoolState { pool_balance, total_burned },
+            pool: PoolState { pool_balance, total_burned, total_issued, transparent_supply, shielded_balance },
             miner_data: MinerData { script_public_key, extra_data },
         })
     }
@@ -560,7 +589,7 @@ mod tests {
         let data = CoinbaseData {
             blue_score: 56,
             subsidy: 44000000000,
-            pool: PoolState { pool_balance: 123, total_burned: 456 },
+            pool: PoolState { pool_balance: 123, total_burned: 456, total_issued: 789, transparent_supply: 10, shielded_balance: 11 },
             miner_data: MinerData {
                 script_public_key: ScriptPublicKey::new(0, ScriptVec::from_slice(&script_data)),
                 extra_data: &extra_data as &[u8],
@@ -584,7 +613,7 @@ mod tests {
         let data = CoinbaseData {
             blue_score: 56345,
             subsidy: 44000000000,
-            pool: PoolState { pool_balance: 7, total_burned: 8 },
+            pool: PoolState { pool_balance: 7, total_burned: 8, total_issued: 9, transparent_supply: 10, shielded_balance: 11 },
             miner_data: MinerData {
                 script_public_key: ScriptPublicKey::new(0, ScriptVec::from_slice(&script_data)),
                 extra_data: &extra_data,
@@ -618,8 +647,9 @@ mod tests {
         let mergeset_rewards = Default::default();
         let mergeset_non_daa = Default::default();
 
-        let tx = cbm.expected_coinbase_transaction(100, miner_data, &ghostdag_data, &mergeset_rewards, &mergeset_non_daa, PoolState::default())
-                .unwrap();
+        let tx = cbm
+            .expected_coinbase_transaction(100, miner_data, &ghostdag_data, &mergeset_rewards, &mergeset_non_daa, PoolState::default(), 0)
+            .unwrap();
 
         assert_eq!(tx.tx.version, constants::TX_VERSION_TOCCATA);
     }

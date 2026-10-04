@@ -151,6 +151,9 @@ pub enum RuleError {
     #[error("coinbase transaction is not built as expected")]
     BadCoinbaseTransaction,
 
+    #[error("Zethora supply check failed: {0}")]
+    ZethoraSupplyMismatch(String),
+
     #[error("{0} non-coinbase transactions (out of {1}) are invalid in UTXO context")]
     InvalidTransactionsInUtxoContext(usize, usize),
 

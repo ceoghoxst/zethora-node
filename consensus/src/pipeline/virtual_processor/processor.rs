@@ -1434,8 +1434,12 @@ impl VirtualStateProcessor {
                 &virtual_state.mergeset_rewards,
                 &virtual_state.mergeset_non_daa,
                 self.pool_state_of(virtual_state.ghostdag_data.selected_parent),
+                self.visible_change_of(&virtual_state.utxo_diff, virtual_state.ghostdag_data.selected_parent),
             )
-            .unwrap();
+            .map_err(|e| match e {
+                kaspa_consensus_core::errors::coinbase::CoinbaseError::ZethoraSupply(reason) => RuleError::ZethoraSupplyMismatch(reason),
+                other => panic!("unexpected coinbase error: {other}"),
+            })?;
         txs.insert(0, coinbase.tx);
         let version = self.block_version;
         assert_eq!(virtual_state.ghostdag_data.selected_parent, virtual_state.parents[0]);

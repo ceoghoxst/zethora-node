@@ -13,13 +13,23 @@ impl<T: AsRef<[u8]>> MinerData<T> {
     }
 }
 
-/// Zethora fee pool state, carried in every coinbase payload along the selected chain (ZTH-SPEC-008).
+/// Zethora supply ledger, carried in every coinbase payload along the selected chain
+/// (fee pool: ZTH-SPEC-008; supply check and turnstile: ZTH-SPEC-006 §7.1-7.2).
+///
+/// All values describe the moment after this block's coinbase is counted, and every block must satisfy:
+///     transparent_supply + pool_balance + total_burned + shielded_balance == total_issued
 #[derive(PartialEq, Eq, Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct PoolState {
     /// Zets currently held in the fee pool (controlled by no key).
     pub pool_balance: u64,
     /// Total zets ever burned (SPEC-001 §15.2).
     pub total_burned: u64,
+    /// Total zets ever created by block rewards (paid out so far).
+    pub total_issued: u64,
+    /// Zets held in ordinary (visible) coins.
+    pub transparent_supply: u64,
+    /// Zets inside the private pool: its public turnstile balance. Always 0 until private transactions exist.
+    pub shielded_balance: u64,
 }
 
 #[derive(PartialEq, Eq, Debug)]
