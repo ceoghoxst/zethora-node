@@ -8,9 +8,77 @@
 //!     coins are added, which is why every node must add them in the same order (SPEC-006 §6.1).
 
 use incrementalmerkletree::frontier::Frontier;
-use orchard::{circuit::OrchardCircuitVersion, note::ExtractedNoteCommitment, tree::MerkleHashOrchard};
+use orchard::{
+    Bundle,
+    bundle::{Authorized, BundleVersion, TxVersion},
+    circuit::{OrchardCircuitVersion, VerifyingKey},
+    note::ExtractedNoteCommitment,
+    tree::MerkleHashOrchard,
+};
 
 pub use orchard;
+
+pub mod codec;
+
+/// Private pool versions this node understands (ZTH-SPEC-006 §7.4). Each version has its own coin list,
+/// spent-coin tags and public balance, so a pool can be retired and replaced if a bug is ever found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SupportedPool {
+    /// Zethora pool 1: Orchard actions with Zcash's fixed circuit (Zcash calls this bundle version "orchard v2").
+    Orchard1 = 1,
+}
+
+impl SupportedPool {
+    pub fn from_byte(b: u8) -> Result<Self, codec::DecodeError> {
+        match b {
+            1 => Ok(SupportedPool::Orchard1),
+            v => Err(codec::DecodeError::UnknownPoolVersion(v)),
+        }
+    }
+
+    pub fn bundle_version(self) -> BundleVersion {
+        match self {
+            SupportedPool::Orchard1 => BundleVersion::orchard_v2(),
+        }
+    }
+}
+
+/// What a private payment's signatures sign: the rest of the Zethora transaction (`tx_digest`)
+/// together with the private payment's own effects (`bundle_commitment`). This ties a private
+/// payment to its transaction, so it cannot be cut out and attached to another one.
+pub fn sighash(tx_digest: &[u8; 32], bundle_commitment: [u8; 32]) -> [u8; 32] {
+    let hash = blake2b_simd::Params::new()
+        .hash_length(32)
+        .personal(b"ZethoraShieldSig")
+        .to_state()
+        .update(tx_digest)
+        .update(&bundle_commitment)
+        .finalize();
+    hash.as_bytes().try_into().expect("32-byte hash")
+}
+
+/// Why a node refused a private payment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerifyError {
+    /// A spend signature is wrong (index of the action).
+    SpendSignature(usize),
+    /// The signature that proves the values add up is wrong.
+    BindingSignature,
+    /// The zero-knowledge proof is wrong.
+    Proof,
+}
+
+/// Checks a private payment the way a node will: signatures first (cheap), then the proof (expensive).
+pub fn verify_payment(bundle: &Bundle<Authorized, i64>, vk: &VerifyingKey, tx_digest: &[u8; 32]) -> Result<(), VerifyError> {
+    let commitment = bundle.commitment(TxVersion::V5).expect("pool 1 bundles are always committable as v5");
+    let sighash = sighash(tx_digest, commitment.into());
+    for (i, action) in bundle.actions().iter().enumerate() {
+        action.rk().verify(&sighash, action.authorization()).map_err(|_| VerifyError::SpendSignature(i))?;
+    }
+    bundle.binding_validating_key().verify(&sighash, bundle.authorization().binding_signature()).map_err(|_| VerifyError::BindingSignature)?;
+    bundle.verify_proof(vk).map_err(|_| VerifyError::Proof)
+}
 
 /// The only Orchard circuit Zethora accepts: Zcash's fixed circuit (after CVE-2026-54496).
 pub const CIRCUIT: OrchardCircuitVersion = OrchardCircuitVersion::FixedPostNu6_2;

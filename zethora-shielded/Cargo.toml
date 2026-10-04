@@ -10,6 +10,9 @@ license.workspace = true
 # Includes the fixed circuit for CVE-2026-54496 (halo2_gadgets >= 0.5.0). MIT OR Apache-2.0.
 orchard = { git = "https://github.com/zcash/orchard", rev = "616a669df8c9a59c33d47064d3ce04b25d026b2e" }
 incrementalmerkletree = "0.9"
+blake2b_simd = "1"
+nonempty = "0.11"
+subtle = "2.6"
 
 [dev-dependencies]
 rand = { version = "0.10", features = ["chacha", "std", "std_rng", "sys_rng", "thread_rng"] }

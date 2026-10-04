@@ -17,7 +17,14 @@ use rand::{rand_core::UnwrapErr, rngs::SysRng};
 use shardtree::{ShardTree, store::memory::MemoryShardStore};
 use std::sync::OnceLock;
 use zcash_note_encryption::try_note_decryption;
-use zethora_shielded::{CIRCUIT, NoteCommitmentTree, pool_flows};
+use zethora_shielded::{
+    CIRCUIT, NoteCommitmentTree, SupportedPool, VerifyError,
+    codec::{self, DecodeError},
+    pool_flows, sighash, verify_payment,
+};
+
+/// Stand-in for the digest of the rest of the Zethora transaction that carries the private payment.
+const TX: [u8; 32] = [42; 32];
 
 #[allow(non_upper_case_globals)]
 const OsRng: UnwrapErr<SysRng> = UnwrapErr(SysRng);
@@ -32,15 +39,9 @@ fn verifying_key() -> &'static VerifyingKey {
     VK.get_or_init(|| VerifyingKey::build(CIRCUIT))
 }
 
-/// Full node-side check of a private transaction: proof, spend signatures and binding signature.
+/// Full node-side check of a private payment inside transaction `TX`.
 fn node_accepts(bundle: &Bundle<Authorized, i64>) -> bool {
-    if bundle.verify_proof(verifying_key()).is_err() {
-        return false;
-    }
-    let sighash: [u8; 32] = bundle.commitment(TxVersion::V5).expect("representable flags").into();
-    let spends_ok = bundle.actions().iter().all(|a| a.rk().verify(&sighash, a.authorization()).is_ok());
-    let binding_ok = bundle.binding_validating_key().verify(&sighash, bundle.authorization().binding_signature()).is_ok();
-    spends_ok && binding_ok
+    verify_payment(bundle, verifying_key(), &TX).is_ok()
 }
 
 fn instances(bundle: &Bundle<Authorized, i64>) -> Vec<Instance> {
@@ -79,7 +80,7 @@ fn make_payments() -> Payments {
         let mut builder = Builder::new(BundleType::DEFAULT, BundleVersion::orchard_v2(), Flags::SPENDS_DISABLED, empty_anchor).unwrap();
         builder.add_output(None, me, NoteValue::from_raw(5_000), [0u8; 512]).unwrap();
         let (unauthorized, _) = builder.build::<i64>(&mut rng).unwrap().unwrap();
-        let sighash = unauthorized.commitment(TxVersion::V5).expect("representable flags").into();
+        let sighash = sighash(&TX, unauthorized.commitment(TxVersion::V5).expect("representable flags").into());
         unauthorized.create_proof(proving_key(), &mut rng).unwrap().apply_signatures(rng, sighash, &[]).unwrap()
     };
 
@@ -102,7 +103,7 @@ fn make_payments() -> Payments {
         builder.add_spend(fvk, note, path).unwrap();
         builder.add_output(None, me, NoteValue::from_raw(3_000), [0u8; 512]).unwrap();
         let (unauthorized, _) = builder.build::<i64>(&mut rng).unwrap().unwrap();
-        let sighash = unauthorized.commitment(TxVersion::V5).expect("representable flags").into();
+        let sighash = sighash(&TX, unauthorized.commitment(TxVersion::V5).expect("representable flags").into());
         unauthorized
             .create_proof(proving_key(), &mut rng)
             .unwrap()
@@ -182,4 +183,97 @@ fn same_order_same_tree_different_order_different_tree() {
     assert_eq!(node_a.size(), 4);
     assert_eq!(node_a.root(), node_b.root(), "same order: nodes agree");
     assert_ne!(node_a.root(), node_c.root(), "different order: nodes disagree, so consensus must fix the order");
+}
+
+// ---- Byte format (codec) -------------------------------------------------------------------------
+
+/// Where fields sit in an encoded payment with `n` actions.
+fn value_balance_offset(n: usize) -> usize {
+    1 + 2 + n * codec::ACTION_SIZE + 1
+}
+fn proof_len_offset(n: usize) -> usize {
+    value_balance_offset(n) + 8 + 32
+}
+
+#[test]
+fn bytes_round_trip_and_still_verify() {
+    let p = payments();
+    for bundle in [&p.shield, &p.unshield] {
+        let n = bundle.actions().len();
+        let bytes = codec::encode(bundle, SupportedPool::Orchard1);
+        assert_eq!(bytes.len(), codec::encoded_size(n));
+        let (decoded, pool) = codec::decode(&bytes).expect("own encoding decodes");
+        assert_eq!(pool, SupportedPool::Orchard1);
+        assert_eq!(codec::encode(&decoded, pool), bytes, "re-encoding gives the same bytes");
+        assert!(node_accepts(&decoded), "decoded payment still verifies");
+    }
+    // A normal 2-action private payment is about 9.1 KB, as in ZTH-SPEC-006 §4
+    assert_eq!(codec::encoded_size(2), 9_144);
+}
+
+#[test]
+fn changing_the_amount_breaks_the_signatures() {
+    let p = payments();
+    let mut bytes = codec::encode(&p.unshield, SupportedPool::Orchard1);
+    let at = value_balance_offset(p.unshield.actions().len());
+    bytes[at] ^= 0x01; // 2,000 zets out of the pool becomes 2,001
+    let (tampered, _) = codec::decode(&bytes).expect("still well-formed");
+    assert_eq!(*tampered.value_balance(), 2_001);
+    assert!(verify_payment(&tampered, verifying_key(), &TX).is_err(), "a changed amount must be rejected");
+}
+
+#[test]
+fn changing_the_proof_is_caught_by_the_proof_check() {
+    let p = payments();
+    let mut bytes = codec::encode(&p.shield, SupportedPool::Orchard1);
+    let at = proof_len_offset(p.shield.actions().len()) + 4 + 100;
+    bytes[at] ^= 0x01;
+    let (tampered, _) = codec::decode(&bytes).expect("still well-formed");
+    assert_eq!(verify_payment(&tampered, verifying_key(), &TX), Err(VerifyError::Proof));
+}
+
+#[test]
+fn payment_cannot_be_moved_to_another_transaction() {
+    let p = payments();
+    let other_tx = [43u8; 32];
+    assert!(verify_payment(&p.shield, verifying_key(), &other_tx).is_err());
+    assert!(verify_payment(&p.unshield, verifying_key(), &other_tx).is_err());
+}
+
+#[test]
+fn malformed_bytes_are_rejected() {
+    let p = payments();
+    let good = codec::encode(&p.shield, SupportedPool::Orchard1);
+    let n = p.shield.actions().len();
+
+    let mut cut = good.clone();
+    cut.pop();
+    assert_eq!(codec::decode(&cut).unwrap_err(), DecodeError::Truncated);
+
+    let mut extra = good.clone();
+    extra.push(0);
+    assert_eq!(codec::decode(&extra).unwrap_err(), DecodeError::TrailingBytes(1));
+
+    let mut pool = good.clone();
+    pool[0] = 2;
+    assert_eq!(codec::decode(&pool).unwrap_err(), DecodeError::UnknownPoolVersion(2));
+
+    let mut zero = good.clone();
+    zero[1] = 0;
+    zero[2] = 0;
+    assert_eq!(codec::decode(&zero).unwrap_err(), DecodeError::BadActionCount(0));
+
+    let mut many = good.clone();
+    many[1] = 17;
+    many[2] = 0;
+    assert_eq!(codec::decode(&many).unwrap_err(), DecodeError::BadActionCount(17));
+
+    // A padded proof (the Zcash 2026 non-canonical proof size issue) is refused before any checking
+    let mut padded = good.clone();
+    let at = proof_len_offset(n);
+    let len = u32::from_le_bytes(padded[at..at + 4].try_into().unwrap()) + 1;
+    padded[at..at + 4].copy_from_slice(&len.to_le_bytes());
+    assert!(matches!(codec::decode(&padded).unwrap_err(), DecodeError::BadProofLength { .. }));
+
+    assert_eq!(codec::decode(&[]).unwrap_err(), DecodeError::Truncated);
 }
