@@ -1,0 +1,17 @@
+[package]
+name = "zethora-shielded"
+description = "Zethora private pool building blocks on Zcash Orchard (ZTH-SPEC-006). Not wired into consensus yet."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# Zcash Orchard 0.16.0, pinned to the exact release commit benchmarked on the reference PC (Oct 3, 2026).
+# Includes the fixed circuit for CVE-2026-54496 (halo2_gadgets >= 0.5.0). MIT OR Apache-2.0.
+orchard = { git = "https://github.com/zcash/orchard", rev = "616a669df8c9a59c33d47064d3ce04b25d026b2e" }
+incrementalmerkletree = "0.9"
+
+[dev-dependencies]
+rand = { version = "0.10", features = ["chacha", "std", "std_rng", "sys_rng", "thread_rng"] }
+shardtree = "0.8"
+zcash_note_encryption = "0.5.1"
