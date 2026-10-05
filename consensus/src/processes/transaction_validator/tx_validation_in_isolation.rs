@@ -154,6 +154,10 @@ fn check_private_payment(tx: &Transaction, spends_enabled: bool) -> TxResult<()>
         return Ok(());
     };
     let invalid = TxRuleError::InvalidPrivatePayment;
+    // Fails its own proof or signatures: no honest node relays these, so the sending peer gets banned (ZTH-SPEC-006
+    // §8.3). Format errors stay plain refusals: they are cheap to catch, and after a future pool upgrade an honest
+    // newer node could send a format an older node can't read yet.
+    let forged = TxRuleError::InvalidPrivatePaymentProof;
     if !tx.subnetwork_id.is_native() {
         return Err(invalid("private payments must use the native subnetwork".to_string()));
     }
@@ -161,8 +165,9 @@ fn check_private_payment(tx: &Transaction, spends_enabled: bool) -> TxResult<()>
     // No spent-coin tag may appear twice inside one payment (ZTH-SPEC-006 §6.3)
     let mut seen = std::collections::HashSet::new();
     if !bundle.actions().iter().all(|a| seen.insert(a.nullifier().to_bytes())) {
-        return Err(invalid("the same private coin tag appears twice in one payment".to_string()));
+        return Err(forged("the same private coin tag appears twice in one payment".to_string()));
     }
+    // Network switches stay plain refusals (no ban); they are cheap and checked before the expensive proof
     if !spends_enabled && bundle.flags().spends_enabled() {
         return Err(invalid("spending private coins is switched off on this network (ZTH-SPEC-006 §7.3)".to_string()));
     }
@@ -171,7 +176,7 @@ fn check_private_payment(tx: &Transaction, spends_enabled: bool) -> TxResult<()>
     }
     let digest = kaspa_consensus_core::hashing::tx::zethora_private_payment_digest(tx);
     zethora_shielded::verify_payment(&bundle, private_payment_verifying_key(), &digest.as_bytes())
-        .map_err(|e| invalid(format!("{e:?}")))
+        .map_err(|e| forged(format!("{e:?}")))
 }
 
 fn check_gas(tx: &Transaction) -> TxResult<()> {
@@ -416,7 +421,7 @@ mod tests {
         assert_match!(tv.validate_tx_in_isolation(&tx), Err(TxRuleError::NoTxInputs));
         tx.payload = fake_private(1_000);
         assert_match!(tv.check_transaction_inputs_count(&tx), Ok(()));
-        // ... and it still has to be a real private payment (this fake one is not)
+        // ... and it still has to be a real private payment (this fake one can't even be read: a plain refusal)
         assert_match!(tv.validate_tx_in_isolation(&tx), Err(TxRuleError::InvalidPrivatePayment(_)));
 
         let mut tx = valid_tx.clone();
@@ -601,7 +606,7 @@ mod zethora_private_payment_tests {
         // Change the visible part (send more to the output): the private payment no longer matches
         let mut moved = tx.clone();
         moved.outputs[0].value += 1;
-        assert!(matches!(check_private_payment(&moved, false), Err(TxRuleError::InvalidPrivatePayment(_))));
+        assert!(matches!(check_private_payment(&moved, false), Err(TxRuleError::InvalidPrivatePaymentProof(_))));
 
         // Changing only signature scripts does not affect it (they are signed separately)
         let mut resigned = tx.clone();
@@ -617,7 +622,7 @@ mod zethora_private_payment_tests {
         assert_eq!(check_private_payment(&tx, false), Ok(()));
         let mut moved = tx.clone();
         moved.outputs[0].value += 1;
-        assert!(matches!(check_private_payment(&moved, true), Err(TxRuleError::InvalidPrivatePayment(_))));
+        assert!(matches!(check_private_payment(&moved, true), Err(TxRuleError::InvalidPrivatePaymentProof(_))));
     }
 
     /// A fully private payment (ZTH-SPEC-006 §9): no visible input or output; `fee` zets leave the private pool
@@ -660,6 +665,7 @@ mod zethora_private_payment_tests {
         assert!(matches!(tv.check_transaction_inputs_count(&locked), Err(TxRuleError::InvalidPrivatePayment(_))));
         // Real proof and signatures, bound to this (empty) visible part; spends must be switched on for the network
         assert_eq!(check_private_payment(&tx, true), Ok(()));
+        // Spends switched off: a plain refusal, not a ban (nodes on different rule versions may disagree)
         assert!(matches!(check_private_payment(&tx, false), Err(TxRuleError::InvalidPrivatePayment(_))));
 
         // The fee is what leaves the pool: nothing visible in, nothing visible out
@@ -683,13 +689,14 @@ mod zethora_private_payment_tests {
             script_public_key: ScriptPublicKey::new(0, scriptvec![0x51]),
             covenant: None,
         });
-        assert!(matches!(check_private_payment(&stolen, true), Err(TxRuleError::InvalidPrivatePayment(_))));
+        assert!(matches!(check_private_payment(&stolen, true), Err(TxRuleError::InvalidPrivatePaymentProof(_))));
     }
 
     #[test]
     fn garbage_after_the_marker_is_rejected() {
         let mut tx = base_tx();
         tx.payload = PRIVATE_PAYMENT_MAGIC.iter().copied().chain([1u8, 2, 0, 9, 9]).collect();
+        // Unreadable: refused, but no ban (a newer node could send a format this node doesn't know yet)
         assert!(matches!(check_private_payment(&tx, false), Err(TxRuleError::InvalidPrivatePayment(_))));
     }
 }

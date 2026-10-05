@@ -32,13 +32,22 @@ Repo: github.com/ceoghoxst/zethora-node, branch `zethora` (a rusty-kaspa fork). 
    Storage mass with zero inputs = outputs' harmonic part (no divide by zero). Wallet `send`/`unshield` are now fully
    private; `attack` has 3 checks (counterfeit, same coin twice at once -> mempool, same coin after it landed -> chain).
    Shielding still pays its fee from a visible coin (it has to: value enters the pool). No stored-state change.
+8. Ban peers relaying forged private payments (SPEC-006 §8.3): new TxRuleError::InvalidPrivatePaymentProof only when the
+   proof/signatures fail or a coin tag repeats inside one payment. The tx relay flow checks a peer's private payments in
+   groups of 8 (after its ordinary txs), and at the first forged one bans the peer's IP for 24h (address manager;
+   --connect/--addpeer peers exempt) and disconnects. No ban for: unreadable bytes (a newer node's format after an
+   upgrade), chain-dependent refusals (coin spent, snapshot too recent), network switches (spends off, lock time).
+   Only unit-tested: a live test needs a deliberately evil peer.
 
 ## Known gaps / next steps
 - ANCHOR_DEPTH 600 assumes ~1 block/s; scale with real block rate before testnet.
 - Pruning-point sync of shielded state not supported (node halts with a message).
 - Fully private payments can't be fee-bumped yet (no visible input to replace by fee; the mempool refuses a re-send
   that reuses the coin tags). Needs RBF keyed on coin tags.
-- SPEC-006 §8.3 not done: peers relaying invalid proofs are not banned yet (needed before testnet).
+- Blocks carrying a forged private payment get their peer disconnected (Kaspa default) but not banned.
+- Banning by IP: two nodes on one PC share 127.0.0.1, so a ban there hits both. Fine for devnet.
+- Before testnet: outbound dialing doesn't skip banned IPs (address gossip can bring one back); bans are per IP only;
+  proof checks run under the virtual-state read lock (move them out); forged blocks are cheap on devnet PoW.
 - Needs a human crypto reviewer before private sending reaches a public network, then a professional audit before launch.
 - Miner app ideas (demos only, not linked to the real miner): "Raven Room" (pixel room + mine) and "Zethora Miner"
   (GoMining-style rig app). Rule: upgrades are earned/cosmetic; never pay to mine more ZTHR (fair launch).

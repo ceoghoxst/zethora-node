@@ -115,6 +115,14 @@ pub enum TxRuleError {
 
     #[error("invalid private payment: {0}")]
     InvalidPrivatePayment(String),
+
+    /// Zethora: a private payment whose proof or signatures fail, or that repeats a coin tag inside itself. No honest
+    /// node ever relays one (it checks the same thing first), so the peer that sent it is disconnected and banned
+    /// (ZTH-SPEC-006 §8.3). Everything else stays `InvalidPrivatePayment` (no ban): chain-dependent failures (coin
+    /// already spent, coin list snapshot too recent) can happen to an honest peer in a race, and unreadable bytes
+    /// could come from an honest newer node after a future format upgrade.
+    #[error("invalid private payment (bad proof or signatures): {0}")]
+    InvalidPrivatePaymentProof(String),
 }
 
 #[derive(Error, Debug, Clone, PartialEq, Eq)]

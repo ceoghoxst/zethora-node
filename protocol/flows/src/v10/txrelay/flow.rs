@@ -42,6 +42,9 @@ impl Response {
 
 /// Flow listening to InvTransactions messages, requests their corresponding transactions if they
 /// are missing, adds them to the mempool and propagates them to the rest of the network.
+/// Zethora: how many private payments from one peer are proof-checked together before looking for a forged one.
+const PRIVATE_PAYMENTS_PER_CHECK: usize = 8;
+
 pub struct RelayTransactionsFlow {
     ctx: FlowContext,
     router: Arc<Router>,
@@ -226,12 +229,41 @@ impl RelayTransactionsFlow {
                 transactions.push(transaction);
             }
         }
-        let insert_results = self
+        // Zethora (ZTH-SPEC-006 §8.3): private payments cost a proof check each, so check them in small groups after the
+        // ordinary transactions, and stop at the first forged one. That bounds the work a lying peer can cause to one
+        // small group before it is banned.
+        let (private, ordinary): (Vec<Transaction>, Vec<Transaction>) = transactions
+            .into_iter()
+            .partition(|tx| kaspa_consensus_core::zethora_private::private_payment_bytes(&tx.payload).is_some());
+        let mut insert_results = self
             .ctx
             .mining_manager()
             .clone()
-            .validate_and_insert_transaction_batch(&consensus, transactions, Priority::Low, Orphan::Allowed, RbfPolicy::Allowed)
+            .validate_and_insert_transaction_batch(&consensus, ordinary, Priority::Low, Orphan::Allowed, RbfPolicy::Allowed)
             .await;
+        for group in private.chunks(PRIVATE_PAYMENTS_PER_CHECK) {
+            let group_results = self
+                .ctx
+                .mining_manager()
+                .clone()
+                .validate_and_insert_transaction_batch(&consensus, group.to_vec(), Priority::Low, Orphan::Allowed, RbfPolicy::Allowed)
+                .await;
+            for res in group_results.iter() {
+                if let Err(MiningManagerError::MempoolError(err)) = res
+                    && err.is_forged_private_payment()
+                {
+                    // A private payment whose proof or signatures fail. Our own node checks this before relaying, so an
+                    // honest peer never sends one: disconnect and ban this peer's IP (24 hours; peers added with
+                    // --connect / --addpeer are never banned).
+                    warn!("Banning peer {} for relaying a forged private payment: {}", self.router, err);
+                    if let Some(connection_manager) = self.ctx.connection_manager() {
+                        connection_manager.ban(self.router.net_address().ip()).await;
+                    }
+                    return Err(ProtocolError::MisbehavingPeer(format!("relayed a forged private payment: {err}")));
+                }
+            }
+            insert_results.extend(group_results);
+        }
 
         for res in insert_results.iter() {
             match res {

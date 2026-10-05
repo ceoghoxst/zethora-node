@@ -119,6 +119,15 @@ impl From<TxRuleError> for RuleError {
     }
 }
 
+impl RuleError {
+    /// Zethora: the transaction carries a private payment whose proof or signatures fail (or that repeats a coin tag).
+    /// An honest node checks this before relaying, so a peer that sends one is misbehaving and gets banned
+    /// (ZTH-SPEC-006 §8.3). Chain-dependent refusals (coin already spent, snapshot too recent) are not included.
+    pub fn is_forged_private_payment(&self) -> bool {
+        matches!(self, RuleError::RejectTxRule(TxRuleError::InvalidPrivatePaymentProof(_)))
+    }
+}
+
 pub type RuleResult<T> = std::result::Result<T, RuleError>;
 
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
@@ -175,3 +184,19 @@ impl NonStandardError {
 }
 
 pub type NonStandardResult<T> = std::result::Result<T, NonStandardError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_self_broken_private_payments_get_a_peer_banned() {
+        let forged: RuleError = TxRuleError::InvalidPrivatePaymentProof("bad proof".to_string()).into();
+        assert!(forged.is_forged_private_payment());
+        // Can happen to an honest peer in a race: the coin got spent in a block it had not seen yet
+        let raced: RuleError = TxRuleError::InvalidPrivatePayment("private coin already spent".to_string()).into();
+        assert!(!raced.is_forged_private_payment());
+        assert!(!RuleError::RejectMissingOutpoint.is_forged_private_payment());
+        assert!(!RuleError::RejectNonStandard(Default::default(), "low fee".to_string()).is_forged_private_payment());
+    }
+}
