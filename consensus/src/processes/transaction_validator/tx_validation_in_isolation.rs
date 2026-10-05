@@ -77,8 +77,14 @@ impl TransactionValidator {
     }
 
     fn check_transaction_inputs_count(&self, tx: &Transaction) -> TxResult<()> {
-        if !tx.is_coinbase() && tx.inputs.is_empty() {
+        // Zethora: a fully private payment pays its fee from private coins and needs no visible input (ZTH-SPEC-006 §9).
+        // Its spends are checked like any other private payment: proof, unspent coin tags, matured coin list snapshot.
+        if !tx.is_coinbase() && tx.inputs.is_empty() && !kaspa_consensus_core::zethora_private::pays_from_private_pool(&tx.payload) {
             return Err(TxRuleError::NoTxInputs);
+        }
+        // With no inputs there are no sequence numbers, so a lock time could never be enforced: require none at all.
+        if !tx.is_coinbase() && tx.inputs.is_empty() && tx.lock_time != 0 {
+            return Err(TxRuleError::InvalidPrivatePayment("a payment with no visible coin must have lock time 0".to_string()));
         }
 
         if tx.inputs.len() > self.max_tx_inputs {
@@ -392,6 +398,27 @@ mod tests {
         tx.inputs = vec![];
         assert_match!(tv.validate_tx_in_isolation(&tx), Err(TxRuleError::NoTxInputs));
 
+        // Zethora: no visible input is allowed only for a private payment that pays from the private pool
+        let fake_private = |value_balance: i64| {
+            let mut payload = kaspa_consensus_core::zethora_private::PRIVATE_PAYMENT_MAGIC.to_vec();
+            payload.push(1); // pool version
+            payload.extend_from_slice(&2u16.to_le_bytes());
+            payload.extend(std::iter::repeat_n(0u8, 2 * kaspa_consensus_core::zethora_private::ACTION_SIZE));
+            payload.push(0b11); // flags
+            payload.extend_from_slice(&value_balance.to_le_bytes());
+            payload
+        };
+        let mut tx = valid_tx.clone();
+        tx.inputs = vec![];
+        tx.payload = fake_private(0);
+        assert_match!(tv.validate_tx_in_isolation(&tx), Err(TxRuleError::NoTxInputs));
+        tx.payload = fake_private(-5_000);
+        assert_match!(tv.validate_tx_in_isolation(&tx), Err(TxRuleError::NoTxInputs));
+        tx.payload = fake_private(1_000);
+        assert_match!(tv.check_transaction_inputs_count(&tx), Ok(()));
+        // ... and it still has to be a real private payment (this fake one is not)
+        assert_match!(tv.validate_tx_in_isolation(&tx), Err(TxRuleError::InvalidPrivatePayment(_)));
+
         let mut tx = valid_tx.clone();
         tx.inputs = (0..params.max_tx_inputs + 1).map(|_| valid_tx.inputs[0].clone()).collect();
         assert_match!(tv.validate_tx_in_isolation(&tx), Err(TxRuleError::TooManyInputs(_, _)));
@@ -540,7 +567,8 @@ mod zethora_private_payment_tests {
             sequence: 0,
             compute_commit: ComputeCommit::SigopCount(1.into()),
         };
-        let output = TransactionOutput { value: 1_000_000, script_public_key: ScriptPublicKey::new(0, scriptvec![0x51]), covenant: None };
+        let output =
+            TransactionOutput { value: 1_000_000, script_public_key: ScriptPublicKey::new(0, scriptvec![0x51]), covenant: None };
         Transaction::new_non_finalized(TX_VERSION, vec![input], vec![output], 0, SUBNETWORK_ID_NATIVE, 0, vec![])
     }
 
@@ -590,6 +618,72 @@ mod zethora_private_payment_tests {
         let mut moved = tx.clone();
         moved.outputs[0].value += 1;
         assert!(matches!(check_private_payment(&moved, true), Err(TxRuleError::InvalidPrivatePayment(_))));
+    }
+
+    /// A fully private payment (ZTH-SPEC-006 §9): no visible input or output; `fee` zets leave the private pool
+    /// as the network fee. The coin it spends comes from a shield in a coin list the test builds itself.
+    fn fully_private_tx(fee: u64) -> Transaction {
+        use zethora_shielded::scan::Scanner;
+        let (me, friend) = (PrivateWallet::from_seed(&[5; 32]), PrivateWallet::friend_of(&[5; 32]));
+        let (me_address, friend_address) = (me.address(), friend.address());
+        let mut scanner = Scanner::new(vec![me, friend]);
+        scanner.add_payment(&shielding_payment(me_address, 50_000, &[0; 32]).unwrap()).unwrap();
+        scanner.checkpoint().unwrap();
+        let coins = scanner.pick_coins(0, 50_000).unwrap();
+        let mut tx = Transaction::new_non_finalized(TX_VERSION, vec![], vec![], 0, SUBNETWORK_ID_NATIVE, 0, vec![]);
+        let digest = zethora_private_payment_digest(&tx);
+        let payment =
+            scanner.spend_payment(0, &coins, &[(friend_address, 30_000), (me_address, 20_000 - fee)], &digest.as_bytes()).unwrap();
+        tx.payload = PRIVATE_PAYMENT_MAGIC.iter().copied().chain(payment).collect();
+        tx.finalize();
+        tx
+    }
+
+    #[test]
+    fn fully_private_payment_needs_no_visible_coin() {
+        let tv = crate::processes::transaction_validator::TransactionValidator::new_for_tests(
+            1000,
+            1000,
+            10_000,
+            150,
+            150,
+            100,
+            18,
+            Default::default(),
+        );
+        let tx = fully_private_tx(1_000);
+        assert!(tx.inputs.is_empty() && tx.outputs.is_empty());
+        assert!(kaspa_consensus_core::zethora_private::pays_from_private_pool(&tx.payload));
+        assert_eq!(tv.check_transaction_inputs_count(&tx), Ok(()));
+        let mut locked = tx.clone();
+        locked.lock_time = 5;
+        assert!(matches!(tv.check_transaction_inputs_count(&locked), Err(TxRuleError::InvalidPrivatePayment(_))));
+        // Real proof and signatures, bound to this (empty) visible part; spends must be switched on for the network
+        assert_eq!(check_private_payment(&tx, true), Ok(()));
+        assert!(matches!(check_private_payment(&tx, false), Err(TxRuleError::InvalidPrivatePayment(_))));
+
+        // The fee is what leaves the pool: nothing visible in, nothing visible out
+        let populated = kaspa_consensus_core::tx::PopulatedTransaction::new(&tx, vec![]);
+        let fee = tv
+            .validate_populated_transaction_and_get_fee(
+                &populated,
+                1_000,
+                1_000,
+                crate::processes::transaction_validator::tx_validation_in_utxo_context::TxValidationFlags::Full,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(fee, 1_000);
+
+        // Nobody can redirect the fee: adding a visible output breaks the private payment's signatures
+        let mut stolen = tx.clone();
+        stolen.outputs.push(TransactionOutput {
+            value: 1_000,
+            script_public_key: ScriptPublicKey::new(0, scriptvec![0x51]),
+            covenant: None,
+        });
+        assert!(matches!(check_private_payment(&stolen, true), Err(TxRuleError::InvalidPrivatePayment(_))));
     }
 
     #[test]

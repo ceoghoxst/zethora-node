@@ -33,7 +33,8 @@ pub fn hash_pre_crescendo(tx: &Transaction) -> Hash {
 /// Zethora (ZTH-SPEC-006): digest of everything in a transaction except signature scripts, mass
 /// commitments and the payload. A private payment (carried in the payload) signs this digest, so it is
 /// bound to the rest of its transaction and cannot be moved to another one. The transparent inputs'
-/// signatures in turn cover the payload, so the two sides lock each other in.
+/// signatures in turn cover the payload, so the two sides lock each other in. A fully private payment has no
+/// transparent inputs: its own signatures over this digest and its bundle are then the only binding, and enough.
 pub fn zethora_private_payment_digest(tx: &Transaction) -> Hash {
     let mut hasher = kaspa_hashes::TransactionID::new();
     write_transaction(

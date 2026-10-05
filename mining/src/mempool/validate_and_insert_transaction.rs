@@ -149,6 +149,7 @@ impl Mempool {
     /// The one exception is replace by fee: when RBF is permitted, the transactions this one replaces (it double spends
     /// one of their visible outputs) leave the mempool before it enters, so it may reuse their private coin tags. That
     /// lets a wallet raise the fee of a stuck private payment by re-sending it with the same visible fee input.
+    /// A fully private payment (no visible input) can't be fee-bumped this way yet: a re-send is refused.
     /// Must run before `execute_replace_by_fee`, so a refusal here removes nothing from the mempool.
     fn check_zethora_nullifier_conflicts(&self, transaction: &MutableTransaction, rbf_policy: RbfPolicy) -> RuleResult<()> {
         let conflicts = self.transaction_pool.get_nullifier_conflicts(transaction);

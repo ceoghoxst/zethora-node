@@ -50,6 +50,13 @@ pub fn pool_flows(payload: &[u8]) -> Result<Option<(u64, u64)>, ()> {
     Ok(Some(if vb < 0 { (vb.unsigned_abs(), 0) } else { (0, vb as u64) }))
 }
 
+/// True if this payload is a private payment that takes value out of the private pool (positive value balance).
+/// Such a payment can pay its own network fee from private coins, so its transaction needs no visible input: a fully
+/// private payment (ZTH-SPEC-006 §9). Reads the declared value balance only; the full payment is checked in isolation.
+pub fn pays_from_private_pool(payload: &[u8]) -> bool {
+    matches!(pool_flows(payload), Ok(Some((_, value_out))) if value_out > 0)
+}
+
 /// The spent-coin tags (nullifiers) a private payment reveals, one per action, in action order.
 /// Empty for ordinary transactions. Every nullifier may appear on the chain only once (ZTH-SPEC-006 §6.3):
 /// that is the double-spend guard. Never panics on any payload; the tags are only trustworthy for payments already
@@ -147,6 +154,15 @@ mod tests {
         p[flags_at] = 0b11; // spends and outputs
         assert_eq!(spend_anchor(&p), Some([0xCC; 32]));
         assert_eq!(spend_anchor(b"ordinary payload"), None);
+    }
+
+    #[test]
+    fn only_payments_taking_value_out_of_the_pool_can_pay_their_own_fee() {
+        assert!(pays_from_private_pool(&fake(2, 1_000))); // fee (and maybe an unshield) comes out of the pool
+        assert!(!pays_from_private_pool(&fake(2, 0))); // nothing leaves the pool: nothing to pay a fee with
+        assert!(!pays_from_private_pool(&fake(2, -5_000))); // shielding needs a visible coin
+        assert!(!pays_from_private_pool(b"ordinary payload"));
+        assert!(!pays_from_private_pool(b"ZSHP"));
     }
 
     #[test]

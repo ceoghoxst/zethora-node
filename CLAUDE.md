@@ -27,11 +27,18 @@ Repo: github.com/ceoghoxst/zethora-node, branch `zethora` (a rusty-kaspa fork). 
 6. Mempool double-spend check (commit "Mempool: one waiting spend per private coin"): nullifier -> tx index in the mempool
    UTXO set; second waiting spend refused (RejectZethoraNullifierInMempool) unless it replaces the first by fee (same visible
    fee input); a block spending a coin evicts waiting spends of it. Orphans are checked when unorphaned. No stored-state change.
+7. Fully private payments (commit "Fully private payments: pay the fee from private coins"): a tx with NO visible input is
+   allowed if its private payment takes value out of the pool (value balance > 0 pays the fee, ZTH-SPEC-006 §9).
+   Storage mass with zero inputs = outputs' harmonic part (no divide by zero). Wallet `send`/`unshield` are now fully
+   private; `attack` has 3 checks (counterfeit, same coin twice at once -> mempool, same coin after it landed -> chain).
+   Shielding still pays its fee from a visible coin (it has to: value enters the pool). No stored-state change.
 
 ## Known gaps / next steps
 - ANCHOR_DEPTH 600 assumes ~1 block/s; scale with real block rate before testnet.
 - Pruning-point sync of shielded state not supported (node halts with a message).
-- Fees for private payments are paid from a visible coin; fully private payments (no visible part) later.
+- Fully private payments can't be fee-bumped yet (no visible input to replace by fee; the mempool refuses a re-send
+  that reuses the coin tags). Needs RBF keyed on coin tags.
+- SPEC-006 §8.3 not done: peers relaying invalid proofs are not banned yet (needed before testnet).
 - Needs a human crypto reviewer before private sending reaches a public network, then a professional audit before launch.
 - Miner app ideas (demos only, not linked to the real miner): "Raven Room" (pixel room + mine) and "Zethora Miner"
   (GoMining-style rig app). Rule: upgrades are earned/cosmetic; never pay to mine more ZTHR (fair launch).

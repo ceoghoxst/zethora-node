@@ -6,10 +6,11 @@
 //!     cargo run --release -p zethora-shield -- balance         show your and your friend's private coins
 //!     cargo run --release -p zethora-shield -- send 0.05       send 0.05 ZTHR privately to your friend's wallet
 //!     cargo run --release -p zethora-shield -- unshield 0.05   move 0.05 ZTHR from private back to your visible address
-//!     cargo run --release -p zethora-shield -- attack          try to cheat: spend a made-up coin, then spend a coin twice
+//!     cargo run --release -p zethora-shield -- attack          try to cheat: a made-up coin, and one coin spent twice
 //!
-//! Both private wallets are derived from the miner's key file. The network fee is paid from a visible coin of the
-//! miner for now (a later update makes fully private payments with no visible part).
+//! Both private wallets are derived from the miner's key file. Shielding pays its fee from a visible coin of the miner.
+//! Sending and unshielding are fully private (ZTH-SPEC-006 §9): the fee comes out of your private coins, and the
+//! transaction has no visible coin in it at all.
 
 use kaspa_addresses::{Address, Prefix, Version};
 use kaspa_consensus_core::{
@@ -115,25 +116,34 @@ fn finish(m: &Miner, mut tx: Transaction, entry: UtxoEntry, payment: Vec<u8>) ->
     tx
 }
 
-/// Builds and signs a transaction whose private part spends `coins` of `scanner`'s wallet ME into `outputs`. Whatever is
-/// not sent to `outputs` leaves the private pool into the miner's visible address (`unshielded` zets).
-fn private_spend_tx(
-    m: &Miner,
-    scanner: &Scanner,
-    visible: &(TransactionOutpoint, UtxoEntry),
-    coins: &[OwnedCoin],
-    outputs: &[(PrivateAddress, u64)],
-    unshielded: u64,
-) -> Transaction {
-    let (outpoint, entry) = visible.clone();
-    let change = (entry.amount + unshielded)
-        .checked_sub(FEE)
-        .filter(|c| *c >= MIN_CHANGE)
-        .unwrap_or_else(|| panic!("visible coin of {} is too small to pay the fee", zthr(entry.amount)));
-    let tx = visible_part(m, outpoint, change);
+/// Builds a fully private transaction (ZTH-SPEC-006): no visible coin goes in. Its private part spends `coins` of
+/// `scanner`'s wallet ME into the private `outputs`; `unshielded` zets leave the private pool to the miner's visible
+/// address, and the network fee (FEE) leaves it too. Nothing to sign on the visible side: the private payment's own
+/// signatures cover the whole transaction, so nobody can change where anything goes.
+fn private_tx(m: &Miner, scanner: &Scanner, coins: &[OwnedCoin], outputs: &[(PrivateAddress, u64)], unshielded: u64) -> Transaction {
+    let total_in: u64 = coins.iter().map(OwnedCoin::value).sum();
+    let total_out = outputs.iter().map(|(_, v)| v).sum::<u64>() + unshielded + FEE;
+    assert_eq!(total_in, total_out, "private coins in must equal private coins out + unshielded + fee");
+    let visible_outputs = if unshielded > 0 {
+        vec![TransactionOutput { value: unshielded, script_public_key: pay_to_address_script(&m.address), covenant: None }]
+    } else {
+        vec![]
+    };
+    let mut tx = Transaction::new_non_finalized(TX_VERSION, vec![], visible_outputs, 0, SUBNETWORK_ID_NATIVE, 0, vec![]);
     let digest = zethora_private_payment_digest(&tx);
     let payment = scanner.spend_payment(ME, coins, outputs, &digest.as_bytes()).unwrap_or_else(|e| panic!("private payment: {e}"));
-    finish(m, tx, entry, payment)
+    tx.payload = PRIVATE_PAYMENT_MAGIC.iter().copied().chain(payment).collect();
+    tx.finalize();
+    tx
+}
+
+/// Picks wallet ME's coins for `amount` plus the fee. Returns the coins and the private change left over.
+fn pick_with_fee(scanner: &Scanner, amount: u64) -> (Vec<OwnedCoin>, u64) {
+    let coins = scanner
+        .pick_coins(ME, amount + FEE)
+        .unwrap_or_else(|e| panic!("{e} (the {} fee comes out of your private coins too)", zthr(FEE)));
+    let change = coins.iter().map(OwnedCoin::value).sum::<u64>() - amount - FEE;
+    (coins, change)
 }
 
 /// Reads the whole chain and finds every private coin of both wallets. Checks the rebuilt coin list against the root
@@ -179,7 +189,10 @@ async fn try_scan(client: &GrpcClient, m: &Miner) -> Result<Scanner, String> {
                 if tx.subnetwork_id.as_ref() == Some(&SUBNETWORK_ID_COINBASE) {
                     // The first coinbase is the selected parent's: it seals the coin list as of the previous chain block.
                     // Genesis seals nothing (its payload has zeros there), so the first chain block is not checked.
-                    if !sealed_checked && start != DEVNET_PARAMS.genesis.hash && let Some(sealed) = payload.get(56..88) {
+                    if !sealed_checked
+                        && start != DEVNET_PARAMS.genesis.hash
+                        && let Some(sealed) = payload.get(56..88)
+                    {
                         if sealed != scanner.root() {
                             return Err(format!(
                                 "the wallet's private coin list differs from the network's at block {hash}. Send this to Claude"
@@ -228,7 +241,8 @@ async fn submit(client: &GrpcClient, tx: &Transaction) -> Result<String, String>
 async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let m = load_miner();
-    let client = GrpcClient::connect(NODE_URL.to_string()).await.expect("Cannot reach the node. Is it running with --devnet --utxoindex?");
+    let client =
+        GrpcClient::connect(NODE_URL.to_string()).await.expect("Cannot reach the node. Is it running with --devnet --utxoindex?");
 
     match args.first().map(String::as_str) {
         None => shield(&client, &m, parse_amount(None)).await,
@@ -273,20 +287,23 @@ async fn send(client: &GrpcClient, m: &Miner, amount: u64) {
     println!("Reading the chain...");
     let scanner = scan(client, m).await;
     show(&scanner);
-    let coins = scanner.pick_coins(ME, amount).unwrap_or_else(|e| panic!("{e}"));
-    let change = coins.iter().map(OwnedCoin::value).sum::<u64>() - amount;
+    let (coins, change) = pick_with_fee(&scanner, amount);
     let w = wallets(m);
     let mut outputs = vec![(w[FRIEND].address(), amount)];
     if change > 0 {
         outputs.push((w[ME].address(), change));
     }
-    let visible = visible_coins(client, &m.address).await.into_iter().next().expect("no mature visible coin to pay the fee");
-    println!("Making the private payment...");
-    let tx = private_spend_tx(m, &scanner, &visible, &coins, &outputs, 0);
+    println!("Making the private payment (proving key takes a few seconds the first time)...");
+    let tx = private_tx(m, &scanner, &coins, &outputs, 0);
     match submit(client, &tx).await {
         Ok(id) => {
-            println!("Sent {} privately to your friend's wallet. Fee {}. Transaction {id}", zthr(amount), zthr(FEE));
-            println!("On the chain it shows no amount and no receiver. \"private\" in the Supply check stays the same.");
+            println!(
+                "Sent {} privately to your friend's wallet. Fee {} paid from your private coins. Transaction {id}",
+                zthr(amount),
+                zthr(FEE)
+            );
+            println!("Fully private: no visible coin in, no visible coin out, no amount and no receiver on the chain.");
+            println!("The Supply check's \"private\" drops by just the fee ({FEE} zets), and every line still says BALANCED.");
             println!("Run balance in about 10 minutes to see it ready in your friend's wallet.");
         }
         Err(e) => println!("Node refused the transaction: {e}"),
@@ -294,32 +311,38 @@ async fn send(client: &GrpcClient, m: &Miner, amount: u64) {
 }
 
 async fn unshield(client: &GrpcClient, m: &Miner, amount: u64) {
+    assert!(
+        amount >= MIN_CHANGE,
+        "unshield at least {}: a tiny visible coin has a huge storage mass and is refused",
+        zthr(MIN_CHANGE)
+    );
     println!("Reading the chain...");
     let scanner = scan(client, m).await;
     show(&scanner);
-    let coins = scanner.pick_coins(ME, amount).unwrap_or_else(|e| panic!("{e}"));
-    let change = coins.iter().map(OwnedCoin::value).sum::<u64>() - amount;
+    let (coins, change) = pick_with_fee(&scanner, amount);
     let w = wallets(m);
     let outputs = if change > 0 { vec![(w[ME].address(), change)] } else { vec![] };
-    let visible = visible_coins(client, &m.address).await.into_iter().next().expect("no mature visible coin to pay the fee");
-    println!("Making the private payment...");
-    let tx = private_spend_tx(m, &scanner, &visible, &coins, &outputs, amount);
+    println!("Making the private payment (proving key takes a few seconds the first time)...");
+    let tx = private_tx(m, &scanner, &coins, &outputs, amount);
     match submit(client, &tx).await {
         Ok(id) => {
-            println!("Moved {} from the private pool to your visible address. Fee {}. Transaction {id}", zthr(amount), zthr(FEE));
-            println!("Watch the Supply check: \"private\" should drop by {amount} zets and every line still says BALANCED.");
+            println!(
+                "Moved {} from the private pool to your visible address. Fee {} paid from your private coins. Transaction {id}",
+                zthr(amount),
+                zthr(FEE)
+            );
+            println!("Watch the Supply check: \"private\" should drop by {} zets and every line still says BALANCED.", amount + FEE);
         }
         Err(e) => println!("Node refused the transaction: {e}"),
     }
 }
 
 async fn attack(client: &GrpcClient, m: &Miner) {
+    const TRIED: usize = 3;
     let mut blocked = 0;
     println!("Reading the chain...");
     let scanner = scan(client, m).await;
     show(&scanner);
-    let visible = visible_coins(client, &m.address).await;
-    assert!(visible.len() >= 2, "need two mature visible coins: keep mining a bit longer");
 
     // Attack 1: counterfeit. Make a 0.05 ZTHR private coin out of thin air, in a coin list only we know about, with a
     // perfectly valid proof, and try to take it out of the private pool.
@@ -330,34 +353,55 @@ async fn attack(client: &GrpcClient, m: &Miner) {
     fake.add_payment(&fake_shield).expect("fake list");
     fake.checkpoint().expect("fake snapshot");
     let fake_coins = fake.pick_coins(ME, fake_amount).expect("fake coin");
-    let tx = private_spend_tx(m, &fake, &visible[0], &fake_coins, &[], fake_amount);
+    let tx = private_tx(m, &fake, &fake_coins, &[], fake_amount - FEE);
     match submit(client, &tx).await {
-        Err(e) => {
+        Err(e) if e.contains("coin list snapshot") => {
             println!("  Network refused it: {e}");
             println!("  BLOCKED. A valid proof is not enough: the coin list it points to must be one the chain really had.");
             blocked += 1;
         }
+        Err(e) => println!("  Refused, but for an unexpected reason: {e}\n  Not counted. Send this to Claude."),
         Ok(id) => println!("  NOT BLOCKED: the network accepted counterfeit transaction {id}. Stop and send this to Claude."),
     }
 
-    // Attack 2: double spend. Spend one real private coin, wait for it to land in a block, then spend it again.
-    println!("\nATTACK 2: spend the same private coin twice");
-    let Some(coin) = scanner.holdings(ME).spendable.into_iter().max_by_key(OwnedCoin::value) else {
-        println!("  Skipped: you have no ready private coin. Shield some, wait about 10 minutes, and run attack again.");
-        return finish_attack(blocked, 2);
+    // Attacks 2 and 3 spend one real private coin twice: to your friend, and back to yourself.
+    let Some(coin) = scanner.holdings(ME).spendable.into_iter().filter(|c| c.value() > FEE).max_by_key(OwnedCoin::value) else {
+        println!(
+            "\nATTACKS 2 and 3: skipped, you have no ready private coin. Shield some, wait about 10 minutes, and run attack again."
+        );
+        return finish_attack(blocked, TRIED);
     };
     let w = wallets(m);
-    let first = private_spend_tx(m, &scanner, &visible[0], std::slice::from_ref(&coin), &[(w[FRIEND].address(), coin.value())], 0);
-    let second = private_spend_tx(m, &scanner, &visible[1], std::slice::from_ref(&coin), &[(w[ME].address(), coin.value())], 0);
+    let first = private_tx(m, &scanner, std::slice::from_ref(&coin), &[(w[FRIEND].address(), coin.value() - FEE)], 0);
+    let second = private_tx(m, &scanner, std::slice::from_ref(&coin), &[(w[ME].address(), coin.value() - FEE)], 0);
+
+    // Attack 2: both at the same moment, before either is in a block. The waiting room (mempool) must refuse the second.
+    println!("\nATTACK 2: spend the same private coin twice at the same moment");
     match submit(client, &first).await {
-        Ok(id) => println!("  First spend sent ({} to your friend), transaction {id}.", zthr(coin.value())),
+        Ok(id) => println!("  First spend sent ({} to your friend), transaction {id}.", zthr(coin.value() - FEE)),
         Err(e) => {
             println!("  The first (honest) spend was refused: {e}");
             println!("  That should not happen. Send this to Claude.");
-            return finish_attack(blocked, 2);
+            return finish_attack(blocked, TRIED);
         }
     }
-    println!("  Waiting for it to land in a block...");
+    println!("  Right away, sending the same coin again, this time back to yourself...");
+    match submit(client, &second).await {
+        Err(e) if e.contains("in the mempool") && e.contains("private coin tag") => {
+            println!("  Network refused it: {e}");
+            println!("  BLOCKED. The waiting room already holds a payment using that coin's one-time tag.");
+            blocked += 1;
+        }
+        Err(e) => println!("  Refused, but for an unexpected reason: {e}\n  Not counted. Send this to Claude."),
+        Ok(id) => {
+            println!("  NOT BLOCKED: the waiting room accepted the second spend {id}. Send this to Claude.");
+            return finish_attack(blocked, TRIED);
+        }
+    }
+
+    // Attack 3: once the first spend is in a block, try the second again. The chain itself must refuse it.
+    println!("\nATTACK 3: spend the same private coin again after the first spend landed");
+    println!("  Waiting for the first spend to land in a block...");
     let mut landed = false;
     for _ in 0..60 {
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -368,19 +412,20 @@ async fn attack(client: &GrpcClient, m: &Miner) {
     }
     if !landed {
         println!("  The first spend did not land within a minute. Is the miner running? Try again.");
-        return finish_attack(blocked, 2);
+        return finish_attack(blocked, TRIED);
     }
     tokio::time::sleep(Duration::from_secs(3)).await;
-    println!("  Landed. Now sending the same coin again, this time back to yourself...");
+    println!("  Landed. Sending the same coin again...");
     match submit(client, &second).await {
-        Err(e) => {
+        Err(e) if e.contains("private coin already spent") => {
             println!("  Network refused it: {e}");
-            println!("  BLOCKED. Spending a private coin reveals a one-time tag, and the network remembers every tag.");
+            println!("  BLOCKED. Spending a private coin reveals a one-time tag, and the chain remembers every tag.");
             blocked += 1;
         }
+        Err(e) => println!("  Refused, but for an unexpected reason: {e}\n  Not counted. Send this to Claude."),
         Ok(id) => println!("  NOT BLOCKED: the network accepted the second spend {id}. Stop and send this to Claude."),
     }
-    finish_attack(blocked, 2)
+    finish_attack(blocked, TRIED)
 }
 
 fn finish_attack(blocked: usize, tried: usize) {

@@ -374,7 +374,7 @@ impl MassCalculator {
     /// Calculates the contextual masses for this populated transaction.
     /// Assumptions which must be verified before this call:
     ///     1. All output values are non-zero
-    ///     2. At least one input (unless coinbase)
+    ///     2. At least one input (unless coinbase or a Zethora fully private payment)
     ///
     /// Otherwise this function should never fail.
     pub fn calc_contextual_masses(&self, tx: &impl VerifiableTransaction) -> Option<ContextualMasses> {
@@ -434,7 +434,7 @@ impl MassCalculator {
 ///
 /// Assumptions which must be verified before this call:
 ///   1. All input/output values are non-zero
-///   2. At least one input (unless coinbase)
+///   2. At least one input (unless coinbase or a Zethora fully private payment, which may have none)
 ///
 /// If these assumptions hold, this function should never fail. A `None` return
 /// indicates that the mass is incomputable and can be considered too high.
@@ -466,6 +466,12 @@ pub fn calc_storage_mass(
             ))
         },
     )?;
+
+    // Zethora: a fully private payment has no visible inputs (ZTH-SPEC-006 §9). Its value comes from the private
+    // pool, so there is no input side to credit: the outputs' harmonic part is the whole storage mass.
+    if inputs.clone().next().is_none() {
+        return Some(harmonic_outs);
+    }
 
     /*
         KIP-0009 defines a relaxed formula for the cases:
@@ -629,6 +635,19 @@ mod tests {
             assert_ne!(mass1, Some(ContextualMasses::new(0)), "Test \"{}\": avoid running meaningless test cases", self.name);
             assert_eq!(mass1, mass2, "Test \"{}\" failed: mass1 = {:?}, mass2 = {:?}", self.name, mass1, mass2);
         }
+    }
+
+    #[test]
+    fn test_storage_mass_without_inputs() {
+        // Zethora fully private payment (ZTH-SPEC-006 §9): no visible inputs. Never divides by zero; nothing
+        // to credit on the input side, so the outputs' harmonic part is the whole mass.
+        let none = std::iter::empty::<UtxoCell>();
+        let storm = 10u64.pow(12);
+        assert_eq!(calc_storage_mass(false, none.clone(), std::iter::empty(), storm), Some(0));
+        let one = [UtxoCell::new(1, 500_000_000)];
+        assert_eq!(calc_storage_mass(false, none.clone(), one.into_iter(), storm), Some(storm / 500_000_000));
+        let two = [UtxoCell::new(1, 400), UtxoCell::new(1, 100)];
+        assert_eq!(calc_storage_mass(false, none, two.into_iter(), storm), Some(storm / 400 + storm / 100));
     }
 
     #[test]

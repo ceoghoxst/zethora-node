@@ -54,6 +54,8 @@ rand = { workspace = true, features = ["small_rng"] }
 tokio = { workspace = true, features = ["rt", "macros"] }
 
 [dev-dependencies]
+# Zethora: build real fully private payments in tests (the wallet scanner; consensus itself never enables it)
+zethora-shielded = { path = "../zethora-shielded", features = ["wallet"] }
 criterion.workspace = true
 serde_json.workspace = true
 flate2.workspace = true
