@@ -19,6 +19,8 @@ use orchard::{
 pub use orchard;
 
 pub mod codec;
+#[cfg(feature = "wallet")]
+pub mod scan;
 pub mod wallet;
 
 /// Private pool versions this node understands (ZTH-SPEC-006 §7.4). Each version has its own coin list,

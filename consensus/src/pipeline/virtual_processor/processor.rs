@@ -145,6 +145,8 @@ pub struct VirtualStateProcessor {
     pub(super) zethora_note_trees_store: Arc<crate::model::stores::zethora_note_trees::DbZethoraNoteTreesStore>,
     /// Zethora: spent private coin tags (ZTH-SPEC-006 §6.3)
     pub(super) zethora_nullifiers_store: Arc<crate::model::stores::zethora_nullifiers::DbZethoraNullifiersStore>,
+    /// Zethora: private coin list snapshots (anchors) -> chain blocks that produced them (ZTH-SPEC-006 §6.2)
+    pub(super) zethora_anchors_store: Arc<crate::model::stores::zethora_anchors::DbZethoraAnchorsStore>,
     pub(super) acceptance_data_store: Arc<DbAcceptanceDataStore>,
     pub(super) virtual_stores: Arc<RwLock<VirtualStores>>,
     pub(super) pruning_meta_stores: Arc<RwLock<PruningMetaStores>>,
@@ -230,6 +232,7 @@ impl VirtualStateProcessor {
             utxo_multisets_store: storage.utxo_multisets_store.clone(),
             zethora_note_trees_store: storage.zethora_note_trees_store.clone(),
             zethora_nullifiers_store: storage.zethora_nullifiers_store.clone(),
+            zethora_anchors_store: storage.zethora_anchors_store.clone(),
             acceptance_data_store: storage.acceptance_data_store.clone(),
             virtual_stores: storage.virtual_stores.clone(),
             pruning_meta_stores: storage.pruning_meta_stores.clone(),
@@ -486,6 +489,7 @@ impl VirtualStateProcessor {
                             self.commit_utxo_state(
                                 current,
                                 ctx.note_tree,
+                                ctx.note_tree_grew,
                                 ctx.nullifier_list,
                                 ctx.mergeset_diff,
                                 ctx.multiset_hash,
@@ -517,6 +521,7 @@ impl VirtualStateProcessor {
         &self,
         current: Hash,
         note_tree: zethora_shielded::NoteCommitmentTree,
+        produced_anchor: bool,
         nullifiers: Vec<[u8; 32]>,
         mergeset_diff: UtxoDiff,
         multiset: MuHash,
@@ -532,6 +537,9 @@ impl VirtualStateProcessor {
         self.utxo_diffs_store.insert_batch(&mut batch, current, Arc::new(mergeset_diff)).unwrap();
         self.utxo_multisets_store.insert_batch(&mut batch, current, multiset).unwrap();
         self.zethora_note_trees_store.set_batch(&mut batch, current, &note_tree).unwrap();
+        if produced_anchor {
+            self.zethora_anchors_store.add_batch(&mut batch, current, &note_tree.root().to_bytes()).unwrap();
+        }
         self.zethora_nullifiers_store.add_batch(&mut batch, current, &nullifiers).unwrap();
         self.acceptance_data_store.insert_batch(&mut batch, current, Arc::new(acceptance_data)).unwrap();
         // Note we call idempotent since this field can be populated during IBD with headers proof
@@ -1252,12 +1260,9 @@ impl VirtualStateProcessor {
                 sp,
             )
         })?;
-        // Zethora: refuse private payments whose coin tags are already spent (§6.3)
+        // Zethora: refuse private payments whose coin tags are already spent (§6.3) or whose anchor is not matured (§6.2)
         let pending: std::collections::HashSet<[u8; 32]> = virtual_state.mergeset_nullifiers.iter().copied().collect();
-        if self.private_double_spend(&mutable_tx.tx, sp, &pending) {
-            return Err(TxRuleError::InvalidPrivatePayment("private coin already spent".to_string()));
-        }
-        Ok(())
+        self.check_private_payment_in_context(&mutable_tx.tx, sp, &pending)
     }
 
     pub fn validate_mempool_transactions_in_parallel(
@@ -1284,11 +1289,9 @@ impl VirtualStateProcessor {
                         args.get(&mtx.id()),
                         virtual_sp,
                     )?;
-                    // Zethora: refuse private payments whose coin tags are already spent (§6.3)
-                    if self.private_double_spend(&mtx.tx, virtual_sp, &pending) {
-                        return Err(TxRuleError::InvalidPrivatePayment("private coin already spent".to_string()));
-                    }
-                    Ok(())
+                    // Zethora: refuse private payments whose coin tags are already spent (§6.3) or whose anchor is not
+                    // matured (§6.2)
+                    self.check_private_payment_in_context(&mtx.tx, virtual_sp, &pending)
                 })
                 .collect::<Vec<TxResult<()>>>()
         })
@@ -1559,6 +1562,7 @@ impl VirtualStateProcessor {
         self.commit_utxo_state(
             self.genesis.hash,
             zethora_shielded::NoteCommitmentTree::new(), // Zethora: no private coins at genesis
+            true,                                        // ...and the empty list is the first snapshot
             Vec::new(),                                  // ...and no spent private coin tags
             UtxoDiff::default(),
             MuHash::new(),

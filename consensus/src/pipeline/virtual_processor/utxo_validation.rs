@@ -87,6 +87,8 @@ pub(super) struct UtxoProcessingContext<'a> {
     pub pruning_sample_from_pov: Option<Hash>,
     /// Zethora: the private coin list after this block's mergeset (ZTH-SPEC-006 §6.1)
     pub note_tree: zethora_shielded::NoteCommitmentTree,
+    /// Zethora: whether this mergeset added private coins, i.e. produced a new coin list snapshot (anchor, §6.2)
+    pub note_tree_grew: bool,
     /// Zethora: private coin tags (nullifiers) accepted by this mergeset so far, as a set and in order (§6.3)
     pub nullifiers: HashSet<[u8; 32]>,
     pub nullifier_list: Vec<[u8; 32]>,
@@ -104,6 +106,7 @@ impl<'a> UtxoProcessingContext<'a> {
             mergeset_acceptance_data: Vec::with_capacity(mergeset_size),
             pruning_sample_from_pov: Default::default(),
             note_tree: zethora_shielded::NoteCommitmentTree::new(),
+            note_tree_grew: false,
             nullifiers: HashSet::new(),
             nullifier_list: Vec::new(),
         }
@@ -210,6 +213,7 @@ impl VirtualStateProcessor {
                 let encoded = kaspa_consensus_core::zethora_private::private_payment_bytes(&tx.payload).expect("filtered above");
                 for cmx in zethora_shielded::codec::note_commitments(encoded).expect("accepted private payments are well-formed") {
                     ctx.note_tree.append(&cmx).expect("private coin list is full: migrate to a new pool version");
+                    ctx.note_tree_grew = true;
                 }
             }
 
@@ -400,6 +404,51 @@ impl VirtualStateProcessor {
         zethora_private::nullifiers(&tx.payload).iter().any(|nf| pending.contains(nf) || self.nullifier_spent_on_chain(nf, selected_parent))
     }
 
+    /// Zethora: is `anchor` a private coin list snapshot that a spend accepted on top of `selected_parent` may use?
+    /// It must have been produced by a chain ancestor of (or by) `selected_parent` whose blue score is at least
+    /// `ANCHOR_DEPTH` below it (ZTH-SPEC-006 §6.2). Records of pruned chain blocks are rewritten to `ANCHORED_FOR_GOOD`
+    /// by the pruning processor, so every node gives the same answer whether or not it has pruned. If reachability or a
+    /// header is unexpectedly missing, the anchor does not count.
+    pub(crate) fn anchor_matured_on_chain(&self, anchor: &[u8; 32], selected_parent: Hash) -> bool {
+        use crate::model::stores::zethora_anchors::ANCHORED_FOR_GOOD;
+        let blocks = self.zethora_anchors_store.producing_blocks(anchor);
+        if blocks.is_empty() {
+            return false;
+        }
+        let Ok(tip_blue_score) = self.headers_store.get_blue_score(selected_parent) else { return false };
+        blocks.into_iter().any(|block| {
+            block == ANCHORED_FOR_GOOD
+                || (self.reachability_service.try_is_chain_ancestor_of(block, selected_parent).unwrap_or(false)
+                    && self
+                        .headers_store
+                        .get_blue_score(block)
+                        .is_ok_and(|score| score.saturating_add(zethora_private::ANCHOR_DEPTH) <= tip_blue_score))
+        })
+    }
+
+    /// Zethora: the private payment rules that depend on the chain a transaction is accepted on (ZTH-SPEC-006):
+    /// none of its coin tags is already spent on the chain of `selected_parent` or in `pending` (§6.3), and if it
+    /// spends private coins, its anchor is a matured snapshot of that chain's coin list (§6.2).
+    pub(crate) fn check_private_payment_in_context(
+        &self,
+        tx: &Transaction,
+        selected_parent: Hash,
+        pending: &HashSet<[u8; 32]>,
+    ) -> TxResult<()> {
+        if self.private_double_spend(tx, selected_parent, pending) {
+            return Err(TxRuleError::InvalidPrivatePayment("private coin already spent".to_string()));
+        }
+        if let Some(anchor) = zethora_private::spend_anchor(&tx.payload)
+            && !self.anchor_matured_on_chain(&anchor, selected_parent)
+        {
+            return Err(TxRuleError::InvalidPrivatePayment(format!(
+                "spend uses an unknown or too recent private coin list snapshot (it must be at least {} blocks deep)",
+                zethora_private::ANCHOR_DEPTH
+            )));
+        }
+        Ok(())
+    }
+
     /// Zethora: the fee pool state recorded in a block's coinbase (ZTH-SPEC-008).
     /// The pool flows along the selected chain: each chain block reads its selected parent's state.
     pub(crate) fn pool_state_of(&self, block: Hash) -> PoolState {
@@ -475,10 +524,8 @@ impl VirtualStateProcessor {
         flags: TxValidationFlags,
         selected_parent: Hash,
     ) -> TxResult<ValidatedTransaction<'a>> {
-        // Zethora: a private coin tag already spent on the selected chain can never be spent again (§6.3)
-        if self.private_double_spend(transaction, selected_parent, &HashSet::new()) {
-            return Err(TxRuleError::InvalidPrivatePayment("private coin already spent".to_string()));
-        }
+        // Zethora: private payment rules that depend on the chain: no spent coin tag reused (§6.3), anchor matured (§6.2)
+        self.check_private_payment_in_context(transaction, selected_parent, &HashSet::new())?;
         let mut entries = Vec::with_capacity(transaction.inputs.len());
         for input in transaction.inputs.iter() {
             if let Some(entry) = utxo_view.get(&input.previous_outpoint) {

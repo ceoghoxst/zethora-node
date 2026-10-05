@@ -22,6 +22,9 @@ pub struct TransactionValidator {
     ghostdag_k: KType,
     sig_cache: Cache<SigCacheKey, bool>,
     mass_per_sig_op: u64,
+    /// Zethora emergency switch (ZTH-SPEC-006 §7.3): whether private payments may spend private coins on this network.
+    /// On for devnet and simnet; off for testnet and mainnet until the privacy code has had an outside audit.
+    private_spends_enabled: bool,
 
     pub(crate) mass_calculator: MassCalculator,
 }
@@ -51,7 +54,14 @@ impl TransactionValidator {
             sig_cache: Cache::with_counters(10_000, counters),
             mass_calculator,
             mass_per_sig_op,
+            private_spends_enabled: false,
         }
+    }
+
+    /// Zethora: turn private spends on or off for this network (ZTH-SPEC-006 §7.3).
+    pub fn with_private_spends(mut self, enabled: bool) -> Self {
+        self.private_spends_enabled = enabled;
+        self
     }
 
     pub fn new_for_tests(
@@ -75,6 +85,7 @@ impl TransactionValidator {
             sig_cache: Cache::with_counters(10_000, counters),
             mass_calculator: MassCalculator::new(0, 0, 0),
             mass_per_sig_op: 0,
+            private_spends_enabled: false,
         }
     }
 }

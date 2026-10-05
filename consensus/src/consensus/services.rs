@@ -143,7 +143,12 @@ impl ConsensusServices {
             tx_script_cache_counters,
             mass_calculator.clone(),
             params.mass_per_sig_op,
-        );
+        )
+        // Zethora (ZTH-SPEC-006 §7.3): private spends on for devnet and simnet only, until an outside audit
+        .with_private_spends(matches!(
+            params.net.network_type(),
+            kaspa_consensus_core::network::NetworkType::Devnet | kaspa_consensus_core::network::NetworkType::Simnet
+        ));
 
         let pruning_point_manager = PruningPointManager::new(
             params.pruning_depth(),

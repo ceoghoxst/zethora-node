@@ -44,6 +44,16 @@ impl PrivateWallet {
         unreachable!("a valid key is found within a few tries")
     }
 
+    /// A second, independent wallet derived from the same seed (devnet: the "friend" you send private coins to).
+    pub fn friend_of(seed: &[u8; 32]) -> Self {
+        let friend_seed = blake2b_simd::Params::new().hash_length(32).personal(b"ZethoraFriendSd").to_state().update(seed).finalize();
+        Self::from_seed(friend_seed.as_bytes().try_into().expect("32-byte hash"))
+    }
+
+    pub fn spending_key(&self) -> &SpendingKey {
+        &self.sk
+    }
+
     pub fn full_viewing_key(&self) -> FullViewingKey {
         FullViewingKey::from(&self.sk)
     }

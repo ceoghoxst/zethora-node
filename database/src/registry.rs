@@ -65,6 +65,8 @@ pub enum DatabaseStorePrefixes {
     ZethoraNullifiers = 91,
     /// Reverse index: chain block -> the private coin tags its mergeset accepted (used when pruning)
     ZethoraBlockNullifiers = 92,
+    /// Private coin list snapshots (anchors) -> the chain blocks whose mergeset produced them (ZTH-SPEC-006 §6.2)
+    ZethoraAnchors = 93,
 
     // ---- Pruning metadata ----
     PruningUtxosetSyncFlag = 60,

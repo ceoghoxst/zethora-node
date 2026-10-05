@@ -26,7 +26,7 @@ impl TransactionValidator {
         check_transaction_subnetwork(tx)?;
         check_transaction_version(tx)?;
         check_tx_version_specific_fields(tx)?;
-        check_private_payment(tx)
+        check_private_payment(tx, self.private_spends_enabled)
     }
 
     fn check_transaction_inputs_in_isolation(&self, tx: &Transaction) -> TxResult<()> {
@@ -136,10 +136,11 @@ fn private_payment_verifying_key() -> &'static zethora_shielded::orchard::circui
 /// Zethora (ZTH-SPEC-006): a transaction whose payload carries a private payment must hold a well-formed
 /// payment whose signatures and proof check out, bound to this exact transaction.
 ///
-/// Emergency switch (§7.3), level (a): spending private coins is OFF. Coins may only move INTO the private
-/// pool until the private coin list (anchors) and the double-spend guard (nullifiers) exist. Without those,
-/// a spend could point at a made-up coin list, so this rule is what keeps fake private coins out.
-fn check_private_payment(tx: &Transaction) -> TxResult<()> {
+/// Emergency switch (§7.3), level (a): when `spends_enabled` is false (testnet and mainnet until an outside audit),
+/// coins may only move INTO the private pool. When it is true (devnet, simnet), spends are allowed here and their
+/// chain rules are checked in UTXO context: every coin tag unspent (§6.3) and the anchor a matured snapshot of the
+/// chain's own coin list (§6.2), which is what keeps a spend from pointing at a made-up coin list.
+fn check_private_payment(tx: &Transaction, spends_enabled: bool) -> TxResult<()> {
     if tx.is_coinbase() {
         return Ok(());
     }
@@ -156,10 +157,10 @@ fn check_private_payment(tx: &Transaction) -> TxResult<()> {
     if !bundle.actions().iter().all(|a| seen.insert(a.nullifier().to_bytes())) {
         return Err(invalid("the same private coin tag appears twice in one payment".to_string()));
     }
-    if bundle.flags().spends_enabled() {
-        return Err(invalid("spending private coins is switched off (ZTH-SPEC-006 §7.3)".to_string()));
+    if !spends_enabled && bundle.flags().spends_enabled() {
+        return Err(invalid("spending private coins is switched off on this network (ZTH-SPEC-006 §7.3)".to_string()));
     }
-    if *bundle.value_balance() > 0 {
+    if !spends_enabled && *bundle.value_balance() > 0 {
         return Err(invalid("value cannot leave the private pool while spending is switched off".to_string()));
     }
     let digest = kaspa_consensus_core::hashing::tx::zethora_private_payment_digest(tx);
@@ -559,31 +560,42 @@ mod zethora_private_payment_tests {
     #[test]
     fn ordinary_payloads_are_untouched() {
         let mut tx = base_tx();
-        assert_eq!(check_private_payment(&tx), Ok(()));
+        assert_eq!(check_private_payment(&tx, false), Ok(()));
         tx.payload = b"just some data".to_vec();
-        assert_eq!(check_private_payment(&tx), Ok(()));
+        assert_eq!(check_private_payment(&tx, false), Ok(()));
     }
 
     #[test]
     fn valid_shielding_payment_is_accepted_and_bound_to_its_transaction() {
         let tx = shielding_tx(500_000);
-        assert_eq!(check_private_payment(&tx), Ok(()));
+        assert_eq!(check_private_payment(&tx, false), Ok(()));
 
         // Change the visible part (send more to the output): the private payment no longer matches
         let mut moved = tx.clone();
         moved.outputs[0].value += 1;
-        assert!(matches!(check_private_payment(&moved), Err(TxRuleError::InvalidPrivatePayment(_))));
+        assert!(matches!(check_private_payment(&moved, false), Err(TxRuleError::InvalidPrivatePayment(_))));
 
         // Changing only signature scripts does not affect it (they are signed separately)
         let mut resigned = tx.clone();
         resigned.inputs[0].signature_script = vec![1, 2, 3];
-        assert_eq!(check_private_payment(&resigned), Ok(()));
+        assert_eq!(check_private_payment(&resigned, false), Ok(()));
+    }
+
+    #[test]
+    fn shielding_is_accepted_with_spends_on_or_off() {
+        // Devnet and simnet switch private spends on; adding coins to the pool works the same either way
+        let tx = shielding_tx(500_000);
+        assert_eq!(check_private_payment(&tx, true), Ok(()));
+        assert_eq!(check_private_payment(&tx, false), Ok(()));
+        let mut moved = tx.clone();
+        moved.outputs[0].value += 1;
+        assert!(matches!(check_private_payment(&moved, true), Err(TxRuleError::InvalidPrivatePayment(_))));
     }
 
     #[test]
     fn garbage_after_the_marker_is_rejected() {
         let mut tx = base_tx();
         tx.payload = PRIVATE_PAYMENT_MAGIC.iter().copied().chain([1u8, 2, 0, 9, 9]).collect();
-        assert!(matches!(check_private_payment(&tx), Err(TxRuleError::InvalidPrivatePayment(_))));
+        assert!(matches!(check_private_payment(&tx, false), Err(TxRuleError::InvalidPrivatePayment(_))));
     }
 }

@@ -43,6 +43,7 @@ use kaspa_muhash::MuHash;
 use kaspa_utils::iter::IterExtensions;
 use parking_lot::RwLockUpgradableReadGuard;
 use rocksdb::WriteBatch;
+use crate::model::stores::zethora_note_trees::ZethoraNoteTreesStoreReader;
 use std::{
     collections::{VecDeque, hash_map::Entry::Vacant},
     ops::Deref,
@@ -481,6 +482,13 @@ impl PruningProcessor {
                 // is exactly "on every future chain".)
                 let was_on_chain = reachability_read.try_is_chain_ancestor_of(current, new_pruning_point).unwrap();
                 self.zethora_nullifiers_store.prune_block_batch(&mut batch, current, was_on_chain).unwrap();
+                // Zethora: same for the coin list snapshot (anchor) this block may have produced (§6.2). Read its coin list
+                // before it is deleted below; blocks that never had UTXO state computed have none and produced no anchor.
+                match self.zethora_note_trees_store.get(current) {
+                    Ok(tree) => self.zethora_anchors_store.prune_block_batch(&mut batch, current, &tree.root().to_bytes(), was_on_chain).unwrap(),
+                    Err(kaspa_database::prelude::StoreError::KeyNotFound(_)) => {}
+                    Err(e) => panic!("Zethora: reading the private coin list of pruned block {current} failed: {e}"),
+                }
 
                 let mut relations_write = self.relations_store.write();
                 let mut reachability_relations_write = self.reachability_relations_store.write();

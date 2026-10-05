@@ -64,6 +64,30 @@ pub fn nullifiers(payload: &[u8]) -> Vec<[u8; 32]> {
         .collect()
 }
 
+/// A spend must use a private coin list snapshot (anchor) produced at least this many blue blocks below the
+/// block that accepts it (ZTH-SPEC-006 §6.2). On today's devnet (one home miner, about 1 block per second) that is
+/// about 10 minutes; a reorg that deep never happens in practice, so a payment that was valid stays valid. Far inside
+/// the merge depth and finality. TODO before testnet: scale with the network's real block rate (10x at 10 blocks/s).
+pub const ANCHOR_DEPTH: u64 = 600;
+
+/// Orchard flags byte: bit 0 means "this payment spends private coins".
+const FLAG_SPENDS_ENABLED: u8 = 0b0000_0001;
+
+/// If this payload is a private payment that spends private coins, returns the coin list snapshot (anchor)
+/// its spends prove membership in. `None` for ordinary transactions and for payments that only add coins
+/// (their anchor is not used by the proof). Only call on payments already checked in isolation.
+pub fn spend_anchor(payload: &[u8]) -> Option<[u8; 32]> {
+    let encoded = private_payment_bytes(payload)?;
+    let n = action_count(encoded)?;
+    let flags_at = 3 + n.checked_mul(ACTION_SIZE)?;
+    let flags = *encoded.get(flags_at)?;
+    if flags & FLAG_SPENDS_ENABLED == 0 {
+        return None;
+    }
+    let anchor_at = flags_at + 1 + 8; // flags, value balance, then the anchor
+    encoded.get(anchor_at..anchor_at + 32).map(|b| b.try_into().expect("32 bytes"))
+}
+
 /// Extra compute mass for the proof in this payload (0 for ordinary transactions).
 pub fn proof_mass(payload: &[u8]) -> u64 {
     private_payment_bytes(payload).and_then(action_count).map_or(0, |n| n as u64 * PROOF_MASS_PER_ACTION)
@@ -110,6 +134,18 @@ mod tests {
         p[base + ACTION_SIZE + 32..base + ACTION_SIZE + 64].copy_from_slice(&[0xBB; 32]);
         assert_eq!(nullifiers(&p), vec![[0xAA; 32], [0xBB; 32]]);
         assert!(nullifiers(b"ordinary payload").is_empty());
+    }
+
+    #[test]
+    fn reads_the_spend_anchor_only_when_spending() {
+        let mut p = fake(2, 0);
+        let flags_at = 4 + 3 + 2 * ACTION_SIZE;
+        p[flags_at + 9..flags_at + 41].copy_from_slice(&[0xCC; 32]);
+        p[flags_at] = 0b10; // outputs only: the anchor is not used
+        assert_eq!(spend_anchor(&p), None);
+        p[flags_at] = 0b11; // spends and outputs
+        assert_eq!(spend_anchor(&p), Some([0xCC; 32]));
+        assert_eq!(spend_anchor(b"ordinary payload"), None);
     }
 
     #[test]
