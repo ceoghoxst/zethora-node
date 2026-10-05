@@ -1,4 +1,5 @@
 use kaspa_consensus_core::{
+    Hash,
     errors::tx::TxRuleError,
     tx::{TransactionId, TransactionOutpoint},
 };
@@ -32,6 +33,10 @@ pub enum RuleError {
 
     #[error("output {0} already spent by transaction {1} in the mempool")]
     RejectDoubleSpendInMempool(TransactionOutpoint, TransactionId),
+
+    /// Zethora: a private coin may be spent by only one waiting transaction (ZTH-SPEC-006 §6.3)
+    #[error("private coin tag {0} already spent by transaction {1} in the mempool")]
+    RejectZethoraNullifierInMempool(Hash, TransactionId),
 
     #[error("replace by fee found no double spending transaction in the mempool")]
     RejectRbfNoDoubleSpend,

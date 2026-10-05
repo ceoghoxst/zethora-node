@@ -683,6 +683,158 @@ mod tests {
         );
     }
 
+    /// Zethora: a private payment whose payload reveals this private coin tag (only the fields the mempool reads are real).
+    fn with_private_coin_tag(mut transaction: Transaction, nullifier: [u8; 32]) -> Transaction {
+        let mut payload = kaspa_consensus_core::zethora_private::PRIVATE_PAYMENT_MAGIC.to_vec();
+        payload.push(1); // pool version
+        payload.extend_from_slice(&1u16.to_le_bytes()); // one action
+        payload.extend_from_slice(&[0u8; 32]); // value commitment
+        payload.extend_from_slice(&nullifier);
+        transaction.payload = payload;
+        transaction.finalize();
+        transaction
+    }
+
+    #[test]
+    /// Zethora: two waiting transactions may not spend the same private coin, even through different visible inputs.
+    fn test_zethora_private_coin_spent_twice_in_mempool() {
+        for (priority, orphan, rbf_policy) in all_priority_orphan_rbf_policy_combinations() {
+            let consensus = Arc::new(ConsensusMock::new());
+            let mining_manager = default_mining_manager();
+            let funding = create_and_add_funding_transactions(&consensus, 2);
+
+            let first = with_private_coin_tag(create_transaction(&funding[0], DEFAULT_MINIMUM_RELAY_TRANSACTION_FEE), [0xAA; 32]);
+            let result = mining_manager.validate_and_insert_transaction(
+                consensus.as_ref(),
+                first.clone(),
+                priority,
+                orphan,
+                RbfPolicy::Forbidden,
+            );
+            assert!(
+                result.is_ok(),
+                "({priority:?}, {orphan:?}, {rbf_policy:?}) the first private payment should be accepted: {result:?}"
+            );
+
+            // Different visible coin, same private coin
+            let second = with_private_coin_tag(create_transaction(&funding[1], DEFAULT_MINIMUM_RELAY_TRANSACTION_FEE), [0xAA; 32]);
+            let result = into_mempool_result(mining_manager.validate_and_insert_transaction(
+                consensus.as_ref(),
+                second.clone(),
+                priority,
+                orphan,
+                rbf_policy,
+            ));
+            let expected = match rbf_policy {
+                // Mandatory RBF needs a visible double spend to replace and refuses first
+                RbfPolicy::Mandatory => RuleError::RejectRbfNoDoubleSpend,
+                RbfPolicy::Forbidden | RbfPolicy::Allowed => {
+                    RuleError::RejectZethoraNullifierInMempool(Hash::from_bytes([0xAA; 32]), first.id())
+                }
+            };
+            assert_eq!(result, Err(expected), "({priority:?}, {orphan:?}, {rbf_policy:?}) the second spend should be refused");
+            assert!(mining_manager.has_transaction(&first.id(), TransactionQuery::All), "the first payment should still wait");
+            assert_transaction_count(&mining_manager, 1, "after the refused second spend:");
+
+            // A different private coin through the same visible coin is fine
+            let third = with_private_coin_tag(create_transaction(&funding[1], DEFAULT_MINIMUM_RELAY_TRANSACTION_FEE), [0xBB; 32]);
+            let result =
+                mining_manager.validate_and_insert_transaction(consensus.as_ref(), third, priority, orphan, RbfPolicy::Forbidden);
+            assert!(
+                result.is_ok(),
+                "({priority:?}, {orphan:?}, {rbf_policy:?}) a payment spending another private coin should be accepted"
+            );
+            assert_transaction_count(&mining_manager, 2, "after the third payment:");
+        }
+    }
+
+    #[test]
+    /// Zethora: a stuck private payment can be re-sent with a higher fee (same visible fee input, same private coin).
+    fn test_zethora_private_payment_replaced_by_fee() {
+        for rbf_policy in [RbfPolicy::Allowed, RbfPolicy::Mandatory] {
+            let consensus = Arc::new(ConsensusMock::new());
+            let mining_manager = default_mining_manager();
+            let funding = create_and_add_funding_transactions(&consensus, 2);
+
+            let first = with_private_coin_tag(create_transaction(&funding[0], DEFAULT_MINIMUM_RELAY_TRANSACTION_FEE), [0xAA; 32]);
+            let result = mining_manager.validate_and_insert_transaction(
+                consensus.as_ref(),
+                first.clone(),
+                Priority::Low,
+                Orphan::Allowed,
+                RbfPolicy::Forbidden,
+            );
+            assert!(result.is_ok(), "({rbf_policy:?}) the first private payment should be accepted: {result:?}");
+
+            let bumped = with_private_coin_tag(create_transaction(&funding[0], 3 * DEFAULT_MINIMUM_RELAY_TRANSACTION_FEE), [0xAA; 32]);
+            let result = mining_manager.validate_and_insert_transaction(
+                consensus.as_ref(),
+                bumped.clone(),
+                Priority::Low,
+                Orphan::Allowed,
+                rbf_policy,
+            );
+            assert!(result.is_ok(), "({rbf_policy:?}) the higher-fee re-send should replace the first payment: {result:?}");
+            assert!(
+                !mining_manager.has_transaction(&first.id(), TransactionQuery::All),
+                "({rbf_policy:?}) the first payment should be gone"
+            );
+            assert!(mining_manager.has_transaction(&bumped.id(), TransactionQuery::All), "({rbf_policy:?}) the re-send should wait");
+
+            // The private coin now belongs to the re-send
+            let other = with_private_coin_tag(create_transaction(&funding[1], DEFAULT_MINIMUM_RELAY_TRANSACTION_FEE), [0xAA; 32]);
+            let result = into_mempool_result(mining_manager.validate_and_insert_transaction(
+                consensus.as_ref(),
+                other,
+                Priority::Low,
+                Orphan::Allowed,
+                RbfPolicy::Allowed,
+            ));
+            assert_eq!(result, Err(RuleError::RejectZethoraNullifierInMempool(Hash::from_bytes([0xAA; 32]), bumped.id())));
+        }
+    }
+
+    #[test]
+    /// Zethora: a block spending a private coin evicts every waiting payment that spends the same coin,
+    /// and a payment leaving the mempool frees its private coin tags.
+    fn test_zethora_private_coin_spent_by_block() {
+        let consensus = Arc::new(ConsensusMock::new());
+        let mining_manager = default_mining_manager();
+        let funding = create_and_add_funding_transactions(&consensus, 3);
+
+        let waiting = with_private_coin_tag(create_transaction(&funding[0], DEFAULT_MINIMUM_RELAY_TRANSACTION_FEE), [0xAA; 32]);
+        let result = mining_manager.validate_and_insert_transaction(
+            consensus.as_ref(),
+            waiting.clone(),
+            Priority::Low,
+            Orphan::Allowed,
+            RbfPolicy::Forbidden,
+        );
+        assert!(result.is_ok(), "the waiting private payment should be accepted: {result:?}");
+
+        // Another node's payment, never seen by this mempool, spends the same private coin in a block
+        let in_block = with_private_coin_tag(create_transaction(&funding[1], DEFAULT_MINIMUM_RELAY_TRANSACTION_FEE), [0xAA; 32]);
+        let result = mining_manager.handle_new_block_transactions(consensus.as_ref(), 2, &build_block_transactions(once(&in_block)));
+        assert!(result.is_ok(), "handling the block should succeed: {result:?}");
+        assert!(
+            !mining_manager.has_transaction(&waiting.id(), TransactionQuery::All),
+            "the waiting payment spends a private coin the block already spent and should be removed"
+        );
+        assert_transaction_count(&mining_manager, 0, "after the block:");
+
+        // The evicted payment's coin tag is freed from the mempool index (consensus, not the mempool, remembers spent coins
+        // on the chain; the mock consensus does not, so the mempool accepts this one)
+        let later = with_private_coin_tag(create_transaction(&funding[2], DEFAULT_MINIMUM_RELAY_TRANSACTION_FEE), [0xAA; 32]);
+        let result = mining_manager.validate_and_insert_transaction(
+            consensus.as_ref(),
+            later,
+            Priority::Low,
+            Orphan::Allowed,
+            RbfPolicy::Forbidden,
+        );
+        assert!(result.is_ok(), "the mempool index should no longer hold the evicted payment's coin tag: {result:?}");
+    }
+
     /// test_orphan_transactions verifies that a transaction could be a part of a new block template only if it's not an orphan.
     #[test]
     fn test_orphan_transactions() {

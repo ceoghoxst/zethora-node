@@ -52,7 +52,8 @@ pub fn pool_flows(payload: &[u8]) -> Result<Option<(u64, u64)>, ()> {
 
 /// The spent-coin tags (nullifiers) a private payment reveals, one per action, in action order.
 /// Empty for ordinary transactions. Every nullifier may appear on the chain only once (ZTH-SPEC-006 §6.3):
-/// that is the double-spend guard. Only call on payments already checked in isolation.
+/// that is the double-spend guard. Never panics on any payload; the tags are only trustworthy for payments already
+/// checked in isolation (the mempool also reads unchecked payloads, only to refuse conflicts early).
 pub fn nullifiers(payload: &[u8]) -> Vec<[u8; 32]> {
     let Some(encoded) = private_payment_bytes(payload) else { return Vec::new() };
     let Some(n) = action_count(encoded) else { return Vec::new() };

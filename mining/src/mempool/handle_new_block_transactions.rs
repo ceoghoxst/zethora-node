@@ -86,6 +86,14 @@ impl Mempool {
                 transactions_to_remove.insert(*redeemer_id);
             }
         }
+        // Zethora: waiting payments that spend a private coin this block's transaction just spent can never be accepted
+        for nullifier in kaspa_consensus_core::zethora_private::nullifiers(&transaction.payload) {
+            if let Some(owner_id) = self.transaction_pool.get_nullifier_owner_id(&nullifier)
+                && *owner_id != transaction.id()
+            {
+                transactions_to_remove.insert(*owner_id);
+            }
+        }
         transactions_to_remove.iter().try_for_each(|x| {
             self.remove_transaction(x, true, TxRemovalReason::DoubleSpend, format!(" favouring {}", transaction.id()).as_str())
         })

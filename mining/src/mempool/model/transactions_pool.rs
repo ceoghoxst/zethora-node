@@ -317,6 +317,16 @@ impl TransactionsPool {
         self.utxo_set.get_outpoint_owner_id(outpoint)
     }
 
+    /// Zethora: the mempool transaction already revealing this private coin tag, if any (ZTH-SPEC-006 §6.3)
+    pub(crate) fn get_nullifier_owner_id(&self, nullifier: &[u8; 32]) -> Option<&TransactionId> {
+        self.utxo_set.get_nullifier_owner_id(nullifier)
+    }
+
+    /// Zethora: other mempool transactions spending a private coin this transaction spends (ZTH-SPEC-006 §6.3)
+    pub(crate) fn get_nullifier_conflicts(&self, transaction: &MutableTransaction) -> Vec<([u8; 32], TransactionId)> {
+        self.utxo_set.get_nullifier_conflicts(transaction)
+    }
+
     /// Make sure no other transaction in the mempool is already spending an output which one of this transaction inputs spends
     pub(crate) fn check_double_spends(&self, transaction: &MutableTransaction) -> RuleResult<()> {
         self.utxo_set.check_double_spends(transaction)

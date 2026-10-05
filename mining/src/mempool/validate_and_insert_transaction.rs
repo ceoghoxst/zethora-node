@@ -1,4 +1,4 @@
-use std::sync::atomic::Ordering;
+use std::{collections::HashSet, sync::atomic::Ordering};
 
 use crate::mempool::{
     Mempool,
@@ -10,6 +10,7 @@ use crate::mempool::{
     tx::{Orphan, Priority, RbfPolicy},
 };
 use kaspa_consensus_core::{
+    Hash,
     api::ConsensusApi,
     constants::UNACCEPTED_DAA_SCORE,
     tx::{MutableTransaction, Transaction, TransactionId, TransactionOutpoint, UtxoEntry},
@@ -34,6 +35,8 @@ impl Mempool {
         self.validate_transaction_limits_in_isolation(&transaction)?;
         self.validate_transaction_std_in_isolation(&transaction)?;
         let feerate_threshold = self.get_replace_by_fee_constraint(&transaction, rbf_policy)?;
+        // Zethora: cheap early refusal before the expensive proof check in consensus (checked again before insertion)
+        self.check_zethora_nullifier_conflicts(&transaction, rbf_policy)?;
         self.populate_mempool_entries(&mut transaction)?;
         Ok(TransactionPreValidation { transaction, feerate_threshold })
     }
@@ -59,6 +62,7 @@ impl Mempool {
         match validation_result {
             Ok(_) => {}
             Err(RuleError::RejectMissingOutpoint) => {
+                // Zethora: orphans are not in the private coin tag index; they are checked when they are unorphaned
                 if orphan == Orphan::Forbidden {
                     return Err(RuleError::RejectDisallowedOrphan(transaction_id));
                 }
@@ -77,6 +81,9 @@ impl Mempool {
         // Perform mempool in-context validations prior to possible RBF replacements
         self.validate_transaction_limits_in_context(&transaction)?;
         self.validate_transaction_std_in_context(&transaction)?;
+
+        // Zethora: refuse a second waiting spend of the same private coin, unless it replaces the first by fee
+        self.check_zethora_nullifier_conflicts(&transaction, rbf_policy)?;
 
         // Check double spends and try to remove them if the RBF policy requires it
         let removed_transaction = self.execute_replace_by_fee(&transaction, rbf_policy)?;
@@ -135,6 +142,29 @@ impl Mempool {
         let accepted_transaction =
             self.transaction_pool.add_transaction(transaction, virtual_daa_score, priority, transaction_size)?.mtx.tx.clone();
         Ok(TransactionPostValidation { removed: removed_transaction, accepted: Some(accepted_transaction) })
+    }
+
+    /// Zethora: makes sure no other mempool transaction spends a private coin this transaction spends (ZTH-SPEC-006 §6.3).
+    ///
+    /// The one exception is replace by fee: when RBF is permitted, the transactions this one replaces (it double spends
+    /// one of their visible outputs) leave the mempool before it enters, so it may reuse their private coin tags. That
+    /// lets a wallet raise the fee of a stuck private payment by re-sending it with the same visible fee input.
+    /// Must run before `execute_replace_by_fee`, so a refusal here removes nothing from the mempool.
+    fn check_zethora_nullifier_conflicts(&self, transaction: &MutableTransaction, rbf_policy: RbfPolicy) -> RuleResult<()> {
+        let conflicts = self.transaction_pool.get_nullifier_conflicts(transaction);
+        if conflicts.is_empty() {
+            return Ok(());
+        }
+        let replaced: HashSet<TransactionId> = match rbf_policy {
+            RbfPolicy::Forbidden => HashSet::new(),
+            RbfPolicy::Allowed | RbfPolicy::Mandatory => {
+                self.transaction_pool.get_double_spend_transaction_ids(transaction).into_iter().map(|x| x.owner_id).collect()
+            }
+        };
+        match conflicts.into_iter().find(|(_, owner_id)| !replaced.contains(owner_id)) {
+            Some((nullifier, owner_id)) => Err(RuleError::RejectZethoraNullifierInMempool(Hash::from_bytes(nullifier), owner_id)),
+            None => Ok(()),
+        }
     }
 
     /// Validates that the transaction wasn't already accepted into the DAG
