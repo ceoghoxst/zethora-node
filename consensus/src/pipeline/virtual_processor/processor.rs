@@ -95,7 +95,7 @@ use parking_lot::{RwLock, RwLockUpgradableReadGuard};
 use rand::{Rng, seq::SliceRandom};
 use rayon::{
     ThreadPool,
-    prelude::{IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator},
+    prelude::{IndexedParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator},
 };
 use rocksdb::WriteBatch;
 use std::{
@@ -1222,7 +1222,8 @@ impl VirtualStateProcessor {
         (virtual_parents, ghostdag_data)
     }
 
-    fn validate_mempool_transaction_impl(
+    /// Everything except the in-isolation checks, against the virtual state (call with the virtual lock held).
+    fn validate_mempool_transaction_in_context_impl(
         &self,
         mutable_tx: &mut MutableTransaction,
         virtual_utxo_view: &impl UtxoView,
@@ -1231,7 +1232,6 @@ impl VirtualStateProcessor {
         args: &TransactionValidationArgs,
         selected_parent: Hash,
     ) -> TxResult<()> {
-        self.transaction_validator.validate_tx_in_isolation(&mutable_tx.tx)?;
         self.transaction_validator.validate_tx_in_header_context_with_args(
             &mutable_tx.tx,
             virtual_daa_score,
@@ -1241,7 +1241,38 @@ impl VirtualStateProcessor {
         Ok(())
     }
 
+    /// Zethora (ZTH-SPEC-006 §8.1): the cheap private payment checks, coin tags unspent and coin list snapshot matured.
+    /// Run before the expensive proof check, so a replayed or stale payment never costs a proof check.
+    /// Takes the virtual lock only briefly. `Ok` for ordinary transactions.
+    fn private_precheck(&self, txs: &[MutableTransaction]) -> Vec<TxResult<()>> {
+        // Only payments declaring a sane action count are prechecked (bounds the store lookups); the in-isolation
+        // decode refuses the rest cheaply
+        let prechecked = |mtx: &MutableTransaction| {
+            kaspa_consensus_core::zethora_private::private_payment_bytes(&mtx.tx.payload)
+                .and_then(kaspa_consensus_core::zethora_private::action_count)
+                .is_some_and(|n| (1..=zethora_shielded::codec::MAX_ACTIONS_PER_TX).contains(&n))
+        };
+        if !txs.iter().any(prechecked) {
+            return vec![Ok(()); txs.len()]; // no private payments: don't take the virtual lock at all
+        }
+        let virtual_read = self.virtual_stores.read();
+        let virtual_state = virtual_read.state.get().unwrap();
+        let sp = virtual_state.ghostdag_data.selected_parent;
+        let pending: std::collections::HashSet<[u8; 32]> = virtual_state.mergeset_nullifiers.iter().copied().collect();
+        txs.iter()
+            .map(|mtx| match prechecked(mtx) {
+                true => self.check_private_payment_in_context(&mtx.tx, sp, &pending),
+                false => Ok(()),
+            })
+            .collect()
+    }
+
     pub fn validate_mempool_transaction(&self, mutable_tx: &mut MutableTransaction, args: &TransactionValidationArgs) -> TxResult<()> {
+        // Zethora (ZTH-SPEC-006 §8): cheap private checks first, then the in-isolation checks (incl. the proof check)
+        // WITHOUT holding the virtual lock, so slow proof checks never hold up block processing
+        self.private_precheck(std::slice::from_ref(&*mutable_tx)).pop().expect("one result")?;
+        self.thread_pool.install(|| self.transaction_validator.validate_tx_in_isolation(&mutable_tx.tx))?;
+
         let virtual_read = self.virtual_stores.read();
         let virtual_state = virtual_read.state.get().unwrap();
         let virtual_utxo_view = &virtual_read.utxo_set;
@@ -1251,7 +1282,7 @@ impl VirtualStateProcessor {
         let sp = virtual_state.ghostdag_data.selected_parent;
         // Run within the thread pool since par_iter might be internally applied to inputs
         self.thread_pool.install(|| {
-            self.validate_mempool_transaction_impl(
+            self.validate_mempool_transaction_in_context_impl(
                 mutable_tx,
                 virtual_utxo_view,
                 virtual_daa_score,
@@ -1260,7 +1291,7 @@ impl VirtualStateProcessor {
                 sp,
             )
         })?;
-        // Zethora: refuse private payments whose coin tags are already spent (§6.3) or whose anchor is not matured (§6.2)
+        // Zethora: check again against the current state (it may have moved on since the precheck)
         let pending: std::collections::HashSet<[u8; 32]> = virtual_state.mergeset_nullifiers.iter().copied().collect();
         self.check_private_payment_in_context(&mutable_tx.tx, sp, &pending)
     }
@@ -1270,6 +1301,17 @@ impl VirtualStateProcessor {
         mutable_txs: &mut [MutableTransaction],
         args: &TransactionValidationBatchArgs,
     ) -> Vec<TxResult<()>> {
+        // Zethora (ZTH-SPEC-006 §8): 1. cheap private checks (brief virtual lock), 2. in-isolation checks incl. proof
+        // checks in parallel WITHOUT the virtual lock, 3. everything else against the virtual state (virtual lock)
+        let mut results = self.private_precheck(mutable_txs);
+        self.thread_pool.install(|| {
+            mutable_txs.par_iter().zip(results.par_iter_mut()).for_each(|(mtx, result)| {
+                if result.is_ok() {
+                    *result = self.transaction_validator.validate_tx_in_isolation(&mtx.tx);
+                }
+            })
+        });
+
         let virtual_read = self.virtual_stores.read();
         let virtual_state = virtual_read.state.get().unwrap();
         let virtual_utxo_view = &virtual_read.utxo_set;
@@ -1278,23 +1320,24 @@ impl VirtualStateProcessor {
         let virtual_sp = virtual_state.ghostdag_data.selected_parent;
         let pending: std::collections::HashSet<[u8; 32]> = virtual_state.mergeset_nullifiers.iter().copied().collect();
         self.thread_pool.install(|| {
-            mutable_txs
-                .par_iter_mut()
-                .map(|mtx| {
-                    self.validate_mempool_transaction_impl(
-                        mtx,
-                        &virtual_utxo_view,
-                        virtual_daa_score,
-                        virtual_past_median_time,
-                        args.get(&mtx.id()),
-                        virtual_sp,
-                    )?;
-                    // Zethora: refuse private payments whose coin tags are already spent (§6.3) or whose anchor is not
-                    // matured (§6.2)
-                    self.check_private_payment_in_context(&mtx.tx, virtual_sp, &pending)
-                })
-                .collect::<Vec<TxResult<()>>>()
-        })
+            mutable_txs.par_iter_mut().zip(results.par_iter_mut()).for_each(|(mtx, result)| {
+                if result.is_ok() {
+                    *result = self
+                        .validate_mempool_transaction_in_context_impl(
+                            mtx,
+                            &virtual_utxo_view,
+                            virtual_daa_score,
+                            virtual_past_median_time,
+                            args.get(&mtx.id()),
+                            virtual_sp,
+                        )
+                        // Zethora: refuse private payments whose coin tags are already spent (§6.3) or whose anchor is
+                        // not matured (§6.2), against the current state
+                        .and_then(|_| self.check_private_payment_in_context(&mtx.tx, virtual_sp, &pending));
+                }
+            })
+        });
+        results
     }
 
     fn populate_mempool_transaction_impl(
@@ -1492,7 +1535,9 @@ impl VirtualStateProcessor {
                 virtual_state.note_root,
             )
             .map_err(|e| match e {
-                kaspa_consensus_core::errors::coinbase::CoinbaseError::ZethoraSupply(reason) => RuleError::ZethoraSupplyMismatch(reason),
+                kaspa_consensus_core::errors::coinbase::CoinbaseError::ZethoraSupply(reason) => {
+                    RuleError::ZethoraSupplyMismatch(reason)
+                }
                 other => panic!("unexpected coinbase error: {other}"),
             })?;
         txs.insert(0, coinbase.tx);

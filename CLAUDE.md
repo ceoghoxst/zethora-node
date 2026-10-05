@@ -38,6 +38,11 @@ Repo: github.com/ceoghoxst/zethora-node, branch `zethora` (a rusty-kaspa fork). 
    --connect/--addpeer peers exempt) and disconnects. No ban for: unreadable bytes (a newer node's format after an
    upgrade), chain-dependent refusals (coin spent, snapshot too recent), network switches (spends off, lock time).
    Only unit-tested: a live test needs a deliberately evil peer.
+9. Hardening (commit "Hardening: cheap private checks first, proof checks outside the virtual lock"): mempool
+   validation now runs (1) cheap private checks (coin tags unspent, snapshot matured; SPEC-006 §8.1) under a brief
+   virtual lock, (2) in-isolation checks incl. proof checks with NO virtual lock, (3) the rest under the lock, then the
+   private checks again. Address manager never re-learns a banned IP (gossip or DNS seeds; --connect/--addpeer peers
+   are still dialed by design). No stored-state change.
 
 ## Known gaps / next steps
 - ANCHOR_DEPTH 600 assumes ~1 block/s; scale with real block rate before testnet.
@@ -46,8 +51,8 @@ Repo: github.com/ceoghoxst/zethora-node, branch `zethora` (a rusty-kaspa fork). 
   that reuses the coin tags). Needs RBF keyed on coin tags.
 - Blocks carrying a forged private payment get their peer disconnected (Kaspa default) but not banned.
 - Banning by IP: two nodes on one PC share 127.0.0.1, so a ban there hits both. Fine for devnet.
-- Before testnet: outbound dialing doesn't skip banned IPs (address gossip can bring one back); bans are per IP only;
-  proof checks run under the virtual-state read lock (move them out); forged blocks are cheap on devnet PoW.
+- Before testnet: bans are per IP only; forged blocks only disconnect (cheap on devnet PoW); mempool proof checks
+  share the thread pool with block validation (give them their own pool).
 - Needs a human crypto reviewer before private sending reaches a public network, then a professional audit before launch.
 - Miner app ideas (demos only, not linked to the real miner): "Raven Room" (pixel room + mine) and "Zethora Miner"
   (GoMining-style rig app). Rule: upgrades are earned/cosmetic; never pay to mine more ZTHR (fair launch).

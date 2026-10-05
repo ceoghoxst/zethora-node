@@ -267,6 +267,12 @@ impl AddressManager {
             return;
         }
 
+        // Zethora: never learn a banned IP again (e.g. from address gossip), so we don't dial out to it while it's banned
+        if self.is_banned(address.ip) {
+            debug!("[Address manager] skipping banned address {}", address.ip);
+            return;
+        }
+
         // We mark `connection_failed_count` as 0 only after first success
         self.address_store.set(address, 1);
     }
@@ -555,6 +561,32 @@ mod address_store_with_cache {
             let iter = RandomWeightedIterator::new(vec![], vec![]);
             assert_eq!(iter.len(), 0);
             assert_eq!(iter.count(), 0);
+        }
+
+        #[test]
+        fn banned_addresses_are_not_learned_again() {
+            let db = create_temp_db!(ConnBuilder::default().with_files_limit(10));
+            let mut config = Config::new(SIMNET_PARAMS);
+            config.disable_upnp = true; // never touch the router from a test
+            let (am, _) = AddressManager::new(Arc::new(config), db.1, Arc::new(TickService::default()));
+            let mut am = am.lock();
+            let ip = IpAddress::from_str("203.0.113.7").unwrap();
+            am.add_address(NetAddress::new(ip, 16111));
+            assert_eq!(am.get_all_addresses().len(), 1);
+
+            // Banning forgets the address, and gossip can't bring it back while the ban lasts
+            am.ban(ip);
+            assert!(am.get_all_addresses().is_empty());
+            am.add_address(NetAddress::new(ip, 16111));
+            am.add_address(NetAddress::new(ip, 16222));
+            assert!(am.get_all_addresses().is_empty());
+
+            // Other addresses are unaffected, and an unbanned address can be learned again
+            am.add_address(NetAddress::new(IpAddress::from_str("203.0.113.8").unwrap(), 16111));
+            assert_eq!(am.get_all_addresses().len(), 1);
+            am.unban(ip);
+            am.add_address(NetAddress::new(ip, 16111));
+            assert_eq!(am.get_all_addresses().len(), 2);
         }
 
         // This test is indeterminate, so it is ignored by default.

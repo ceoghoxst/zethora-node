@@ -83,7 +83,8 @@ const FLAG_SPENDS_ENABLED: u8 = 0b0000_0001;
 
 /// If this payload is a private payment that spends private coins, returns the coin list snapshot (anchor)
 /// its spends prove membership in. `None` for ordinary transactions and for payments that only add coins
-/// (their anchor is not used by the proof). Only call on payments already checked in isolation.
+/// (their anchor is not used by the proof). Never panics on any payload; the mempool also calls it on payments not yet
+/// checked in isolation, only to refuse stale ones before the expensive proof check.
 pub fn spend_anchor(payload: &[u8]) -> Option<[u8; 32]> {
     let encoded = private_payment_bytes(payload)?;
     let n = action_count(encoded)?;
