@@ -55,12 +55,14 @@ Repo: github.com/ceoghoxst/zethora-node, branch `zethora` (a rusty-kaspa fork). 
 11. Mempool in-isolation checks (incl. proofs) run on their own rayon pool (VirtualStateProcessor.mempool_check_pool,
    a quarter of the CPU threads, "mempool-check-N", created on first use), not the virtual processor's pool. Caps the
    CPU a proof flood can take; does not reserve cores for blocks. In-context checks still use the virtual pool.
+12. Fee bump for private payments: mempool DoubleSpend now has `spent: Spent::{Outpoint, PrivateCoin(nullifier)}`;
+   utxo_set get_first_double_spend / get_double_spend_transaction_ids include coin-tag conflicts, so the normal RBF
+   rules (higher fee rate wins; Forbidden refuses; Mandatory needs exactly one) cover private coins. Wallet: `bump 0.02`
+   sends with a low fee then replaces it (submit_transaction_replacement) with 3x the fee.
 
 ## Known gaps / next steps
 - ANCHOR_DEPTH 600 assumes ~1 block/s; scale with real block rate before testnet.
 - Pruning-point sync of shielded state not supported (node halts with a message).
-- Fully private payments can't be fee-bumped yet (no visible input to replace by fee; the mempool refuses a re-send
-  that reuses the coin tags). Needs RBF keyed on coin tags.
 - Banning by IP: two nodes on one PC share 127.0.0.1, so a ban there hits both. Fine for devnet.
 - Before testnet: bans are per IP only; other invalid blocks (not forged payments) only disconnect.
 - Needs a human crypto reviewer before private sending reaches a public network, then a professional audit before launch.

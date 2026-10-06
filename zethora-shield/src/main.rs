@@ -7,6 +7,7 @@
 //!     cargo run --release -p zethora-shield -- send 0.05       send 0.05 ZTHR privately to your friend's wallet
 //!     cargo run --release -p zethora-shield -- unshield 0.05   move 0.05 ZTHR from private back to your visible address
 //!     cargo run --release -p zethora-shield -- attack          try to cheat: a made-up coin, and one coin spent twice
+//!     cargo run --release -p zethora-shield -- bump 0.02       send privately with a low fee, then replace it with a higher fee
 //!
 //! Both private wallets are derived from the miner's key file. Shielding pays its fee from a visible coin of the miner.
 //! Sending and unshielding are fully private (ZTH-SPEC-006 §9): the fee comes out of your private coins, and the
@@ -121,8 +122,20 @@ fn finish(m: &Miner, mut tx: Transaction, entry: UtxoEntry, payment: Vec<u8>) ->
 /// address, and the network fee (FEE) leaves it too. Nothing to sign on the visible side: the private payment's own
 /// signatures cover the whole transaction, so nobody can change where anything goes.
 fn private_tx(m: &Miner, scanner: &Scanner, coins: &[OwnedCoin], outputs: &[(PrivateAddress, u64)], unshielded: u64) -> Transaction {
+    private_tx_with_fee(m, scanner, coins, outputs, unshielded, FEE)
+}
+
+/// `private_tx` with a chosen network fee (used to show a fee bump).
+fn private_tx_with_fee(
+    m: &Miner,
+    scanner: &Scanner,
+    coins: &[OwnedCoin],
+    outputs: &[(PrivateAddress, u64)],
+    unshielded: u64,
+    fee: u64,
+) -> Transaction {
     let total_in: u64 = coins.iter().map(OwnedCoin::value).sum();
-    let total_out = outputs.iter().map(|(_, v)| v).sum::<u64>() + unshielded + FEE;
+    let total_out = outputs.iter().map(|(_, v)| v).sum::<u64>() + unshielded + fee;
     assert_eq!(total_in, total_out, "private coins in must equal private coins out + unshielded + fee");
     let visible_outputs = if unshielded > 0 {
         vec![TransactionOutput { value: unshielded, script_public_key: pay_to_address_script(&m.address), covenant: None }]
@@ -255,7 +268,8 @@ async fn main() {
         Some("send") => send(&client, &m, parse_amount(args.get(1))).await,
         Some("unshield") => unshield(&client, &m, parse_amount(args.get(1))).await,
         Some("attack") => attack(&client, &m).await,
-        Some(other) => println!("Unknown command '{other}'. Use: 0.1 | balance | send 0.05 | unshield 0.05 | attack"),
+        Some("bump") => bump(&client, &m, parse_amount(args.get(1))).await,
+        Some(other) => println!("Unknown command '{other}'. Use: 0.1 | balance | send 0.05 | unshield 0.05 | attack | bump 0.02"),
     }
 }
 
@@ -366,10 +380,15 @@ async fn attack(client: &GrpcClient, m: &Miner) {
 
     // Attacks 2 and 3 spend one real private coin twice: to your friend, and back to yourself.
     let Some(coin) = scanner.holdings(ME).spendable.into_iter().filter(|c| c.value() > FEE).max_by_key(OwnedCoin::value) else {
-        println!(
-            "\nATTACKS 2 and 3: skipped, you have no ready private coin. Shield some, wait about 10 minutes, and run attack again."
-        );
-        return finish_attack(blocked, TRIED);
+        println!("\nATTACKS 2 and 3: skipped, you have no ready private coin.");
+        if blocked == 1 {
+            println!();
+            println!("RESULT: 1 of 1 attack tried was blocked; 2 skipped. Nothing is wrong: shield some coins, wait about");
+            println!("10 minutes, and run attack again to try all 3.");
+        } else {
+            finish_attack(blocked, 1);
+        }
+        return;
     };
     let w = wallets(m);
     let first = private_tx(m, &scanner, std::slice::from_ref(&coin), &[(w[FRIEND].address(), coin.value() - FEE)], 0);
@@ -426,6 +445,44 @@ async fn attack(client: &GrpcClient, m: &Miner) {
         Ok(id) => println!("  NOT BLOCKED: the network accepted the second spend {id}. Stop and send this to Claude."),
     }
     finish_attack(blocked, TRIED)
+}
+
+/// Fee bump (ZTH-SPEC-006): a fully private payment has no visible coin, so a stuck one is replaced through its private
+/// coins: the same coins, sent again with a higher fee. Both versions are made first, so the second can follow at once.
+async fn bump(client: &GrpcClient, m: &Miner, amount: u64) {
+    const HIGH_FEE: u64 = 3 * FEE;
+    println!("Reading the chain...");
+    let scanner = scan(client, m).await;
+    show(&scanner);
+    let (coins, _) = pick_with_fee(&scanner, amount + HIGH_FEE - FEE); // enough for the higher fee too
+    let total: u64 = coins.iter().map(OwnedCoin::value).sum();
+    let w = wallets(m);
+    let outputs_with = |fee: u64| {
+        let change = total - amount - fee;
+        let mut outputs = vec![(w[FRIEND].address(), amount)];
+        if change > 0 {
+            outputs.push((w[ME].address(), change));
+        }
+        outputs
+    };
+    println!("Making both versions of the payment (low fee {}, high fee {})...", zthr(FEE), zthr(HIGH_FEE));
+    let low = private_tx_with_fee(m, &scanner, &coins, &outputs_with(FEE), 0, FEE);
+    let high = private_tx_with_fee(m, &scanner, &coins, &outputs_with(HIGH_FEE), 0, HIGH_FEE);
+    match submit(client, &low).await {
+        Ok(id) => println!("Sent with the low fee: transaction {id}"),
+        Err(e) => return println!("The low-fee payment was refused: {e}\nSend this to Claude."),
+    }
+    match client.submit_transaction_replacement((&high).into()).await {
+        Ok(r) => {
+            println!("REPLACED. The higher-fee version {} took the place of {}.", r.transaction_id, low.id());
+            println!("Same private coins, no visible coin, fee {} instead of {}.", zthr(HIGH_FEE), zthr(FEE));
+        }
+        Err(e) if e.to_string().contains("private coin already spent") || e.to_string().contains("no double spending") => {
+            println!("Too late to replace: the low-fee payment already went into a block ({e}).");
+            println!("Nothing is wrong. Run bump again: it usually wins the race.");
+        }
+        Err(e) => println!("The replacement was refused: {e}\nSend this to Claude."),
+    }
 }
 
 fn finish_attack(blocked: usize, tried: usize) {

@@ -128,6 +128,8 @@ impl MempoolUtxoSet {
         }
     }
 
+    /// The first double spend of `transaction`: a visible output, or (Zethora) a private coin, already spent by another
+    /// waiting transaction. Visible outputs are checked first.
     pub(crate) fn get_first_double_spend(&self, transaction: &MutableTransaction) -> Option<DoubleSpend> {
         let transaction_id = transaction.id();
         for input in transaction.tx.inputs.iter() {
@@ -137,10 +139,14 @@ impl MempoolUtxoSet {
                 return Some(DoubleSpend::new(input.previous_outpoint, *existing_transaction_id));
             }
         }
-        None
+        self.get_nullifier_conflicts(transaction)
+            .into_iter()
+            .next()
+            .map(|(nullifier, owner)| DoubleSpend::private_coin(nullifier, owner))
     }
 
-    /// Returns the first double spend of every transaction in the mempool double spending on `transaction`
+    /// Returns the first double spend of every transaction in the mempool double spending on `transaction`: on a visible
+    /// output, or (Zethora, ZTH-SPEC-006 §6.3) on a private coin. Each conflicting transaction is listed once.
     pub(crate) fn get_double_spend_transaction_ids(&self, transaction: &MutableTransaction) -> Vec<DoubleSpend> {
         let transaction_id = transaction.id();
         let mut double_spends = vec![];
@@ -151,6 +157,11 @@ impl MempoolUtxoSet {
                 && visited.insert(*existing_transaction_id)
             {
                 double_spends.push(DoubleSpend::new(input.previous_outpoint, *existing_transaction_id));
+            }
+        }
+        for (nullifier, owner) in self.get_nullifier_conflicts(transaction) {
+            if visited.insert(owner) {
+                double_spends.push(DoubleSpend::private_coin(nullifier, owner));
             }
         }
         double_spends

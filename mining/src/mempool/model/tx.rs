@@ -41,26 +41,47 @@ impl RbfPolicy {
     }
 }
 
+/// What two waiting transactions both spend
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Spent {
+    /// The same visible output
+    Outpoint(TransactionOutpoint),
+    /// Zethora: the same private coin, identified by its one-time tag (nullifier), ZTH-SPEC-006 §6.3
+    PrivateCoin([u8; 32]),
+}
+
+/// A waiting (mempool) transaction that spends something a new transaction also spends. Replace-by-fee treats
+/// both kinds alike: a new transaction may replace its double spends only by paying a higher fee rate.
 pub(crate) struct DoubleSpend {
-    pub outpoint: TransactionOutpoint,
+    pub spent: Spent,
     pub owner_id: TransactionId,
 }
 
 impl DoubleSpend {
     pub fn new(outpoint: TransactionOutpoint, owner_id: TransactionId) -> Self {
-        Self { outpoint, owner_id }
+        Self { spent: Spent::Outpoint(outpoint), owner_id }
+    }
+
+    /// Zethora: a double spend of a private coin
+    pub fn private_coin(nullifier: [u8; 32], owner_id: TransactionId) -> Self {
+        Self { spent: Spent::PrivateCoin(nullifier), owner_id }
     }
 }
 
 impl From<DoubleSpend> for RuleError {
     fn from(value: DoubleSpend) -> Self {
-        RuleError::RejectDoubleSpendInMempool(value.outpoint, value.owner_id)
+        (&value).into()
     }
 }
 
 impl From<&DoubleSpend> for RuleError {
     fn from(value: &DoubleSpend) -> Self {
-        RuleError::RejectDoubleSpendInMempool(value.outpoint, value.owner_id)
+        match value.spent {
+            Spent::Outpoint(outpoint) => RuleError::RejectDoubleSpendInMempool(outpoint, value.owner_id),
+            Spent::PrivateCoin(nullifier) => {
+                RuleError::RejectZethoraNullifierInMempool(kaspa_consensus_core::Hash::from_bytes(nullifier), value.owner_id)
+            }
+        }
     }
 }
 

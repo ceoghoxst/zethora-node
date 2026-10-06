@@ -725,13 +725,9 @@ mod tests {
                 orphan,
                 rbf_policy,
             ));
-            let expected = match rbf_policy {
-                // Mandatory RBF needs a visible double spend to replace and refuses first
-                RbfPolicy::Mandatory => RuleError::RejectRbfNoDoubleSpend,
-                RbfPolicy::Forbidden | RbfPolicy::Allowed => {
-                    RuleError::RejectZethoraNullifierInMempool(Hash::from_bytes([0xAA; 32]), first.id())
-                }
-            };
+            // Same fee rate: refused under every policy (a replacement must pay a higher fee rate). With the mock consensus
+            // the refusal is the coin-tag conflict; real consensus refuses Allowed/Mandatory earlier as FeerateTooLow.
+            let expected = RuleError::RejectZethoraNullifierInMempool(Hash::from_bytes([0xAA; 32]), first.id());
             assert_eq!(result, Err(expected), "({priority:?}, {orphan:?}, {rbf_policy:?}) the second spend should be refused");
             assert!(mining_manager.has_transaction(&first.id(), TransactionQuery::All), "the first payment should still wait");
             assert_transaction_count(&mining_manager, 1, "after the refused second spend:");
@@ -789,6 +785,71 @@ mod tests {
                 Priority::Low,
                 Orphan::Allowed,
                 RbfPolicy::Allowed,
+            ));
+            assert_eq!(result, Err(RuleError::RejectZethoraNullifierInMempool(Hash::from_bytes([0xAA; 32]), bumped.id())));
+        }
+    }
+
+    #[test]
+    /// Zethora: a fully private payment has no visible coin to replace, so it is fee-bumped through its private coin:
+    /// a re-send spending the same private coin with a higher fee replaces it, even through a different visible coin.
+    fn test_zethora_private_coin_fee_bump() {
+        for rbf_policy in [RbfPolicy::Forbidden, RbfPolicy::Allowed, RbfPolicy::Mandatory] {
+            let consensus = Arc::new(ConsensusMock::new());
+            let mining_manager = default_mining_manager();
+            let funding = create_and_add_funding_transactions(&consensus, 3);
+
+            let stuck = with_private_coin_tag(create_transaction(&funding[0], DEFAULT_MINIMUM_RELAY_TRANSACTION_FEE), [0xAA; 32]);
+            let result = mining_manager.validate_and_insert_transaction(
+                consensus.as_ref(),
+                stuck.clone(),
+                Priority::Low,
+                Orphan::Allowed,
+                RbfPolicy::Forbidden,
+            );
+            assert!(result.is_ok(), "({rbf_policy:?}) the first private payment should be accepted: {result:?}");
+
+            // Same private coin, different visible coin, 3x the fee
+            let bumped = with_private_coin_tag(create_transaction(&funding[1], 3 * DEFAULT_MINIMUM_RELAY_TRANSACTION_FEE), [0xAA; 32]);
+            let result = into_mempool_result(mining_manager.validate_and_insert_transaction(
+                consensus.as_ref(),
+                bumped.clone(),
+                Priority::Low,
+                Orphan::Allowed,
+                rbf_policy,
+            ));
+            match rbf_policy {
+                RbfPolicy::Forbidden => {
+                    // Replacement not allowed: refused, the stuck payment stays
+                    assert_eq!(result, Err(RuleError::RejectZethoraNullifierInMempool(Hash::from_bytes([0xAA; 32]), stuck.id())));
+                    assert!(mining_manager.has_transaction(&stuck.id(), TransactionQuery::All));
+                    continue;
+                }
+                RbfPolicy::Allowed | RbfPolicy::Mandatory => {
+                    assert_eq!(result, Ok(()), "({rbf_policy:?}) the higher-fee re-send should replace the stuck payment");
+                }
+            }
+            assert!(!mining_manager.has_transaction(&stuck.id(), TransactionQuery::All), "({rbf_policy:?}) stuck payment replaced");
+            assert!(mining_manager.has_transaction(&bumped.id(), TransactionQuery::All), "({rbf_policy:?}) re-send waiting");
+            assert_transaction_count(&mining_manager, 1, "after the fee bump:");
+
+            // The stuck payment's visible coin is free again; the private coin now belongs to the re-send
+            let other = with_private_coin_tag(create_transaction(&funding[0], DEFAULT_MINIMUM_RELAY_TRANSACTION_FEE), [0xBB; 32]);
+            let result = mining_manager.validate_and_insert_transaction(
+                consensus.as_ref(),
+                other,
+                Priority::Low,
+                Orphan::Allowed,
+                RbfPolicy::Forbidden,
+            );
+            assert!(result.is_ok(), "({rbf_policy:?}) the replaced payment's visible coin should be spendable again: {result:?}");
+            let again = with_private_coin_tag(create_transaction(&funding[2], DEFAULT_MINIMUM_RELAY_TRANSACTION_FEE), [0xAA; 32]);
+            let result = into_mempool_result(mining_manager.validate_and_insert_transaction(
+                consensus.as_ref(),
+                again,
+                Priority::Low,
+                Orphan::Allowed,
+                RbfPolicy::Forbidden,
             ));
             assert_eq!(result, Err(RuleError::RejectZethoraNullifierInMempool(Hash::from_bytes([0xAA; 32]), bumped.id())));
         }
