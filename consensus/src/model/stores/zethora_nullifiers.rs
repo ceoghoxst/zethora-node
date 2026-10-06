@@ -59,6 +59,27 @@ impl DbZethoraNullifiersStore {
         Ok(())
     }
 
+    /// Records that `nullifier` was spent on the chain of a pruning point this node joined from (ZTH-SPEC-006 §6.4).
+    /// The pruning point is on every future chain, so the tag is spent for good.
+    pub fn add_spent_for_good_batch(&self, batch: &mut WriteBatch, nullifier: &[u8; 32]) -> Result<(), StoreError> {
+        let mut blocks = self.accepting_blocks(nullifier);
+        if !blocks.contains(&SPENT_FOR_GOOD) {
+            blocks.push(SPENT_FOR_GOOD);
+            self.access.write(BatchDbWriter::new(batch), Hash::from_bytes(*nullifier), blocks)?;
+        }
+        Ok(())
+    }
+
+    /// Every coin tag ever recorded, with its accepting blocks (read straight from the database).
+    pub fn iter_all(&self) -> impl Iterator<Item = Result<([u8; 32], Vec<Hash>), StoreError>> + '_ {
+        self.access.iterator().map(|item| {
+            let (key, blocks) = item.map_err(|e| StoreError::DataInconsistency(e.to_string()))?;
+            let nullifier: [u8; 32] =
+                key.as_ref().try_into().map_err(|_| StoreError::DataInconsistency("coin tag key is not 32 bytes".into()))?;
+            Ok((nullifier, blocks))
+        })
+    }
+
     /// Called when `block` is pruned. `was_on_chain`: whether it is a chain ancestor of the new pruning point.
     /// Rewrites every record that mentions it so spent/unspent answers stay the same after pruning.
     pub fn prune_block_batch(&self, batch: &mut WriteBatch, block: Hash, was_on_chain: bool) -> Result<(), StoreError> {

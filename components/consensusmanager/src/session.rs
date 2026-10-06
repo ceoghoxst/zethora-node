@@ -530,6 +530,14 @@ impl ConsensusSessionOwned {
     pub async fn async_is_pruning_smt_stable(&self) -> bool {
         self.clone().spawn_blocking(move |c| c.is_pruning_smt_stable()).await
     }
+    /// Zethora: the private state as of the pruning point, to send to a joining node (ZTH-SPEC-006 §6.4)
+    pub async fn async_get_zethora_private_state(
+        &self,
+        expected_pruning_point: Hash,
+    ) -> ConsensusResult<kaspa_consensus_core::api::ZethoraPrivateState> {
+        self.clone().spawn_blocking(move |c| c.get_zethora_private_state(expected_pruning_point)).await
+    }
+
     pub async fn async_get_pruning_point_smt_metadata(
         &self,
         expected_pp: Hash,

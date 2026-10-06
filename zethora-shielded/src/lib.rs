@@ -135,6 +135,15 @@ impl NoteCommitmentTree {
         self.frontier.tree_size()
     }
 
+    /// True if the newest entry is the value the tree uses for empty positions. No real private coin can have it
+    /// (it would need a note whose commitment is that exact value), but appending it leaves the root unchanged, so a
+    /// peer could send a padded copy of the list that matches the sealed root yet has the wrong size. Downloaded lists
+    /// that end in it are refused (ZTH-SPEC-006 §6.4).
+    pub fn ends_in_empty_leaf(&self) -> bool {
+        use incrementalmerkletree::Hashable;
+        self.frontier.value().is_some_and(|f| *f.leaf() == MerkleHashOrchard::empty_leaf())
+    }
+
     /// Compact bytes for storing the tree in the node's database:
     /// `0` for an empty tree, or `1 || position (u64) || leaf (32) || ommer count (u8) || ommers (32 each)`.
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -193,6 +202,26 @@ mod tests {
         assert_eq!(pool_flows(2_000), (0, 2_000)); // unshielding: coins leave it
         assert_eq!(pool_flows(0), (0, 0)); // fully private payment
         assert_eq!(pool_flows(i64::MIN), (1u64 << 63, 0));
+    }
+
+    #[test]
+    fn padding_with_empty_entries_keeps_the_root_but_is_detected() {
+        let coin = ExtractedNoteCommitment::from_bytes(&[5; 32]).unwrap();
+        let empty_entry = ExtractedNoteCommitment::from_bytes(&{
+            let mut b = [0u8; 32];
+            b[0] = 2; // the value Orchard uses for empty positions
+            b
+        })
+        .unwrap();
+        let mut honest = NoteCommitmentTree::new();
+        honest.append(&coin).unwrap();
+        let mut padded = honest.clone();
+        padded.append(&empty_entry).unwrap();
+        assert_eq!(padded.root(), honest.root(), "the root cannot tell them apart");
+        assert_ne!(padded.size(), honest.size());
+        assert!(padded.ends_in_empty_leaf());
+        assert!(!honest.ends_in_empty_leaf());
+        assert!(!NoteCommitmentTree::new().ends_in_empty_leaf());
     }
 
     #[test]

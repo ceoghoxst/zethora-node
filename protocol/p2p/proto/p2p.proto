@@ -349,3 +349,24 @@ message SmtLaneChunkMessage {
 
 message RequestNextPruningPointSmtChunkMessage {
 }
+
+// Zethora: the private state at the pruning point (ZTH-SPEC-006 §6.4). Checked by the receiver against the private
+// coin list root and private state fingerprint sealed in the pruning point's coinbase.
+
+message RequestZethoraPrivateStateMessage {
+  Hash pruningPointHash = 1;
+}
+
+message ZethoraPrivateStateHeaderMessage {
+  bytes noteTree = 1;     // the private coin list (note commitment tree frontier) after the pruning point
+  uint64 spentCount = 2;  // how many spent private coin tags follow
+  uint64 anchorCount = 3; // how many coin list snapshots follow
+}
+
+message ZethoraPrivateStateChunkMessage {
+  bytes spent = 1;   // spent private coin tags, 32 bytes each
+  bytes anchors = 2; // coin list snapshots, 40 bytes each: root (32) || blue score of the producing block (u64, little-endian)
+}
+
+message RequestNextZethoraPrivateStateChunkMessage {
+}

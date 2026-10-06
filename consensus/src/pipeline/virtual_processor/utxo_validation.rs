@@ -134,12 +134,12 @@ impl VirtualStateProcessor {
         let selected_parent = ctx.selected_parent();
         ctx.note_tree = self.zethora_note_trees_store.get(selected_parent).unwrap_or_else(|e| {
             panic!(
-                "Zethora: private coin list missing for {selected_parent} ({e}). Syncing from a pruning point is not supported yet; restart with --reset-db"
+                "Zethora: private coin list missing for {selected_parent} ({e}). (If this node joined from a pruning point, its private state download did not finish.) Restart with --reset-db"
             )
         });
         ctx.private_state = self.zethora_private_states_store.get(selected_parent).unwrap_or_else(|e| {
             panic!(
-                "Zethora: private state fingerprint missing for {selected_parent} ({e}). Syncing from a pruning point is not supported yet; restart with --reset-db"
+                "Zethora: private state fingerprint missing for {selected_parent} ({e}). (If this node joined from a pruning point, its private state download did not finish.) Restart with --reset-db"
             )
         });
 
@@ -249,10 +249,13 @@ impl VirtualStateProcessor {
             );
         }
 
-        // Zethora: this mergeset's final coin list is a new snapshot (anchor) if it grew; add it to the fingerprint
-        // (the anchors store records the same root for this block when it is committed)
+        // Zethora: this mergeset's final coin list is a new snapshot (anchor) if it grew; add it to the fingerprint with
+        // this block's blue score (the anchors store records the same root and score for this block when it is committed)
         if ctx.note_tree_grew {
-            ctx.private_state.add_element(&zethora_private::private_state_anchor_element(&ctx.note_tree.root().to_bytes()));
+            ctx.private_state.add_element(&zethora_private::private_state_anchor_element(
+                &ctx.note_tree.root().to_bytes(),
+                ctx.ghostdag_data.blue_score,
+            ));
         }
     }
 
@@ -428,22 +431,20 @@ impl VirtualStateProcessor {
     /// Zethora: is `anchor` a private coin list snapshot that a spend accepted on top of `selected_parent` may use?
     /// It must have been produced by a chain ancestor of (or by) `selected_parent` whose blue score is at least
     /// `ANCHOR_DEPTH` below it (ZTH-SPEC-006 §6.2). Records of pruned chain blocks are rewritten to `ANCHORED_FOR_GOOD`
-    /// by the pruning processor, so every node gives the same answer whether or not it has pruned. If reachability or a
-    /// header is unexpectedly missing, the anchor does not count.
+    /// (keeping the blue score) by the pruning processor, and a node joining from a pruning point stores the snapshots
+    /// it downloads the same way, so every node gives the same answer whether or not it has pruned or joined late.
+    /// If reachability or the tip's header is unexpectedly missing, the anchor does not count.
     pub(crate) fn anchor_matured_on_chain(&self, anchor: &[u8; 32], selected_parent: Hash) -> bool {
         use crate::model::stores::zethora_anchors::ANCHORED_FOR_GOOD;
-        let blocks = self.zethora_anchors_store.producing_blocks(anchor);
-        if blocks.is_empty() {
+        let producers = self.zethora_anchors_store.producing_blocks(anchor);
+        if producers.is_empty() {
             return false;
         }
         let Ok(tip_blue_score) = self.headers_store.get_blue_score(selected_parent) else { return false };
-        blocks.into_iter().any(|block| {
-            block == ANCHORED_FOR_GOOD
-                || (self.reachability_service.try_is_chain_ancestor_of(block, selected_parent).unwrap_or(false)
-                    && self
-                        .headers_store
-                        .get_blue_score(block)
-                        .is_ok_and(|score| score.saturating_add(zethora_private::ANCHOR_DEPTH) <= tip_blue_score))
+        producers.into_iter().any(|p| {
+            p.blue_score.saturating_add(zethora_private::ANCHOR_DEPTH) <= tip_blue_score
+                && (p.block == ANCHORED_FOR_GOOD
+                    || self.reachability_service.try_is_chain_ancestor_of(p.block, selected_parent).unwrap_or(false))
         })
     }
 

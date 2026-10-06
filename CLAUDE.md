@@ -16,7 +16,7 @@ Repo: github.com/ceoghoxst/zethora-node, branch `zethora` (a rusty-kaspa fork). 
 - Miner: `cargo run --release -p zethora-miner` (prints a Supply check line per block: must say BALANCED)
 - Private wallet tool: `cargo run --release -p zethora-shield -- <0.1 | balance | send 0.05 | unshield 0.05 | attack>`
 
-## Done and verified on his devnet (as of Oct 5, 2026)
+## Done and verified on his devnet (as of Oct 6, 2026)
 1. Supply ledger: every block proves visible + fee pool + burned + private == issued (BALANCED). Planted-bug attack test caught 20 fake zets.
 2. Private pool = Zcash Orchard 0.16.0 (pinned rev 616a669), fixed circuit, used unmodified. Payload "ZSHP" + encoded bundle.
 3. Shielding (visible -> private), coin list (note commitment tree, root sealed in coinbase bytes 56..88).
@@ -67,15 +67,35 @@ Repo: github.com/ceoghoxst/zethora-node, branch `zethora` (a rusty-kaspa fork). 
    new devnet genesis hash 5563e86a…, recomputed in Python from the Rust hashing rules and checked against the old
    values first). max_coinbase_payload_len raised 204 -> 300 on all networks (none launched).
    Next: 3b download+verify the private state at the pruning point (P2P), 3c live test with fast devnet pruning.
+14. Private state download at the pruning point (SPEC-006 §6.4, step 3b): a node joining from a pruning point P asks a
+   peer for P's private state (new P2P messages RequestZethoraPrivateState / ZethoraPrivateStateHeader /
+   ZethoraPrivateStateChunk / RequestNextZethoraPrivateStateChunk, oneof fields 90-93; server flow
+   v10/request_zethora_private_state.rs, client ibd::receive_zethora_private_state called at the start of
+   sync_new_utxo_set, BEFORE the UTXO import because that computes the virtual state on top of P). Consensus
+   get_zethora_private_state picks every coin tag / snapshot record whose block is SPENT/ANCHORED_FOR_GOOD or a chain
+   ancestor of P; import_zethora_private_state checks it against P's coinbase (note root + fingerprint; genesis is
+   special-cased) BEFORE writing, then writes the tags/snapshots as "for good" and note_trees[P], private_states[P].
+   Fingerprint anchor element is now 'A'||root||blue score (u64 LE) of the producing block, and the anchors store keeps
+   (block, blue score) pairs (also for ANCHORED_FOR_GOOD), because the youngest snapshots at P are not yet 600 deep
+   for the first blocks after P; maturity now uses the stored score. DEVNET RESET REQUIRED (fingerprint + store format).
+   The note root does not seal the tree size (appending Orchard's empty leaf, value 2, keeps the root), so a downloaded
+   coin list ending in the empty leaf is refused (NoteCommitmentTree::ends_in_empty_leaf). Block commits and the import
+   take turns on VirtualStateProcessor::zethora_records_lock (both share the pruning lock).
+   Unit-tested only; 3c = live test with fast devnet pruning and a second node.
 
 ## Known gaps / next steps
 - ANCHOR_DEPTH 600 assumes ~1 block/s; scale with real block rate before testnet.
-- Pruning-point sync of shielded state not supported yet (node halts with a message); 3a (fingerprint) done, 3b/3c next.
+- Pruning-point sync of shielded state: 3a fingerprint + 3b download/verify done (unit-tested); 3c live test next.
+  The whole private state is held in memory on both sides during the download, and the server builds it before
+  sending the header (client waits DEFAULT_TIMEOUT); fine now, stream it before mainnet.
 - Banning by IP: two nodes on one PC share 127.0.0.1, so a ban there hits both. Fine for devnet.
 - Before testnet: bans are per IP only; other invalid blocks (not forged payments) only disconnect.
 - Needs a human crypto reviewer before private sending reaches a public network, then a professional audit before launch.
 - Miner app ideas (demos only, not linked to the real miner): "Raven Room" (pixel room + mine) and "Zethora Miner"
   (GoMining-style rig app). Rule: upgrades are earned/cosmetic; never pay to mine more ZTHR (fair launch).
+
+- Known old failing test: consensus processes::coinbase::tests::subsidy_test checks Kaspa's 50-coin schedule, which
+  Zethora replaced (zethora_subsidy). Don't use a bare "coinbase" test filter in scripts.
 
 ## Safety rules for Claude
 - Never promise coins, staking returns or paid hashrate. No token exists yet.

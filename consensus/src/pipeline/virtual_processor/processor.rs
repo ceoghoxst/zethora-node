@@ -117,6 +117,10 @@ pub struct VirtualStateProcessor {
     /// flood of private payments can't fill the virtual processor's worker queue. Created on first use, so consensus
     /// instances that never see mempool transactions (staging, tests) don't start these threads.
     mempool_check_pool: std::sync::OnceLock<ThreadPool>,
+    /// Zethora: block commits and the pruning-point private state import both read-modify-write the private coin tag
+    /// and snapshot records while sharing the pruning lock, so they take turns on this (the pruning thread already
+    /// excludes both through the pruning lock)
+    zethora_records_lock: parking_lot::Mutex<()>,
 
     // DB
     db: Arc<DB>,
@@ -222,6 +226,7 @@ impl VirtualStateProcessor {
             pruning_receiver,
             thread_pool,
             mempool_check_pool: std::sync::OnceLock::new(),
+            zethora_records_lock: parking_lot::Mutex::new(()),
 
             genesis: params.genesis.clone(),
             max_block_parents: params.max_block_parents(),
@@ -549,12 +554,14 @@ impl VirtualStateProcessor {
         // Zethora: the pruning thread also rewrites private coin tag records; hold the pruning lock (shared) so the two
         // read-modify-write passes never interleave on the same record
         let _prune_guard = self.pruning_lock.blocking_read();
+        // ...and take turns with a pruning-point private state import (held until the batch is written)
+        let _records_guard = self.zethora_records_lock.lock();
         let mut batch = WriteBatch::default();
         self.utxo_diffs_store.insert_batch(&mut batch, current, Arc::new(mergeset_diff)).unwrap();
         self.utxo_multisets_store.insert_batch(&mut batch, current, multiset).unwrap();
         self.zethora_note_trees_store.set_batch(&mut batch, current, &note_tree).unwrap();
         if produced_anchor {
-            self.zethora_anchors_store.add_batch(&mut batch, current, &note_tree.root().to_bytes()).unwrap();
+            self.zethora_anchors_store.add_batch(&mut batch, current, blue_score, &note_tree.root().to_bytes()).unwrap();
         }
         self.zethora_nullifiers_store.add_batch(&mut batch, current, &nullifiers).unwrap();
         self.zethora_private_states_store.set_batch(&mut batch, current, private_state).unwrap();
@@ -1666,6 +1673,41 @@ impl VirtualStateProcessor {
             &Default::default(),
             &Default::default(),
         );
+    }
+
+    /// Zethora: stores a pruning point's private state that was already checked against its coinbase (ZTH-SPEC-006
+    /// §6.4). The spent tags and snapshots count "for good" (the pruning point is on every future chain), the same
+    /// records pruning leaves behind. The pruning point's own coin list and fingerprint go last, since block processing
+    /// needs them and an interrupted import must not look finished. The caller holds a consensus session, so pruning
+    /// cannot run meanwhile; block commits wait on the records lock.
+    pub fn store_zethora_private_state(
+        &self,
+        pruning_point: Hash,
+        note_tree: &zethora_shielded::NoteCommitmentTree,
+        fingerprint: MuHash,
+        spent: &[[u8; 32]],
+        anchors: &[([u8; 32], u64)],
+    ) {
+        const WRITES_PER_BATCH: usize = 10_000;
+        let _records_guard = self.zethora_records_lock.lock();
+        for chunk in spent.chunks(WRITES_PER_BATCH) {
+            let mut batch = WriteBatch::default();
+            for nullifier in chunk {
+                self.zethora_nullifiers_store.add_spent_for_good_batch(&mut batch, nullifier).unwrap();
+            }
+            self.db.write(batch).unwrap();
+        }
+        for chunk in anchors.chunks(WRITES_PER_BATCH) {
+            let mut batch = WriteBatch::default();
+            for (root, blue_score) in chunk {
+                self.zethora_anchors_store.add_for_good_batch(&mut batch, root, *blue_score).unwrap();
+            }
+            self.db.write(batch).unwrap();
+        }
+        let mut batch = WriteBatch::default();
+        self.zethora_note_trees_store.set_batch(&mut batch, pruning_point, note_tree).unwrap();
+        self.zethora_private_states_store.set_batch(&mut batch, pruning_point, fingerprint).unwrap();
+        self.db.write(batch).unwrap();
     }
 
     /// Finalizes the pruning point utxoset state and imports the pruning point utxoset *to* virtual utxoset

@@ -69,6 +69,18 @@ pub struct ImportLane {
 
 pub type ImportLaneBatchIterator<'a> = &'a mut (dyn Iterator<Item = Vec<ImportLane>> + Send);
 
+/// Zethora: the private state as of a pruning point (ZTH-SPEC-006 §6.4), sent to nodes joining from that point.
+/// Checked against the private state fingerprint and coin list root sealed in the pruning point's coinbase.
+#[derive(Clone, Debug, Default)]
+pub struct ZethoraPrivateState {
+    /// The private coin list (note commitment tree frontier) after the pruning point's mergeset
+    pub note_tree: Vec<u8>,
+    /// Every private coin tag (nullifier) spent on the pruning point's chain, up to and including it
+    pub spent: Vec<[u8; 32]>,
+    /// Every coin list snapshot (anchor) produced on that chain, with the blue score of the block that produced it
+    pub anchors: Vec<([u8; 32], u64)>,
+}
+
 /// SMT metadata for IBD sync, verified against the pruning point header.
 ///
 /// Wire: `lanes_root || payload_and_ctx_digest || parent_seq_commit` (96 bytes).
@@ -322,6 +334,18 @@ pub trait ConsensusApi: Send + Sync {
     }
 
     fn import_pruning_point_utxo_set(&self, new_pruning_point: Hash, imported_utxo_multiset: MuHash) -> PruningImportResult<()> {
+        unimplemented!()
+    }
+
+    /// Zethora: the private state as of the current pruning point, for a joining node (ZTH-SPEC-006 §6.4).
+    /// Fails with `UnexpectedPruningPoint` if `expected_pruning_point` is no longer the pruning point.
+    fn get_zethora_private_state(&self, _expected_pruning_point: Hash) -> ConsensusResult<ZethoraPrivateState> {
+        unimplemented!()
+    }
+
+    /// Zethora: checks a downloaded private state against the fingerprint sealed in the pruning point's coinbase and,
+    /// only if it matches, stores it. Must run before `import_pruning_point_utxo_set`, which builds on it.
+    fn import_zethora_private_state(&self, _new_pruning_point: Hash, _state: ZethoraPrivateState) -> PruningImportResult<()> {
         unimplemented!()
     }
 

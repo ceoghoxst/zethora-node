@@ -1155,6 +1155,72 @@ impl ConsensusApi for Consensus {
         self.virtual_processor.import_pruning_point_utxo_set(new_pruning_point, imported_utxo_multiset)
     }
 
+    fn get_zethora_private_state(
+        &self,
+        expected_pruning_point: Hash,
+    ) -> ConsensusResult<kaspa_consensus_core::api::ZethoraPrivateState> {
+        use crate::model::stores::zethora_note_trees::ZethoraNoteTreesStoreReader;
+        // The caller holds a consensus session, so pruning (which rewrites these records) cannot run meanwhile
+        if self.pruning_point_store.read().pruning_point().unwrap() != expected_pruning_point {
+            return Err(ConsensusError::UnexpectedPruningPoint);
+        }
+        let note_tree = self.zethora_note_trees_store.get(expected_pruning_point).map_err(|e| {
+            ConsensusError::GeneralOwned(format!(
+                "Zethora: the private coin list of pruning point {expected_pruning_point} is missing: {e}"
+            ))
+        })?;
+        let reachability = &self.services.reachability_service;
+        let (spent, anchors) = crate::processes::zethora_private_state::private_state_as_of(
+            self.zethora_nullifiers_store.iter_all().map(|r| r.map_err(|e| e.to_string())),
+            self.zethora_anchors_store.iter_all().map(|r| r.map_err(|e| e.to_string())),
+            |block| reachability.try_is_chain_ancestor_of(block, expected_pruning_point).map_err(|e| format!("block {block}: {e}")),
+        )
+        .map_err(|e| ConsensusError::GeneralOwned(format!("Zethora: reading the private state failed: {e}")))?;
+        if self.pruning_point_store.read().pruning_point().unwrap() != expected_pruning_point {
+            return Err(ConsensusError::UnexpectedPruningPoint);
+        }
+        Ok(kaspa_consensus_core::api::ZethoraPrivateState { note_tree: note_tree.to_bytes(), spent, anchors })
+    }
+
+    fn import_zethora_private_state(
+        &self,
+        new_pruning_point: Hash,
+        state: kaspa_consensus_core::api::ZethoraPrivateState,
+    ) -> PruningImportResult<()> {
+        use crate::processes::zethora_private_state::{check_downloaded_private_state, genesis_private_state};
+        let mismatch = |why: String| PruningImportError::ZethoraPrivateStateMismatch(new_pruning_point, why);
+
+        // What the pruning point seals in its coinbase: its coin list root and private state fingerprint. Genesis seals
+        // neither (its payload is fixed), but its private state is known: no spent tags, the empty list as the only snapshot.
+        let (expected_note_root, expected_fingerprint) = if new_pruning_point == self.config.genesis.hash {
+            (zethora_shielded::NoteCommitmentTree::new().root().to_bytes(), genesis_private_state().finalize().as_bytes())
+        } else {
+            let txs =
+                self.block_transactions_store.get(new_pruning_point).map_err(|e| mismatch(format!("its body is missing: {e}")))?;
+            let coinbase = txs.first().ok_or_else(|| mismatch("its body has no coinbase".to_string()))?;
+            let data = self
+                .services
+                .coinbase_manager
+                .deserialize_coinbase_payload(&coinbase.payload)
+                .map_err(|e| mismatch(format!("its coinbase is unreadable: {e}")))?;
+            (data.note_root, data.private_state)
+        };
+
+        // Check everything before writing anything, so a lying peer leaves no trace
+        let (tree, fingerprint) =
+            check_downloaded_private_state(&state, &expected_note_root, &expected_fingerprint).map_err(mismatch)?;
+
+        self.virtual_processor.store_zethora_private_state(new_pruning_point, &tree, fingerprint, &state.spent, &state.anchors);
+
+        info!(
+            "Zethora: imported and checked the private state of pruning point {}: {} spent private coin tags, {} coin list snapshots",
+            new_pruning_point,
+            state.spent.len(),
+            state.anchors.len()
+        );
+        Ok(())
+    }
+
     fn import_pruning_point_smt(
         &self,
         new_pruning_point: Hash,

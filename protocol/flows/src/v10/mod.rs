@@ -26,8 +26,10 @@ pub(crate) mod request_pp_proof;
 pub(crate) mod request_pruning_point_and_anticone;
 pub(crate) mod request_pruning_point_smt_state;
 pub(crate) mod request_pruning_point_utxo_set;
+pub(crate) mod request_zethora_private_state;
 pub(crate) mod txrelay;
 use request_pruning_point_smt_state::RequestPruningPointSmtStateFlow;
+use request_zethora_private_state::RequestZethoraPrivateStateFlow;
 
 use crate::{flow_context::FlowContext, flow_trait::Flow, ibd::IbdFlow};
 use kaspa_p2p_lib::{KaspadMessagePayloadType, Router, SharedIncomingRoute};
@@ -65,6 +67,8 @@ pub(crate) fn register_flows(ctx: FlowContext, router: Arc<Router>, use_ibd_chun
                 KaspadMessagePayloadType::DonePruningPointUtxoSetChunks,
                 KaspadMessagePayloadType::SmtMetadata,
                 KaspadMessagePayloadType::SmtLaneChunk,
+                KaspadMessagePayloadType::ZethoraPrivateStateHeader,
+                KaspadMessagePayloadType::ZethoraPrivateStateChunk,
             ]),
             relay_receiver,
             use_ibd_chunks,
@@ -115,6 +119,14 @@ pub(crate) fn register_flows(ctx: FlowContext, router: Arc<Router>, use_ibd_chun
             router.subscribe(vec![
                 KaspadMessagePayloadType::RequestPruningPointSmtState,
                 KaspadMessagePayloadType::RequestNextPruningPointSmtChunk,
+            ]),
+        )),
+        Box::new(RequestZethoraPrivateStateFlow::new(
+            ctx.clone(),
+            router.clone(),
+            router.subscribe(vec![
+                KaspadMessagePayloadType::RequestZethoraPrivateState,
+                KaspadMessagePayloadType::RequestNextZethoraPrivateStateChunk,
             ]),
         )),
         // The IBD client flow currently requests block bodies only. Keep serving full-block

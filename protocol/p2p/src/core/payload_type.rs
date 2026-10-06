@@ -56,6 +56,11 @@ pub enum KaspadMessagePayloadType {
     PruningPointProofChunksEnd,
     TrustedDataChunk,
     TrustedDataChunksEnd,
+    // Zethora: the private state at the pruning point (ZTH-SPEC-006 §6.4)
+    RequestZethoraPrivateState,
+    ZethoraPrivateStateHeader,
+    ZethoraPrivateStateChunk,
+    RequestNextZethoraPrivateStateChunk,
 }
 
 impl From<&KaspadMessagePayload> for KaspadMessagePayloadType {
@@ -120,6 +125,12 @@ impl From<&KaspadMessagePayload> for KaspadMessagePayloadType {
             KaspadMessagePayload::PruningPointProofChunksEnd(_) => KaspadMessagePayloadType::PruningPointProofChunksEnd,
             KaspadMessagePayload::TrustedDataChunk(_) => KaspadMessagePayloadType::TrustedDataChunk,
             KaspadMessagePayload::TrustedDataChunksEnd(_) => KaspadMessagePayloadType::TrustedDataChunksEnd,
+            KaspadMessagePayload::RequestZethoraPrivateState(_) => KaspadMessagePayloadType::RequestZethoraPrivateState,
+            KaspadMessagePayload::ZethoraPrivateStateHeader(_) => KaspadMessagePayloadType::ZethoraPrivateStateHeader,
+            KaspadMessagePayload::ZethoraPrivateStateChunk(_) => KaspadMessagePayloadType::ZethoraPrivateStateChunk,
+            KaspadMessagePayload::RequestNextZethoraPrivateStateChunk(_) => {
+                KaspadMessagePayloadType::RequestNextZethoraPrivateStateChunk
+            }
         }
     }
 }

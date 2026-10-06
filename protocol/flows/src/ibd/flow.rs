@@ -775,6 +775,8 @@ impl IbdFlow {
     async fn sync_new_utxo_set(&mut self, consensus: &ConsensusProxy, pruning_point: Hash) -> Result<(), ProtocolError> {
         // A better solution could be to create a copy of the old utxo state for some sort of fallback rather than delete it.
         consensus.async_clear_pruning_utxo_set().await; // this deletes the old pruning utxoset and also sets the pruning utxo as invalidated
+        // Zethora: the private state first, since importing the UTXO set computes the virtual state on top of it
+        self.sync_zethora_private_state(consensus, pruning_point).await?;
         self.sync_pruning_point_utxoset(consensus, pruning_point).await?;
         // Only if the function has reached here, will the utxo be considered "final"
         consensus.async_set_pruning_utxoset_stable().await;
@@ -847,6 +849,23 @@ staging selected tip ({}) is too small or negative. Aborting IBD...",
         } else {
             Ok(())
         }
+    }
+
+    /// Zethora: downloads the private state at the pruning point (spent private coin tags, coin list snapshots and the
+    /// coin list itself) and has consensus check it against the fingerprint sealed in the pruning point before storing
+    /// it (ZTH-SPEC-006 §6.4). A peer sending anything else fails the IBD.
+    async fn sync_zethora_private_state(&mut self, consensus: &ConsensusProxy, pruning_point: Hash) -> Result<(), ProtocolError> {
+        use kaspa_p2p_lib::pb::RequestZethoraPrivateStateMessage;
+        info!("Zethora: downloading the private state of pruning point {} from {}", pruning_point, self.router);
+        self.router
+            .enqueue(make_message!(
+                Payload::RequestZethoraPrivateState,
+                RequestZethoraPrivateStateMessage { pruning_point_hash: Some(pruning_point.into()) }
+            ))
+            .await?;
+        let state = super::receive_zethora_private_state(&self.router, &mut self.incoming_route).await?;
+        consensus.clone().spawn_blocking(move |c| c.import_zethora_private_state(pruning_point, state)).await?;
+        Ok(())
     }
 
     async fn sync_pruning_point_utxoset(&mut self, consensus: &ConsensusProxy, pruning_point: Hash) -> Result<(), ProtocolError> {

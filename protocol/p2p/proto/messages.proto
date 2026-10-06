@@ -62,6 +62,11 @@ message KaspadMessage {
     PruningPointProofChunksEndMessage pruningPointProofChunksEnd = 65;
     TrustedDataChunkMessage trustedDataChunk = 66;
     TrustedDataChunksEndMessage trustedDataChunksEnd = 67;
+    // Zethora: the private state at the pruning point (ZTH-SPEC-006 §6.4)
+    RequestZethoraPrivateStateMessage requestZethoraPrivateState = 90;
+    ZethoraPrivateStateHeaderMessage zethoraPrivateStateHeader = 91;
+    ZethoraPrivateStateChunkMessage zethoraPrivateStateChunk = 92;
+    RequestNextZethoraPrivateStateChunkMessage requestNextZethoraPrivateStateChunk = 93;
   }
 }
 

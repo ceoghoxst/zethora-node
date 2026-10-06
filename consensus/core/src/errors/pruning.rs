@@ -107,6 +107,9 @@ pub enum PruningImportError {
 
     #[error("SMT store error: {0}")]
     SmtStoreError(String),
+
+    #[error("Zethora: the downloaded private state does not match the pruning point {0}: {1}")]
+    ZethoraPrivateStateMismatch(Hash, String),
 }
 
 #[derive(Error, Debug, Clone)]
