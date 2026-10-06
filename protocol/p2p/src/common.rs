@@ -84,6 +84,18 @@ const DUPLICATE_CONNECTION_MESSAGE: &str = "DUPLICATE_CONNECTION";
 const MAX_REJECT_REASON_LEN: usize = 2048;
 
 impl ProtocolError {
+    /// Zethora (ZTH-SPEC-006 §8.3): the peer sent a transaction, or a block containing one, whose private payment fails
+    /// its own proof or signatures. Every honest node checks this before relaying anything, so the peer gets banned.
+    /// Format errors and chain-dependent refusals are not included (an honest peer can hit those).
+    pub fn is_forged_private_payment(&self) -> bool {
+        use kaspa_consensus_core::errors::tx::TxRuleError::InvalidPrivatePaymentProof;
+        match self {
+            Self::RuleError(RuleError::TxInIsolationValidationFailed(_, InvalidPrivatePaymentProof(_))) => true,
+            Self::MiningManagerError(MiningManagerError::MempoolError(err)) => err.is_forged_private_payment(),
+            _ => false,
+        }
+    }
+
     pub fn is_connection_closed_error(&self) -> bool {
         matches!(self, Self::ConnectionClosed)
     }
@@ -218,4 +230,31 @@ macro_rules! dequeue {
 #[macro_export]
 macro_rules! dequeue_with_request_id {
     ($receiver:expr, $pattern:path) => {{ $crate::unwrap_message_with_request_id!($receiver.recv().await, $pattern) }};
+}
+
+#[cfg(test)]
+mod zethora_ban_tests {
+    use super::*;
+    use kaspa_consensus_core::errors::tx::TxRuleError;
+    use kaspa_hashes::Hash;
+
+    #[test]
+    fn forged_private_payments_in_blocks_or_transactions_get_a_peer_banned() {
+        let forged = TxRuleError::InvalidPrivatePaymentProof("bad proof".to_string());
+        let in_block = ProtocolError::RuleError(RuleError::TxInIsolationValidationFailed(Hash::default(), forged.clone()));
+        assert!(in_block.is_forged_private_payment());
+        let relayed = ProtocolError::MiningManagerError(MiningManagerError::MempoolError(forged.into()));
+        assert!(relayed.is_forged_private_payment());
+
+        // Not ban-worthy: unreadable bytes (a newer node's format), chain-dependent refusals, anything else
+        let unreadable = TxRuleError::InvalidPrivatePayment("unknown pool version".to_string());
+        assert!(
+            !ProtocolError::RuleError(RuleError::TxInIsolationValidationFailed(Hash::default(), unreadable))
+                .is_forged_private_payment()
+        );
+        let spent = TxRuleError::InvalidPrivatePayment("private coin already spent".to_string());
+        assert!(!ProtocolError::RuleError(RuleError::TxInContextFailed(Hash::default(), spent)).is_forged_private_payment());
+        assert!(!ProtocolError::RuleError(RuleError::InvalidPoW).is_forged_private_payment());
+        assert!(!ProtocolError::Timeout(DEFAULT_TIMEOUT).is_forged_private_payment());
+    }
 }

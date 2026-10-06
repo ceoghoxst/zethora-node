@@ -1,5 +1,5 @@
 use crate::flowcontext::{
-    orphans::{OrphanBlocksPool, OrphanOutput},
+    orphans::{OrphanBlocksPool, OrphanOutput, OrphanSenders},
     process_queue::ProcessQueue,
     transactions::TransactionsSpread,
 };
@@ -41,6 +41,7 @@ use kaspa_utils::iter::IterExtensions;
 use kaspa_utils::networking::PeerId;
 use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::time::Instant;
 use std::{collections::hash_map::Entry, fmt::Display};
 use std::{
@@ -395,6 +396,23 @@ impl FlowContext {
         self.connection_manager.read().clone()
     }
 
+    /// Zethora (ZTH-SPEC-006 §8.3): if `err` shows the peer sent a forged private payment (in a transaction or inside a
+    /// block), ban its IP for 24 hours and disconnect it. Peers added with --connect / --addpeer are never banned.
+    pub async fn ban_if_forged_private_payment(&self, router: &Router, err: &ProtocolError) {
+        self.ban_ip_if_forged_private_payment(router.net_address().ip(), err).await
+    }
+
+    /// Same as `ban_if_forged_private_payment`, by IP (for orphan blocks, validated after their sender's message).
+    pub async fn ban_ip_if_forged_private_payment(&self, ip: IpAddr, err: &ProtocolError) {
+        if !err.is_forged_private_payment() {
+            return;
+        }
+        warn!("Banning peer IP {} for sending a forged private payment: {}", ip, err);
+        if let Some(connection_manager) = self.connection_manager() {
+            connection_manager.ban(ip).await;
+        }
+    }
+
     pub fn consensus(&self) -> ConsensusInstance {
         self.consensus_manager.consensus()
     }
@@ -465,8 +483,10 @@ impl FlowContext {
         Self::try_adding_request_impl(req, &self.shared_transaction_requests)
     }
 
-    pub async fn add_orphan(&self, consensus: &ConsensusProxy, orphan_block: Block) -> Option<OrphanOutput> {
-        self.orphans_pool.write().await.add_orphan(consensus, orphan_block).await
+    /// `sender` is the IP of the peer that sent the orphan (Zethora: banned later if the block carries a forged
+    /// private payment)
+    pub async fn add_orphan(&self, consensus: &ConsensusProxy, orphan_block: Block, sender: Option<IpAddr>) -> Option<OrphanOutput> {
+        self.orphans_pool.write().await.add_orphan(consensus, orphan_block, sender).await
     }
 
     pub async fn is_known_orphan(&self, hash: Hash) -> bool {
@@ -478,15 +498,22 @@ impl FlowContext {
     }
 
     pub async fn unorphan_blocks(&self, consensus: &ConsensusProxy, root: Hash) -> Vec<(Block, BlockValidationFuture)> {
-        let (blocks, block_tasks, virtual_state_tasks) = self.orphans_pool.write().await.unorphan_blocks(consensus, root).await;
+        let (blocks, block_tasks, virtual_state_tasks, senders) =
+            self.orphans_pool.write().await.unorphan_blocks(consensus, root).await;
         let mut unorphaned_blocks = Vec::with_capacity(blocks.len());
         let results = join_all(block_tasks).await;
-        for ((block, result), virtual_state_task) in blocks.into_iter().zip(results).zip(virtual_state_tasks) {
+        for (((block, result), virtual_state_task), sender) in blocks.into_iter().zip(results).zip(virtual_state_tasks).zip(senders) {
             match result {
                 Ok(_) => {
                     unorphaned_blocks.push((block, virtual_state_task));
                 }
-                Err(e) => warn!("Validation failed for orphan block {}: {}", block.hash(), e),
+                Err(e) => {
+                    warn!("Validation failed for orphan block {}: {}", block.hash(), e);
+                    // Zethora: the peer that sent this orphan gets banned if it carried a forged private payment
+                    if let Some(ip) = sender {
+                        self.ban_ip_if_forged_private_payment(ip, &ProtocolError::RuleError(e)).await;
+                    }
+                }
             }
         }
 
@@ -504,7 +531,7 @@ impl FlowContext {
         unorphaned_blocks
     }
 
-    pub async fn revalidate_orphans(&self, consensus: &ConsensusProxy) -> (Vec<Hash>, Vec<BlockValidationFuture>) {
+    pub async fn revalidate_orphans(&self, consensus: &ConsensusProxy) -> (Vec<Hash>, Vec<BlockValidationFuture>, OrphanSenders) {
         self.orphans_pool.write().await.revalidate_orphans(consensus).await
     }
 

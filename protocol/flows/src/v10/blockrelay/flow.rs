@@ -72,7 +72,12 @@ impl Flow for HandleRelayInvsFlow {
     }
 
     async fn start(&mut self) -> Result<(), ProtocolError> {
-        self.start_impl().await
+        let res = self.start_impl().await;
+        // Zethora: a block with a forged private payment gets the peer that sent it banned (ZTH-SPEC-006 §8.3)
+        if let Err(err) = &res {
+            self.ctx.ban_if_forged_private_payment(&self.router, err).await;
+        }
+        res
     }
 }
 
@@ -283,7 +288,7 @@ impl HandleRelayInvsFlow {
 
         if should_orphan {
             let hash = block.hash();
-            match self.ctx.add_orphan(consensus, block).await {
+            match self.ctx.add_orphan(consensus, block, Some(self.router.net_address().ip())).await {
                 // There is a sync gap between consensus and the orphan pool, meaning that consensus might have indicated
                 // that this block is orphan, but by the time it got to the orphan pool we discovered it no longer has missing roots.
                 // In such a case, the orphan pool will queue the known orphan ancestors to consensus and will return the block processing

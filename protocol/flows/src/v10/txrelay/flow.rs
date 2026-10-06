@@ -253,13 +253,10 @@ impl RelayTransactionsFlow {
                     && err.is_forged_private_payment()
                 {
                     // A private payment whose proof or signatures fail. Our own node checks this before relaying, so an
-                    // honest peer never sends one: disconnect and ban this peer's IP (24 hours; peers added with
-                    // --connect / --addpeer are never banned).
-                    warn!("Banning peer {} for relaying a forged private payment: {}", self.router, err);
-                    if let Some(connection_manager) = self.ctx.connection_manager() {
-                        connection_manager.ban(self.router.net_address().ip()).await;
-                    }
-                    return Err(ProtocolError::MisbehavingPeer(format!("relayed a forged private payment: {err}")));
+                    // honest peer never sends one: ban this peer's IP and disconnect
+                    let err = ProtocolError::MiningManagerError(MiningManagerError::MempoolError(err.clone()));
+                    self.ctx.ban_if_forged_private_payment(&self.router, &err).await;
+                    return Err(err);
                 }
             }
             insert_results.extend(group_results);

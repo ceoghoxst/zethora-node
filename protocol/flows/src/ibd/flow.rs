@@ -55,7 +55,12 @@ impl Flow for IbdFlow {
     }
 
     async fn start(&mut self) -> Result<(), ProtocolError> {
-        self.start_impl().await
+        let res = self.start_impl().await;
+        // Zethora: a block with a forged private payment gets the peer that sent it banned (ZTH-SPEC-006 §8.3)
+        if let Err(err) = &res {
+            self.ctx.ban_if_forged_private_payment(&self.router, err).await;
+        }
+        res
     }
 }
 
@@ -216,15 +221,21 @@ impl IbdFlow {
 
         // Following IBD we revalidate orphans since many of them might have been processed during the IBD
         // or are now processable
-        let (queued_hashes, virtual_processing_tasks) = self.ctx.revalidate_orphans(&session).await;
+        let (queued_hashes, virtual_processing_tasks, senders) = self.ctx.revalidate_orphans(&session).await;
         let mut unorphaned_hashes = Vec::with_capacity(queued_hashes.len());
         let results = join_all(virtual_processing_tasks).await;
-        for (hash, result) in queued_hashes.into_iter().zip(results) {
+        for ((hash, result), sender) in queued_hashes.into_iter().zip(results).zip(senders) {
             match result {
                 Ok(_) => unorphaned_hashes.push(hash),
                 // We do not return the error and disconnect here since we don't know
                 // that this peer was the origin of the orphan block
-                Err(e) => warn!("Validation failed for orphan block {}: {}", hash, e),
+                Err(e) => {
+                    warn!("Validation failed for orphan block {}: {}", hash, e);
+                    // Zethora: but the orphan's own sender is known, and gets banned for a forged private payment
+                    if let Some(ip) = sender {
+                        self.ctx.ban_ip_if_forged_private_payment(ip, &ProtocolError::RuleError(e)).await;
+                    }
+                }
             }
         }
         match unorphaned_hashes.len() {

@@ -10,6 +10,7 @@ use rand::Rng;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     iter::once,
+    net::IpAddr,
 };
 
 use super::process_queue::ProcessQueue;
@@ -42,13 +43,20 @@ struct OrphanBlock {
     /// orphan pool which has this block as a direct parent will be in the set, however
     /// items are never removed, so this set might contain evicted hashes as well
     children: HashSet<Hash>,
+
+    /// Zethora: the IP of the peer that sent this orphan, so it can be banned if the block turns out to carry a
+    /// forged private payment once it is finally validated (ZTH-SPEC-006 §8.3)
+    sender: Option<IpAddr>,
 }
 
 impl OrphanBlock {
-    fn new(block: Block, children: HashSet<Hash>) -> Self {
-        Self { block, children }
+    fn new(block: Block, children: HashSet<Hash>, sender: Option<IpAddr>) -> Self {
+        Self { block, children, sender }
     }
 }
+
+/// Zethora: the peer IP that sent each orphan block, in the same order as the blocks returned alongside it
+pub type OrphanSenders = Vec<Option<IpAddr>>;
 
 pub struct OrphanBlocksPool {
     /// NOTES:
@@ -71,8 +79,13 @@ impl OrphanBlocksPool {
     }
 
     /// Adds the provided block to the orphan pool. Returns None if the block is already
-    /// in the pool or if the pool chose not to keep it for any reason
-    pub async fn add_orphan(&mut self, consensus: &ConsensusProxy, orphan_block: Block) -> Option<OrphanOutput> {
+    /// in the pool or if the pool chose not to keep it for any reason. `sender` is the IP of the peer that sent it.
+    pub async fn add_orphan(
+        &mut self,
+        consensus: &ConsensusProxy,
+        orphan_block: Block,
+        sender: Option<IpAddr>,
+    ) -> Option<OrphanOutput> {
         let orphan_hash = orphan_block.hash();
         if self.orphans.contains_key(&orphan_hash) {
             return None;
@@ -124,7 +137,8 @@ impl OrphanBlocksPool {
             }
         }
         // Insert
-        self.orphans.insert(orphan_block.hash(), OrphanBlock::new(orphan_block, self.iterate_child_orphans(orphan_hash).collect()));
+        self.orphans
+            .insert(orphan_block.hash(), OrphanBlock::new(orphan_block, self.iterate_child_orphans(orphan_hash).collect(), sender));
         // Return roots
         Some(OrphanOutput::Roots(roots))
     }
@@ -179,7 +193,7 @@ impl OrphanBlocksPool {
         &mut self,
         consensus: &ConsensusProxy,
         root: Hash,
-    ) -> (Vec<Block>, Vec<BlockValidationFuture>, Vec<BlockValidationFuture>) {
+    ) -> (Vec<Block>, Vec<BlockValidationFuture>, Vec<BlockValidationFuture>, OrphanSenders) {
         let root_entry = self.orphans.swap_remove(&root); // Try removing the root just in case it was previously an orphan
         let mut process_queue =
             ProcessQueue::from(root_entry.map(|e| e.children).unwrap_or_else(|| self.iterate_child_orphans(root).collect()));
@@ -197,7 +211,7 @@ impl OrphanBlocksPool {
                     let orphan_block = entry.swap_remove();
                     let BlockValidationFutures { block_task, virtual_state_task } =
                         consensus.validate_and_insert_block(orphan_block.block.clone());
-                    processing.insert(orphan_hash, (orphan_block.block, block_task, virtual_state_task));
+                    processing.insert(orphan_hash, (orphan_block.block, block_task, virtual_state_task, orphan_block.sender));
                     process_queue.enqueue_chunk(orphan_block.children);
                 }
             }
@@ -216,7 +230,7 @@ impl OrphanBlocksPool {
     /// This is important for the overall health of the pool and for ensuring that
     /// orphan blocks don't evict due to pool size limit while already processed
     /// blocks remain in it. Should be called following IBD.  
-    pub async fn revalidate_orphans(&mut self, consensus: &ConsensusProxy) -> (Vec<Hash>, Vec<BlockValidationFuture>) {
+    pub async fn revalidate_orphans(&mut self, consensus: &ConsensusProxy) -> (Vec<Hash>, Vec<BlockValidationFuture>, OrphanSenders) {
         // First, cleanup blocks already processed by consensus
         let mut i = 0;
         while i < self.orphans.len() {
@@ -253,26 +267,28 @@ impl OrphanBlocksPool {
                 }
             }
             if processable {
-                roots.push(block.block.clone());
+                roots.push((block.block.clone(), block.sender));
             }
         }
 
         // Now process the roots and unorphan their descendents
         let mut virtual_processing_tasks = Vec::with_capacity(roots.len());
         let mut queued_hashes = Vec::with_capacity(roots.len());
-        for root in roots {
+        let mut senders = Vec::with_capacity(roots.len());
+        for (root, root_sender) in roots {
             let root_hash = root.hash();
             // Queue the root for processing
             let BlockValidationFutures { block_task: _, virtual_state_task: root_task } = consensus.validate_and_insert_block(root);
             // Queue its descendents which are processable
-            let (descendent_blocks, _, descendents_tasks) = self.unorphan_blocks(consensus, root_hash).await;
-            // Keep track of all hashes and tasks
+            let (descendent_blocks, _, descendents_tasks, descendent_senders) = self.unorphan_blocks(consensus, root_hash).await;
+            // Keep track of all hashes, tasks and senders (in the same order)
             virtual_processing_tasks.extend(once(root_task).chain(descendents_tasks));
             queued_hashes.extend(once(root_hash).chain(descendent_blocks.into_iter().map(|block| block.hash())));
+            senders.extend(once(root_sender).chain(descendent_senders));
         }
 
         // We deliberately want the processing tasks to be awaited out of the orphan pool lock
-        (queued_hashes, virtual_processing_tasks)
+        (queued_hashes, virtual_processing_tasks, senders)
     }
 }
 
@@ -329,8 +345,10 @@ mod tests {
         let h = Block::from_precomputed_hash(15.into(), vec![14.into()]);
         let k = Block::from_precomputed_hash(16.into(), vec![15.into()]);
 
-        pool.add_orphan(&consensus, c.clone()).await.unwrap();
-        pool.add_orphan(&consensus, d.clone()).await.unwrap();
+        // Zethora: each orphan remembers which peer sent it
+        let (peer_c, peer_d): (IpAddr, IpAddr) = ("203.0.113.1".parse().unwrap(), "203.0.113.2".parse().unwrap());
+        pool.add_orphan(&consensus, c.clone(), Some(peer_c)).await.unwrap();
+        pool.add_orphan(&consensus, d.clone(), Some(peer_d)).await.unwrap();
 
         assert_match!(pool.get_orphan_roots_if_known(&consensus, d.hash()).await, OrphanOutput::Roots(recv_roots) if recv_roots == roots);
 
@@ -338,18 +356,24 @@ mod tests {
         consensus.validate_and_insert_block(b.clone()).virtual_state_task.await.unwrap();
 
         // Test unorphaning
-        let (blocks, _, virtual_state_tasks) = pool.unorphan_blocks(&consensus, 8.into()).await;
+        let (blocks, _, virtual_state_tasks, senders) = pool.unorphan_blocks(&consensus, 8.into()).await;
         try_join_all(virtual_state_tasks).await.unwrap();
+        // Each block comes back with the peer that sent it, in the same order
+        let pairs: HashSet<(Hash, Option<IpAddr>)> = blocks.iter().map(|b| b.hash()).zip(senders).collect();
+        assert_eq!(pairs, HashSet::from([(10.into(), Some(peer_c)), (11.into(), Some(peer_d))]));
         assert_eq!(blocks.into_iter().map(|b| b.hash()).collect::<HashSet<_>>(), HashSet::from([10.into(), 11.into()]));
         assert!(pool.orphans.is_empty());
 
         // Test revalidation
-        pool.add_orphan(&consensus, f.clone()).await.unwrap();
-        pool.add_orphan(&consensus, g.clone()).await.unwrap();
-        pool.add_orphan(&consensus, k.clone()).await.unwrap();
+        let (peer_f, peer_g): (IpAddr, IpAddr) = ("203.0.113.3".parse().unwrap(), "203.0.113.4".parse().unwrap());
+        pool.add_orphan(&consensus, f.clone(), Some(peer_f)).await.unwrap();
+        pool.add_orphan(&consensus, g.clone(), Some(peer_g)).await.unwrap();
+        pool.add_orphan(&consensus, k.clone(), None).await.unwrap();
         assert_eq!(pool.orphans.len(), 3);
         consensus.validate_and_insert_block(e.clone()).virtual_state_task.await.unwrap();
-        pool.revalidate_orphans(&consensus).await;
+        let (queued, _, senders) = pool.revalidate_orphans(&consensus).await;
+        // Root f and its descendant g come back with their own senders, in the same order
+        assert_eq!(queued.into_iter().zip(senders).collect::<Vec<_>>(), vec![(13.into(), Some(peer_f)), (14.into(), Some(peer_g))]);
         assert_eq!(pool.orphans.len(), 1);
         assert!(pool.orphans.contains_key(&k.hash())); // k's parent, h, was never inserted to the pool
         consensus.validate_and_insert_block(h.clone()).virtual_state_task.await.unwrap();

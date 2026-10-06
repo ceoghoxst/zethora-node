@@ -43,15 +43,23 @@ Repo: github.com/ceoghoxst/zethora-node, branch `zethora` (a rusty-kaspa fork). 
    virtual lock, (2) in-isolation checks incl. proof checks with NO virtual lock, (3) the rest under the lock, then the
    private checks again. Address manager never re-learns a banned IP (gossip or DNS seeds; --connect/--addpeer peers
    are still dialed by design). No stored-state change.
+10. Ban for forged private payments inside blocks too (relay and IBD): ProtocolError::is_forged_private_payment()
+   (RuleError::TxInIsolationValidationFailed(_, InvalidPrivatePaymentProof)) checked in the block relay and IBD flows'
+   start(); one helper FlowContext::ban_if_forged_private_payment used by tx relay, block relay and IBD.
+   Orphan blocks remember their sender's IP (OrphanBlock.sender), so a forged block sent before its parent still gets
+   its sender banned when it is finally validated (unorphan_blocks / revalidate_orphans).
+   Gap: in add_orphan's NoRoots path the orphan ancestors' senders are dropped (the relaying peer, who vouched for
+   them, is banned instead).
+   RULE: whenever the proof rules change (circuit, what counts as InvalidPrivatePaymentProof), reset the devnet, or
+   new nodes would ban honest peers serving old blocks valid under the old rules.
 
 ## Known gaps / next steps
 - ANCHOR_DEPTH 600 assumes ~1 block/s; scale with real block rate before testnet.
 - Pruning-point sync of shielded state not supported (node halts with a message).
 - Fully private payments can't be fee-bumped yet (no visible input to replace by fee; the mempool refuses a re-send
   that reuses the coin tags). Needs RBF keyed on coin tags.
-- Blocks carrying a forged private payment get their peer disconnected (Kaspa default) but not banned.
 - Banning by IP: two nodes on one PC share 127.0.0.1, so a ban there hits both. Fine for devnet.
-- Before testnet: bans are per IP only; forged blocks only disconnect (cheap on devnet PoW); mempool proof checks
+- Before testnet: bans are per IP only; other invalid blocks (not forged payments) only disconnect; mempool proof checks
   share the thread pool with block validation (give them their own pool).
 - Needs a human crypto reviewer before private sending reaches a public network, then a professional audit before launch.
 - Miner app ideas (demos only, not linked to the real miner): "Raven Room" (pixel room + mine) and "Zethora Miner"
