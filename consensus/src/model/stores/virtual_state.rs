@@ -45,6 +45,9 @@ pub struct VirtualState {
     /// Zethora: root of the private coin list after the virtual's mergeset (ZTH-SPEC-006 §6.1).
     /// Committed in the coinbase of a block built on this virtual state.
     pub note_root: [u8; 32],
+    /// Zethora: private state fingerprint after the virtual's mergeset (ZTH-SPEC-006 §6.4).
+    /// Committed in the coinbase of a block built on this virtual state.
+    pub private_state: [u8; 32],
     /// Zethora: private coin tags (nullifiers) spent by the virtual's mergeset (ZTH-SPEC-006 §6.3).
     /// A block built on this virtual state may not spend them again.
     pub mergeset_nullifiers: Vec<[u8; 32]>,
@@ -64,6 +67,7 @@ impl VirtualState {
         mergeset_non_daa: BlockHashSet,
         ghostdag_data: GhostdagData,
         note_root: [u8; 32],
+        private_state: [u8; 32],
         mergeset_nullifiers: Vec<[u8; 32]>,
     ) -> Self {
         Self {
@@ -78,6 +82,7 @@ impl VirtualState {
             mergeset_rewards,
             mergeset_non_daa,
             note_root,
+            private_state,
             mergeset_nullifiers,
         }
     }
@@ -99,6 +104,7 @@ impl VirtualState {
             mergeset_rewards: BlockHashMap::new(),
             mergeset_non_daa: BlockHashSet::from_iter(std::iter::once(genesis.hash)),
             note_root: zethora_shielded::NoteCommitmentTree::new().root().to_bytes(), // empty private coin list
+            private_state: crate::processes::zethora_private_state::genesis_private_state().finalize().as_bytes(),
             mergeset_nullifiers: Vec::new(),
         }
     }
@@ -160,6 +166,7 @@ impl From<PreToccataVirtualState> for VirtualState {
             mergeset_rewards: v.mergeset_rewards,
             mergeset_non_daa: v.mergeset_non_daa,
             note_root: zethora_shielded::NoteCommitmentTree::new().root().to_bytes(),
+            private_state: crate::processes::zethora_private_state::genesis_private_state().finalize().as_bytes(),
             mergeset_nullifiers: Vec::new(),
         }
     }
@@ -423,6 +430,7 @@ mod tests {
             mergeset_rewards: BlockHashMap::new(),
             mergeset_non_daa: BlockHashSet::default(),
             note_root: [7; 32],
+            private_state: [9; 32],
             mergeset_nullifiers: vec![[8; 32]],
         });
 

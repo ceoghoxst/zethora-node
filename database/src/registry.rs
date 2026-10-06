@@ -67,6 +67,8 @@ pub enum DatabaseStorePrefixes {
     ZethoraBlockNullifiers = 92,
     /// Private coin list snapshots (anchors) -> the chain blocks whose mergeset produced them (ZTH-SPEC-006 §6.2)
     ZethoraAnchors = 93,
+    /// Private state fingerprint (MuHash of spent coin tags and coin list snapshots) after each chain block (§6.4)
+    ZethoraPrivateStates = 94,
 
     // ---- Pruning metadata ----
     PruningUtxosetSyncFlag = 60,

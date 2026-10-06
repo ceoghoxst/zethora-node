@@ -59,10 +59,18 @@ Repo: github.com/ceoghoxst/zethora-node, branch `zethora` (a rusty-kaspa fork). 
    utxo_set get_first_double_spend / get_double_spend_transaction_ids include coin-tag conflicts, so the normal RBF
    rules (higher fee rate wins; Forbidden refuses; Mandatory needs exactly one) cover private coins. Wallet: `bump 0.02`
    sends with a low fee then replaces it (submit_transaction_replacement) with 3x the fee.
+13. Private state fingerprint (SPEC-006 §6.4, step 3a of pruning-point sync): every coinbase now seals, after the
+   note root, a 32-byte MuHash over {'N'||nullifier spent on chain} ∪ {'A'||anchor root produced on chain}
+   (processes/zethora_private_state.rs). Per-block unfinalized MuHash in store prefix 94 (zethora_private_states,
+   deleted when pruned); ctx.private_state in calculate_utxo_state; VirtualState.private_state for templates.
+   Coinbase layout: ... note_root 56..88, private_state 88..120, then script. DEVNET RESET REQUIRED (new block shape;
+   new devnet genesis hash 5563e86a…, recomputed in Python from the Rust hashing rules and checked against the old
+   values first). max_coinbase_payload_len raised 204 -> 300 on all networks (none launched).
+   Next: 3b download+verify the private state at the pruning point (P2P), 3c live test with fast devnet pruning.
 
 ## Known gaps / next steps
 - ANCHOR_DEPTH 600 assumes ~1 block/s; scale with real block rate before testnet.
-- Pruning-point sync of shielded state not supported (node halts with a message).
+- Pruning-point sync of shielded state not supported yet (node halts with a message); 3a (fingerprint) done, 3b/3c next.
 - Banning by IP: two nodes on one PC share 127.0.0.1, so a ban there hits both. Fine for devnet.
 - Before testnet: bans are per IP only; other invalid blocks (not forged payments) only disconnect.
 - Needs a human crypto reviewer before private sending reaches a public network, then a professional audit before launch.

@@ -1,5 +1,6 @@
 //! TODO: module comment about locking safety and consistency of various pruning stores
 
+use crate::model::stores::zethora_note_trees::ZethoraNoteTreesStoreReader;
 use crate::{
     consensus::{
         services::{ConsensusServices, DbParentsManager, DbPruningPointManager},
@@ -43,7 +44,6 @@ use kaspa_muhash::MuHash;
 use kaspa_utils::iter::IterExtensions;
 use parking_lot::RwLockUpgradableReadGuard;
 use rocksdb::WriteBatch;
-use crate::model::stores::zethora_note_trees::ZethoraNoteTreesStoreReader;
 use std::{
     collections::{VecDeque, hash_map::Entry::Vacant},
     ops::Deref,
@@ -485,7 +485,10 @@ impl PruningProcessor {
                 // Zethora: same for the coin list snapshot (anchor) this block may have produced (§6.2). Read its coin list
                 // before it is deleted below; blocks that never had UTXO state computed have none and produced no anchor.
                 match self.zethora_note_trees_store.get(current) {
-                    Ok(tree) => self.zethora_anchors_store.prune_block_batch(&mut batch, current, &tree.root().to_bytes(), was_on_chain).unwrap(),
+                    Ok(tree) => self
+                        .zethora_anchors_store
+                        .prune_block_batch(&mut batch, current, &tree.root().to_bytes(), was_on_chain)
+                        .unwrap(),
                     Err(kaspa_database::prelude::StoreError::KeyNotFound(_)) => {}
                     Err(e) => panic!("Zethora: reading the private coin list of pruned block {current} failed: {e}"),
                 }
@@ -499,6 +502,7 @@ impl PruningProcessor {
                 // Prune data related to block bodies and UTXO state
                 self.utxo_multisets_store.delete_batch(&mut batch, current).unwrap();
                 self.zethora_note_trees_store.delete_batch(&mut batch, current).unwrap();
+                self.zethora_private_states_store.delete_batch(&mut batch, current).unwrap();
                 self.utxo_diffs_store.delete_batch(&mut batch, current).unwrap();
                 self.acceptance_data_store.delete_batch(&mut batch, current).unwrap();
                 self.block_transactions_store.delete_batch(&mut batch, current).unwrap();

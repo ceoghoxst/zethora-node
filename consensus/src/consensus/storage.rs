@@ -26,6 +26,7 @@ use crate::{
         zethora_anchors::DbZethoraAnchorsStore,
         zethora_note_trees::DbZethoraNoteTreesStore,
         zethora_nullifiers::DbZethoraNullifiersStore,
+        zethora_private_states::DbZethoraPrivateStatesStore,
     },
     processes::{ghostdag::ordering::SortableBlock, reachability::inquirer as reachability, relations},
 };
@@ -73,6 +74,8 @@ pub struct ConsensusStorage {
     pub zethora_nullifiers_store: Arc<DbZethoraNullifiersStore>,
     /// Zethora: private coin list snapshots (anchors) -> chain blocks that produced them (ZTH-SPEC-006 §6.2)
     pub zethora_anchors_store: Arc<DbZethoraAnchorsStore>,
+    /// Zethora: private state fingerprint after each chain block (ZTH-SPEC-006 §6.4)
+    pub zethora_private_states_store: Arc<DbZethoraPrivateStatesStore>,
 
     // Block window caches
     pub block_window_cache_for_difficulty: Arc<BlockWindowCacheStore>,
@@ -227,6 +230,7 @@ impl ConsensusStorage {
         let zethora_note_trees_store = Arc::new(DbZethoraNoteTreesStore::new(db.clone(), block_data_builder.build()));
         let zethora_nullifiers_store = Arc::new(DbZethoraNullifiersStore::new(db.clone(), block_data_builder.build()));
         let zethora_anchors_store = Arc::new(DbZethoraAnchorsStore::new(db.clone(), block_data_builder.build()));
+        let zethora_private_states_store = Arc::new(DbZethoraPrivateStatesStore::new(db.clone(), block_data_builder.build()));
         let acceptance_data_store = Arc::new(DbAcceptanceDataStore::new(db.clone(), acceptance_data_builder.build()));
 
         // Tips
@@ -284,6 +288,7 @@ impl ConsensusStorage {
             zethora_note_trees_store,
             zethora_nullifiers_store,
             zethora_anchors_store,
+            zethora_private_states_store,
             block_window_cache_for_difficulty,
             block_window_cache_for_past_median_time,
             smt_stores,

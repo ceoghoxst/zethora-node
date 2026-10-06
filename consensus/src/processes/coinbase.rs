@@ -25,6 +25,8 @@ const LENGTH_OF_SUBSIDY: usize = size_of::<u64>();
 const LENGTH_OF_POOL_STATE: usize = 5 * size_of::<u64>();
 /// Zethora: root of the private coin list (32 bytes)
 const LENGTH_OF_NOTE_ROOT: usize = 32;
+/// Zethora: private state fingerprint: spent coin tags and coin list snapshots (32 bytes)
+const LENGTH_OF_PRIVATE_STATE: usize = 32;
 const LENGTH_OF_SCRIPT_PUB_KEY_VERSION: usize = size_of::<u16>();
 const LENGTH_OF_SCRIPT_PUB_KEY_LENGTH: usize = size_of::<u8>();
 
@@ -32,6 +34,7 @@ const MIN_PAYLOAD_LENGTH: usize = LENGTH_OF_BLUE_SCORE
     + LENGTH_OF_SUBSIDY
     + LENGTH_OF_POOL_STATE
     + LENGTH_OF_NOTE_ROOT
+    + LENGTH_OF_PRIVATE_STATE
     + LENGTH_OF_SCRIPT_PUB_KEY_VERSION
     + LENGTH_OF_SCRIPT_PUB_KEY_LENGTH;
 
@@ -126,6 +129,7 @@ impl CoinbaseManager {
         parent_pool: PoolState,
         visible_change: i128,
         note_root: [u8; 32],
+        private_state: [u8; 32],
     ) -> CoinbaseResult<CoinbaseTransactionTemplate> {
         let mut outputs = Vec::with_capacity(ghostdag_data.mergeset_blues.len() + 1); // + 1 for possible red reward
 
@@ -185,8 +189,14 @@ impl CoinbaseManager {
 
         // Build the current block's payload
         let subsidy = self.calc_block_subsidy(daa_score);
-        let payload =
-            self.serialize_coinbase_payload(&CoinbaseData { blue_score: ghostdag_data.blue_score, subsidy, pool: ledger, note_root, miner_data })?;
+        let payload = self.serialize_coinbase_payload(&CoinbaseData {
+            blue_score: ghostdag_data.blue_score,
+            subsidy,
+            pool: ledger,
+            note_root,
+            private_state,
+            miner_data,
+        })?;
 
         Ok(CoinbaseTransactionTemplate {
             tx: Transaction::new(constants::TX_VERSION_TOCCATA, vec![], outputs, 0, subnets::SUBNETWORK_ID_COINBASE, 0, payload),
@@ -210,6 +220,7 @@ impl CoinbaseManager {
             .chain(data.pool.transparent_supply.to_le_bytes().iter().copied())                  // Zethora: transparent supply  (u64)
             .chain(data.pool.shielded_balance.to_le_bytes().iter().copied())                    // Zethora: shielded balance    (u64)
             .chain(data.note_root.iter().copied())                                              // Zethora: private coin list root ([u8; 32])
+            .chain(data.private_state.iter().copied())                                          // Zethora: private state fingerprint ([u8; 32])
             .chain(data.miner_data.script_public_key.version().to_le_bytes().iter().copied())   // Script public key version    (u16)
             .chain((script_pub_key_len as u8).to_le_bytes().iter().copied())                    // Script public key length     (u8)
             .chain(data.miner_data.script_public_key.script().iter().copied())                  // Script public key            
@@ -230,7 +241,8 @@ impl CoinbaseManager {
 
         // Keep only blue score, subsidy and the Zethora supply ledger. Note that truncate does not modify capacity, so
         // the usual case where the payloads are the same size will not trigger a reallocation
-        payload.truncate(LENGTH_OF_BLUE_SCORE + LENGTH_OF_SUBSIDY + LENGTH_OF_POOL_STATE + LENGTH_OF_NOTE_ROOT);
+        payload
+            .truncate(LENGTH_OF_BLUE_SCORE + LENGTH_OF_SUBSIDY + LENGTH_OF_POOL_STATE + LENGTH_OF_NOTE_ROOT + LENGTH_OF_PRIVATE_STATE);
         payload.extend(
             miner_data.script_public_key.version().to_le_bytes().iter().copied() // Script public key version (u16)
                 .chain((script_pub_key_len as u8).to_le_bytes().iter().copied()) // Script public key length  (u8)
@@ -260,6 +272,7 @@ impl CoinbaseManager {
         let transparent_supply = u64::from_le_bytes(parser.take(8).try_into().unwrap());
         let shielded_balance = u64::from_le_bytes(parser.take(8).try_into().unwrap());
         let note_root: [u8; 32] = parser.take(LENGTH_OF_NOTE_ROOT).try_into().unwrap();
+        let private_state: [u8; 32] = parser.take(LENGTH_OF_PRIVATE_STATE).try_into().unwrap();
         let script_pub_key_version = u16::from_le_bytes(parser.take(LENGTH_OF_SCRIPT_PUB_KEY_VERSION).try_into().unwrap());
         let script_pub_key_len = u8::from_le_bytes(parser.take(LENGTH_OF_SCRIPT_PUB_KEY_LENGTH).try_into().unwrap());
 
@@ -286,6 +299,7 @@ impl CoinbaseManager {
             subsidy,
             pool: PoolState { pool_balance, total_burned, total_issued, transparent_supply, shielded_balance },
             note_root,
+            private_state,
             miner_data: MinerData { script_public_key, extra_data },
         })
     }
@@ -602,6 +616,7 @@ mod tests {
             subsidy: 44000000000,
             pool: PoolState { pool_balance: 123, total_burned: 456, total_issued: 789, transparent_supply: 10, shielded_balance: 11 },
             note_root: [3; 32],
+            private_state: [5; 32],
             miner_data: MinerData {
                 script_public_key: ScriptPublicKey::new(0, ScriptVec::from_slice(&script_data)),
                 extra_data: &extra_data as &[u8],
@@ -627,6 +642,7 @@ mod tests {
             subsidy: 44000000000,
             pool: PoolState { pool_balance: 7, total_burned: 8, total_issued: 9, transparent_supply: 10, shielded_balance: 11 },
             note_root: [4; 32],
+            private_state: [6; 32],
             miner_data: MinerData {
                 script_public_key: ScriptPublicKey::new(0, ScriptVec::from_slice(&script_data)),
                 extra_data: &extra_data,
@@ -638,6 +654,7 @@ mod tests {
             subsidy: data.subsidy,
             pool: data.pool,
             note_root: data.note_root,
+            private_state: data.private_state,
             miner_data: MinerData {
                 // Modify only miner data
                 script_public_key: ScriptPublicKey::new(0, ScriptVec::from_slice(&[33u8, 255, 33])),
@@ -662,7 +679,17 @@ mod tests {
         let mergeset_non_daa = Default::default();
 
         let tx = cbm
-            .expected_coinbase_transaction(100, miner_data, &ghostdag_data, &mergeset_rewards, &mergeset_non_daa, PoolState::default(), 0, [0; 32])
+            .expected_coinbase_transaction(
+                100,
+                miner_data,
+                &ghostdag_data,
+                &mergeset_rewards,
+                &mergeset_non_daa,
+                PoolState::default(),
+                0,
+                [0; 32],
+                [0; 32],
+            )
             .unwrap();
 
         assert_eq!(tx.tx.version, constants::TX_VERSION_TOCCATA);

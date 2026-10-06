@@ -40,6 +40,9 @@ pub struct CoinbaseData<T: AsRef<[u8]> = Vec<u8>> {
     pub pool: PoolState,
     /// Zethora: root of the private coin list after this block's mergeset (ZTH-SPEC-006 §6.1)
     pub note_root: [u8; 32],
+    /// Zethora: fingerprint of every spent private coin tag and every coin list snapshot after this block's mergeset
+    /// (ZTH-SPEC-006 §6.4), so nodes joining from a pruning point can check the private state they download
+    pub private_state: [u8; 32],
     pub miner_data: MinerData<T>,
 }
 

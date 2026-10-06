@@ -24,6 +24,7 @@ pub mod virtual_state;
 pub mod zethora_anchors;
 pub mod zethora_note_trees;
 pub mod zethora_nullifiers;
+pub mod zethora_private_states;
 
 pub use kaspa_database;
 pub use kaspa_database::prelude::DB;

@@ -151,6 +151,8 @@ pub struct VirtualStateProcessor {
     pub(super) zethora_nullifiers_store: Arc<crate::model::stores::zethora_nullifiers::DbZethoraNullifiersStore>,
     /// Zethora: private coin list snapshots (anchors) -> chain blocks that produced them (ZTH-SPEC-006 §6.2)
     pub(super) zethora_anchors_store: Arc<crate::model::stores::zethora_anchors::DbZethoraAnchorsStore>,
+    /// Zethora: private state fingerprint after each chain block (ZTH-SPEC-006 §6.4)
+    pub(super) zethora_private_states_store: Arc<crate::model::stores::zethora_private_states::DbZethoraPrivateStatesStore>,
     pub(super) acceptance_data_store: Arc<DbAcceptanceDataStore>,
     pub(super) virtual_stores: Arc<RwLock<VirtualStores>>,
     pub(super) pruning_meta_stores: Arc<RwLock<PruningMetaStores>>,
@@ -244,6 +246,7 @@ impl VirtualStateProcessor {
             zethora_note_trees_store: storage.zethora_note_trees_store.clone(),
             zethora_nullifiers_store: storage.zethora_nullifiers_store.clone(),
             zethora_anchors_store: storage.zethora_anchors_store.clone(),
+            zethora_private_states_store: storage.zethora_private_states_store.clone(),
             acceptance_data_store: storage.acceptance_data_store.clone(),
             virtual_stores: storage.virtual_stores.clone(),
             pruning_meta_stores: storage.pruning_meta_stores.clone(),
@@ -502,6 +505,7 @@ impl VirtualStateProcessor {
                                 ctx.note_tree,
                                 ctx.note_tree_grew,
                                 ctx.nullifier_list,
+                                ctx.private_state,
                                 ctx.mergeset_diff,
                                 ctx.multiset_hash,
                                 ctx.mergeset_acceptance_data,
@@ -534,6 +538,7 @@ impl VirtualStateProcessor {
         note_tree: zethora_shielded::NoteCommitmentTree,
         produced_anchor: bool,
         nullifiers: Vec<[u8; 32]>,
+        private_state: MuHash,
         mergeset_diff: UtxoDiff,
         multiset: MuHash,
         acceptance_data: AcceptanceData,
@@ -552,6 +557,7 @@ impl VirtualStateProcessor {
             self.zethora_anchors_store.add_batch(&mut batch, current, &note_tree.root().to_bytes()).unwrap();
         }
         self.zethora_nullifiers_store.add_batch(&mut batch, current, &nullifiers).unwrap();
+        self.zethora_private_states_store.set_batch(&mut batch, current, private_state).unwrap();
         self.acceptance_data_store.insert_batch(&mut batch, current, Arc::new(acceptance_data)).unwrap();
         // Note we call idempotent since this field can be populated during IBD with headers proof
         self.pruning_samples_store.insert_batch(&mut batch, current, pruning_sample_from_pov).idempotent().unwrap();
@@ -620,6 +626,7 @@ impl VirtualStateProcessor {
 
         // Zethora: the private coin list root after the virtual's mergeset (read before ctx's borrow ends)
         let note_root = ctx.note_tree.root().to_bytes();
+        let private_state = ctx.private_state.clone().finalize().as_bytes();
         let mergeset_nullifiers = std::mem::take(&mut ctx.nullifier_list);
 
         // Build the new virtual state
@@ -635,6 +642,7 @@ impl VirtualStateProcessor {
             virtual_daa_window.mergeset_non_daa,
             virtual_ghostdag_data,
             note_root,
+            private_state,
             mergeset_nullifiers,
         ));
         Ok(virtual_state)
@@ -1555,6 +1563,7 @@ impl VirtualStateProcessor {
                 self.pool_state_of(virtual_state.ghostdag_data.selected_parent),
                 self.visible_change_of(&virtual_state.utxo_diff, virtual_state.ghostdag_data.selected_parent),
                 virtual_state.note_root,
+                virtual_state.private_state,
             )
             .map_err(|e| match e {
                 kaspa_consensus_core::errors::coinbase::CoinbaseError::ZethoraSupply(reason) => {
@@ -1631,6 +1640,7 @@ impl VirtualStateProcessor {
             zethora_shielded::NoteCommitmentTree::new(), // Zethora: no private coins at genesis
             true,                                        // ...and the empty list is the first snapshot
             Vec::new(),                                  // ...and no spent private coin tags
+            crate::processes::zethora_private_state::genesis_private_state(), // ...so the fingerprint holds just that snapshot
             UtxoDiff::default(),
             MuHash::new(),
             AcceptanceData::default(),

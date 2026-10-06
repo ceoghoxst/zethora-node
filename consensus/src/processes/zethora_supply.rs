@@ -31,10 +31,9 @@ pub enum SupplyError {
 impl fmt::Display for SupplyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            SupplyError::ShieldedPoolNegative { balance, value_in, value_out } => write!(
-                f,
-                "private pool would go below zero: balance {balance} + in {value_in} < out {value_out} zets"
-            ),
+            SupplyError::ShieldedPoolNegative { balance, value_in, value_out } => {
+                write!(f, "private pool would go below zero: balance {balance} + in {value_in} < out {value_out} zets")
+            }
             SupplyError::VisibleSupplyOutOfRange(v) => write!(f, "visible supply out of range: {v} zets"),
             SupplyError::CounterOverflow(name) => write!(f, "{name} counter overflow"),
             SupplyError::Unbalanced { transparent, pool, burned, shielded, issued } => write!(
@@ -124,7 +123,8 @@ mod tests {
         let pool = pool_step(parent, base);
         let fees = tips + base;
         let coinbase_out = subsidy + (tips - unpaid) + pool.payout;
-        let flows = BlockFlows { issued: subsidy, unpaid, visible_change: -(fees as i128) + cheat, coinbase_out, ..Default::default() };
+        let flows =
+            BlockFlows { issued: subsidy, unpaid, visible_change: -(fees as i128) + cheat, coinbase_out, ..Default::default() };
         ledger_step(parent, pool.next, flows)
     }
 

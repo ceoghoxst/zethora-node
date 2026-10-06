@@ -72,6 +72,25 @@ pub fn nullifiers(payload: &[u8]) -> Vec<[u8; 32]> {
         .collect()
 }
 
+/// The private state fingerprint (ZTH-SPEC-006 §6.4): a MuHash set hash, sealed in every coinbase, over every private
+/// coin tag ever spent on the chain and every coin list snapshot (anchor) the chain ever produced. A node joining from a
+/// pruning point downloads both sets and checks them against this fingerprint, the way it checks the visible UTXO set
+/// against the UTXO commitment. Each set member is tagged so a tag and a snapshot can never be confused.
+pub fn private_state_spent_element(nullifier: &[u8; 32]) -> [u8; 33] {
+    let mut e = [0u8; 33];
+    e[0] = b'N';
+    e[1..].copy_from_slice(nullifier);
+    e
+}
+
+/// A coin list snapshot (anchor) as a member of the private state fingerprint (see `private_state_spent_element`).
+pub fn private_state_anchor_element(root: &[u8; 32]) -> [u8; 33] {
+    let mut e = [0u8; 33];
+    e[0] = b'A';
+    e[1..].copy_from_slice(root);
+    e
+}
+
 /// A spend must use a private coin list snapshot (anchor) produced at least this many blue blocks below the
 /// block that accepts it (ZTH-SPEC-006 §6.2). On today's devnet (one home miner, about 1 block per second) that is
 /// about 10 minutes; a reorg that deep never happens in practice, so a payment that was valid stays valid. Far inside

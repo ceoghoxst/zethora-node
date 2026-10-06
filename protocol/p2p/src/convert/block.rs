@@ -141,7 +141,7 @@ mod tests {
             //    - Up to coinbase_payload_script_public_key_max_len bytes script per output (150 bytes)
             //    - A covenant binding on every output in version 1 (authorizing_input: u16 + covenant_id: Hash)
             //    - An arbitrary u64 lock time (finality succeeds with 0 inputs)
-            //    - Up to max_coinbase_payload_len bytes payload (204 bytes)
+            //    - Up to max_coinbase_payload_len bytes payload (300 bytes on Zethora)
             //    - Zero gas, zero storage mass, and SUBNETWORK_ID_COINBASE.
             let max_coinbase_outputs = params.ghostdag_k() as usize + 2;
 
@@ -161,7 +161,7 @@ mod tests {
                 + 8 // gas (u64)
                 + HASH_SIZE // payload hash (32 bytes)
                 + 8 // payload length (u64)
-                + params.max_coinbase_payload_len; // 204 bytes
+                + params.max_coinbase_payload_len; // 300 bytes on Zethora
 
             // Construct the maximal valid coinbase transaction to verify the analytical calculation
             // and determine its Protobuf wire encoding size.
