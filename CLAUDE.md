@@ -52,6 +52,9 @@ Repo: github.com/ceoghoxst/zethora-node, branch `zethora` (a rusty-kaspa fork). 
    them, is banned instead).
    RULE: whenever the proof rules change (circuit, what counts as InvalidPrivatePaymentProof), reset the devnet, or
    new nodes would ban honest peers serving old blocks valid under the old rules.
+11. Mempool in-isolation checks (incl. proofs) run on their own rayon pool (VirtualStateProcessor.mempool_check_pool,
+   a quarter of the CPU threads, "mempool-check-N", created on first use), not the virtual processor's pool. Caps the
+   CPU a proof flood can take; does not reserve cores for blocks. In-context checks still use the virtual pool.
 
 ## Known gaps / next steps
 - ANCHOR_DEPTH 600 assumes ~1 block/s; scale with real block rate before testnet.
@@ -59,8 +62,7 @@ Repo: github.com/ceoghoxst/zethora-node, branch `zethora` (a rusty-kaspa fork). 
 - Fully private payments can't be fee-bumped yet (no visible input to replace by fee; the mempool refuses a re-send
   that reuses the coin tags). Needs RBF keyed on coin tags.
 - Banning by IP: two nodes on one PC share 127.0.0.1, so a ban there hits both. Fine for devnet.
-- Before testnet: bans are per IP only; other invalid blocks (not forged payments) only disconnect; mempool proof checks
-  share the thread pool with block validation (give them their own pool).
+- Before testnet: bans are per IP only; other invalid blocks (not forged payments) only disconnect.
 - Needs a human crypto reviewer before private sending reaches a public network, then a professional audit before launch.
 - Miner app ideas (demos only, not linked to the real miner): "Raven Room" (pixel room + mine) and "Zethora Miner"
   (GoMining-style rig app). Rule: upgrades are earned/cosmetic; never pay to mine more ZTHR (fair launch).

@@ -113,6 +113,10 @@ pub struct VirtualStateProcessor {
 
     // Thread pool
     pub(super) thread_pool: Arc<ThreadPool>,
+    /// Zethora (ZTH-SPEC-006 §8): its own few workers for checking the proofs of waiting (mempool) transactions, so a
+    /// flood of private payments can't fill the virtual processor's worker queue. Created on first use, so consensus
+    /// instances that never see mempool transactions (staging, tests) don't start these threads.
+    mempool_check_pool: std::sync::OnceLock<ThreadPool>,
 
     // DB
     db: Arc<DB>,
@@ -188,6 +192,12 @@ pub struct VirtualStateProcessor {
     _mining_rules: Arc<MiningRules>,
 }
 
+/// Zethora: a quarter of the machine's threads (at least 1) check waiting transactions' proofs. This caps how much CPU
+/// a flood of private payments can take; it does not reserve CPU for blocks (the OS shares cores among all threads).
+fn mempool_check_threads() -> usize {
+    std::thread::available_parallelism().map_or(1, |n| (n.get() / 4).max(1))
+}
+
 impl VirtualStateProcessor {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -209,6 +219,7 @@ impl VirtualStateProcessor {
             pruning_sender,
             pruning_receiver,
             thread_pool,
+            mempool_check_pool: std::sync::OnceLock::new(),
 
             genesis: params.genesis.clone(),
             max_block_parents: params.max_block_parents(),
@@ -1222,6 +1233,17 @@ impl VirtualStateProcessor {
         (virtual_parents, ghostdag_data)
     }
 
+    /// Zethora: the mempool proof-check workers, created on first use.
+    fn mempool_check_pool(&self) -> &ThreadPool {
+        self.mempool_check_pool.get_or_init(|| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(mempool_check_threads())
+                .thread_name(|i| format!("mempool-check-{i}"))
+                .build()
+                .unwrap()
+        })
+    }
+
     /// Everything except the in-isolation checks, against the virtual state (call with the virtual lock held).
     fn validate_mempool_transaction_in_context_impl(
         &self,
@@ -1271,7 +1293,7 @@ impl VirtualStateProcessor {
         // Zethora (ZTH-SPEC-006 §8): cheap private checks first, then the in-isolation checks (incl. the proof check)
         // WITHOUT holding the virtual lock, so slow proof checks never hold up block processing
         self.private_precheck(std::slice::from_ref(&*mutable_tx)).pop().expect("one result")?;
-        self.thread_pool.install(|| self.transaction_validator.validate_tx_in_isolation(&mutable_tx.tx))?;
+        self.mempool_check_pool().install(|| self.transaction_validator.validate_tx_in_isolation(&mutable_tx.tx))?;
 
         let virtual_read = self.virtual_stores.read();
         let virtual_state = virtual_read.state.get().unwrap();
@@ -1304,7 +1326,7 @@ impl VirtualStateProcessor {
         // Zethora (ZTH-SPEC-006 §8): 1. cheap private checks (brief virtual lock), 2. in-isolation checks incl. proof
         // checks in parallel WITHOUT the virtual lock, 3. everything else against the virtual state (virtual lock)
         let mut results = self.private_precheck(mutable_txs);
-        self.thread_pool.install(|| {
+        self.mempool_check_pool().install(|| {
             mutable_txs.par_iter().zip(results.par_iter_mut()).for_each(|(mtx, result)| {
                 if result.is_ok() {
                     *result = self.transaction_validator.validate_tx_in_isolation(&mtx.tx);
