@@ -839,4 +839,23 @@ mod tests {
 
         assert!(err.to_string().contains("unknown field `unexpected`"), "{err}");
     }
+
+    /// Zethora step 3c: devnet/fast-pruning.json (a devnet that prunes after about 1,300 blocks instead of ~30 hours, for
+    /// testing a second node joining from a pruning point) must load and keep the depths consistent.
+    #[test]
+    fn zethora_fast_pruning_devnet_file_is_valid() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../devnet/fast-pruning.json");
+        let overrides: OverrideParams = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let p = DEVNET_PARAMS.override_params(overrides);
+        let (pruning, finality, k) = (p.pruning_depth(), p.finality_depth(), p.ghostdag_k() as u64);
+        let m = pruning % finality;
+        assert!(k < m && m < finality - k, "pruning depth must not be a multiple of the finality depth (+- k)");
+        assert!(p.merge_depth() < finality);
+        assert!(p.difficulty_window_duration_in_block_units() < pruning, "difficulty window must fit above the pruning point");
+        assert!(p.past_median_time_window_size as u64 * p.past_median_time_sample_rate < pruning);
+        assert!(p.min_difficulty_window_size <= p.difficulty_window_size);
+        assert!(pruning > crate::zethora_private::ANCHOR_DEPTH, "private coin snapshots must mature above the pruning point too");
+        assert_eq!(p.target_time_per_block, DEVNET_PARAMS.target_time_per_block, "same block rate as the normal devnet");
+        assert_eq!(p.genesis.hash, DEVNET_PARAMS.genesis.hash);
+    }
 }

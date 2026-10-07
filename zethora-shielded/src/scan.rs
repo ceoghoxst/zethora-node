@@ -164,6 +164,17 @@ impl Scanner {
         h
     }
 
+    /// Coins of one wallet that were already spent and are still provable against the snapshot (used to check that the
+    /// network refuses spending them again).
+    pub fn spent_coins(&self, wallet: usize) -> Vec<OwnedCoin> {
+        let snapshot = self.snapshot_size.unwrap_or(0);
+        self.coins
+            .iter()
+            .filter(|c| c.wallet == wallet && c.position < snapshot && self.spent.contains(&c.nullifier))
+            .cloned()
+            .collect()
+    }
+
     fn witness(&self, coin: &OwnedCoin) -> Result<MerklePath, String> {
         let path = self
             .tree

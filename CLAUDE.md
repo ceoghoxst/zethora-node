@@ -14,7 +14,12 @@ Repo: github.com/ceoghoxst/zethora-node, branch `zethora` (a rusty-kaspa fork). 
 ## Run commands (devnet)
 - Node: `cargo run --release --bin kaspad -- --devnet --utxoindex --enable-unsynced-mining` (add `--reset-db --yes` only when a patch changes stored state)
 - Miner: `cargo run --release -p zethora-miner` (prints a Supply check line per block: must say BALANCED)
-- Private wallet tool: `cargo run --release -p zethora-shield -- <0.1 | balance | send 0.05 | unshield 0.05 | attack>`
+- Private wallet tool: `cargo run --release -p zethora-shield -- <0.1 | balance | send 0.05 | unshield 0.05 | attack | replay | bump 0.02 | compare>`
+  (`-- node2 <command>` sends to the second node; the chain is always read from node 1)
+- Step 3c test (fast pruning, node 1 archival so the wallet can still read old blocks):
+  node 1 `cargo run --release --bin kaspad -- --devnet --utxoindex --enable-unsynced-mining --archival --override-params-file=devnet\fast-pruning.json` (+ `--reset-db --yes` the first time),
+  node 2 `.\target\release\kaspad.exe --devnet --appdir=C:\Users\deion\zethora-node2-data --listen=127.0.0.1:26621 --rpclisten=127.0.0.1:26620 --connect=127.0.0.1:26611 --override-params-file=devnet\fast-pruning.json --disable-upnp`.
+  Going back to the normal devnet afterwards needs `--reset-db --yes` without the override file.
 
 ## Done and verified on his devnet (as of Oct 6, 2026)
 1. Supply ledger: every block proves visible + fee pool + burned + private == issued (BALANCED). Planted-bug attack test caught 20 fake zets.
@@ -82,10 +87,22 @@ Repo: github.com/ceoghoxst/zethora-node, branch `zethora` (a rusty-kaspa fork). 
    coin list ending in the empty leaf is refused (NoteCommitmentTree::ends_in_empty_leaf). Block commits and the import
    take turns on VirtualStateProcessor::zethora_records_lock (both share the pruning lock).
    Unit-tested only; 3c = live test with fast devnet pruning and a second node.
+15. Step 3c tooling: devnet/fast-pruning.json (pruning depth 1000, finality 300, merge 100, difficulty window 150x2;
+   same block rate, genesis and coinbase maturity; validated by params test zethora_fast_pruning_devnet_file_is_valid).
+   Wallet: `replay` re-spends your oldest already-spent private coin (Scanner::spent_coins; must be refused with
+   "private coin already spent"), `compare` shows both nodes' tip, pruning point and the fingerprint sealed in it,
+   `node2 <cmd>` submits to node 2 (127.0.0.1:26620) while reading history from node 1 (pruned nodes can't be scanned).
+   The real 3c check: node 2 logs "Zethora: imported and checked the private state of pruning point ...", compare
+   says AGREE, and `node2 replay` is BLOCKED for a coin spent before the pruning point.
+   Run-order rules (else it passes without testing the download): start node 2 only when node 1's pruning point height
+   is above the tip height noted right after the send landed (pruning point = newest 300-multiple sample >= 1000 below
+   the tip), and start node 2 fresh (`--reset-db --yes`); a node 2 joining while node 1's pruning point is genesis
+   just syncs from genesis. The "imported and checked" log line is the proof, AGREE alone is not.
 
 ## Known gaps / next steps
 - ANCHOR_DEPTH 600 assumes ~1 block/s; scale with real block rate before testnet.
-- Pruning-point sync of shielded state: 3a fingerprint + 3b download/verify done (unit-tested); 3c live test next.
+- Pruning-point sync of shielded state: 3a fingerprint + 3b download/verify done (unit-tested); 3c live test tooling
+  ready (item 15), result pending.
   The whole private state is held in memory on both sides during the download, and the server builds it before
   sending the header (client waits DEFAULT_TIMEOUT); fine now, stream it before mainnet.
 - Banning by IP: two nodes on one PC share 127.0.0.1, so a ban there hits both. Fine for devnet.
