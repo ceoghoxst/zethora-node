@@ -21,7 +21,7 @@ Repo: github.com/ceoghoxst/zethora-node, branch `zethora` (a rusty-kaspa fork). 
   node 2 `.\target\release\kaspad.exe --devnet --appdir=C:\Users\deion\zethora-node2-data --listen=127.0.0.1:26621 --rpclisten=127.0.0.1:26620 --connect=127.0.0.1:26611 --override-params-file=devnet\fast-pruning.json --disable-upnp`.
   Going back to the normal devnet afterwards needs `--reset-db --yes` without the override file.
 
-## Done and verified on his devnet (as of Oct 6, 2026)
+## Done and verified on his devnet (as of Oct 7, 2026)
 1. Supply ledger: every block proves visible + fee pool + burned + private == issued (BALANCED). Planted-bug attack test caught 20 fake zets.
 2. Private pool = Zcash Orchard 0.16.0 (pinned rev 616a669), fixed circuit, used unmodified. Payload "ZSHP" + encoded bundle.
 3. Shielding (visible -> private), coin list (note commitment tree, root sealed in coinbase bytes 56..88).
@@ -98,11 +98,22 @@ Repo: github.com/ceoghoxst/zethora-node, branch `zethora` (a rusty-kaspa fork). 
    is above the tip height noted right after the send landed (pruning point = newest 300-multiple sample >= 1000 below
    the tip), and start node 2 fresh (`--reset-db --yes`); a node 2 joining while node 1's pruning point is genesis
    just syncs from genesis. The "imported and checked" log line is the proof, AGREE alone is not.
+   Also STOP THE MINER while node 2 joins: node 2 needs ~10 min to check the proof's RandomZ work, and with fast
+   pruning node 1's pruning point moves every ~4 min, so IBD fails "the proof pruning point is not equal to the last
+   pruning point in the list" and retries forever. Restart the miner after the "imported and checked" line.
+   VERIFIED LIVE Oct 7, 2026: node 2 imported 4 spent tags + 3 snapshots at pruning point 9711653a, validated 1067
+   blocks above it, compare AGREE (same tip/pruning point/fingerprint after node 1 pruned again), `node2 replay`
+   BLOCKED (tag spent before the pruning point), `node2 attack` 3/3.
+16. Privacy step 4, speed test tooling: `zethora-shield speed` (no node needed; stop the miner first) makes 6 payments
+   (2 Orchard actions each) and times: making one, checking one at a time (verify_payment, as the node does), checking
+   on all CPU threads, and Orchard batch checking (new zethora_shielded::verify_payments_batch, not used by consensus
+   yet). Compares with the most private payments a block can carry (devnet block mass limits vs. the payment's compute
+   and transient mass, PROOF_MASS_PER_ACTION 15,000) at the devnet block rate, and the mempool checker's quarter of
+   the threads. Result feeds step 18 (tune speed settings). Result pending.
 
 ## Known gaps / next steps
 - ANCHOR_DEPTH 600 assumes ~1 block/s; scale with real block rate before testnet.
-- Pruning-point sync of shielded state: 3a fingerprint + 3b download/verify done (unit-tested); 3c live test tooling
-  ready (item 15), result pending.
+- Pruning-point sync of shielded state: 3a, 3b, 3c done and verified live (item 15). Privacy step 4 (speed test) tooling ready (item 16).
   The whole private state is held in memory on both sides during the download, and the server builds it before
   sending the header (client waits DEFAULT_TIMEOUT); fine now, stream it before mainnet.
 - Banning by IP: two nodes on one PC share 127.0.0.1, so a ban there hits both. Fine for devnet.

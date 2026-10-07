@@ -20,7 +20,7 @@ use zcash_note_encryption::try_note_decryption;
 use zethora_shielded::{
     CIRCUIT, NoteCommitmentTree, SupportedPool, VerifyError,
     codec::{self, DecodeError},
-    pool_flows, sighash, verify_payment,
+    pool_flows, sighash, verify_payment, verify_payments_batch,
 };
 
 /// Stand-in for the digest of the rest of the Zethora transaction that carries the private payment.
@@ -320,4 +320,16 @@ fn coin_list_survives_saving_and_loading() {
     assert_eq!(a.root(), b.root());
     assert!(NoteCommitmentTree::from_bytes(&[2]).is_err());
     assert!(NoteCommitmentTree::from_bytes(&[]).is_err());
+}
+
+#[test]
+fn batch_check_accepts_valid_payments_and_catches_a_bad_one() {
+    let p = payments();
+    let good = vec![(p.shield.clone(), TX), (p.unshield.clone(), TX)];
+    assert!(verify_payments_batch(&good, verifying_key()), "valid payments pass together");
+    // The same payments claimed for another transaction: their signatures no longer match, and the batch fails
+    let mut bad = good.clone();
+    bad[1].1 = [43; 32];
+    assert!(!verify_payments_batch(&bad, verifying_key()), "one wrong payment fails the whole batch");
+    assert!(verify_payments_batch(&[], verifying_key()), "an empty batch is trivially fine");
 }

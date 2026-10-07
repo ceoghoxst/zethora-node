@@ -83,6 +83,22 @@ pub fn verify_payment(bundle: &Bundle<Authorized, i64>, vk: &VerifyingKey, tx_di
     bundle.verify_proof(vk).map_err(|_| VerifyError::Proof)
 }
 
+/// Checks many private payments together with Orchard's batch check, which combines their proofs and signatures and is
+/// much cheaper per payment than checking them one by one. `payments` pairs each payment with the digest of the
+/// transaction carrying it. True only if every payment is valid; it does not say which one failed (check them one by
+/// one for that). Not used by consensus yet: measured by the wallet tool's `speed` command (ZTH-SPEC-006 §8, step 4).
+pub fn verify_payments_batch(payments: &[(Bundle<Authorized, i64>, [u8; 32])], vk: &VerifyingKey) -> bool {
+    use rand::{rand_core::UnwrapErr, rngs::SysRng};
+    let mut batch = orchard::bundle::BatchValidator::new(vk);
+    for (bundle, tx_digest) in payments {
+        let commitment = bundle.commitment(TxVersion::V5).expect("pool 1 bundles are always committable as v5");
+        if batch.add_bundle(bundle, sighash(tx_digest, commitment.into())).is_err() {
+            return false;
+        }
+    }
+    batch.validate(UnwrapErr(SysRng))
+}
+
 /// The only Orchard circuit Zethora accepts: Zcash's fixed circuit (after CVE-2026-54496).
 pub const CIRCUIT: OrchardCircuitVersion = OrchardCircuitVersion::FixedPostNu6_2;
 

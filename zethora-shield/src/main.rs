@@ -10,6 +10,7 @@
 //!     cargo run --release -p zethora-shield -- bump 0.02       send privately with a low fee, then replace it with a higher fee
 //!     cargo run --release -p zethora-shield -- replay          try to spend an already spent private coin again
 //!     cargo run --release -p zethora-shield -- compare         show whether node 1 and node 2 agree (step 3c)
+//!     cargo run --release -p zethora-shield -- speed           how fast this PC makes and checks private payments (step 4)
 //!
 //! Put `node2` first (e.g. `-- node2 replay`) to send the transactions to the second node of the pruning-point sync test
 //! (the chain is still read from node 1, which keeps the whole history).
@@ -279,6 +280,10 @@ async fn main() {
     if args.first().map(String::as_str) == Some("compare") {
         return compare().await;
     }
+    if args.first().map(String::as_str) == Some("speed") {
+        // Heavy number crunching: run it off the async runtime's threads
+        return tokio::task::spawn_blocking(speed).await.expect("speed test");
+    }
     let m = load_miner();
     let reader = connect(NODE_URL, "the node (is it running with --devnet --utxoindex?)").await;
     let sender = if to_node2 {
@@ -303,7 +308,7 @@ async fn main() {
         Some("replay") => replay(&n, &m).await,
         Some("bump") => bump(&n, &m, parse_amount(args.get(1))).await,
         Some(other) => println!(
-            "Unknown command '{other}'. Use: 0.1 | balance | send 0.05 | unshield 0.05 | attack | replay | bump 0.02 | compare (put node2 first to send to node 2)"
+            "Unknown command '{other}'. Use: 0.1 | balance | send 0.05 | unshield 0.05 | attack | replay | bump 0.02 | compare | speed (put node2 first to send to node 2)"
         ),
     }
 }
@@ -622,6 +627,136 @@ async fn compare() {
         ),
         _ => println!("Start both nodes first (see the cheat sheet)."),
     }
+}
+
+/// Step 4 (ZTH-SPEC-006 §8): how fast this PC makes and checks private payments, and how that compares with the most
+/// private payments blocks can carry. Needs no node: it makes its own payments (into a throwaway private address) and
+/// checks them with the same function and key the node uses.
+fn speed() {
+    use kaspa_consensus_core::mass::MassCalculator;
+    use std::time::{Duration, Instant};
+    use zethora_shielded::{CIRCUIT, codec, orchard::circuit::VerifyingKey, verify_payment, verify_payments_batch};
+
+    /// How many payments to make: enough to average over, few enough to finish in a minute or two
+    const PAYMENTS: usize = 6;
+    /// How long each checking test runs
+    const RUN: Duration = Duration::from_secs(10);
+    /// The proof code can use deep call stacks; give every worker thread plenty
+    const STACK: usize = 32 << 20;
+
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    println!("Zethora private payment speed test on this PC ({threads} CPU threads).");
+    println!("Takes about 2 minutes. Stop the miner first so it doesn't share the CPU (the node can keep running).\n");
+
+    println!("Preparing the proof keys (a few seconds, once per program start)...");
+    let t = Instant::now();
+    let vk = VerifyingKey::build(CIRCUIT);
+    let _ = proving_key();
+    println!("  ready in {:.1} s", t.elapsed().as_secs_f64());
+
+    // 1. Making payments: what a wallet does once per payment
+    println!("\n1. MAKING {PAYMENTS} private payments (what your wallet does each time you pay)...");
+    let to = PrivateWallet::from_seed(&[7; 32]).address();
+    let t = Instant::now();
+    let made: Vec<(Vec<u8>, [u8; 32])> = (0..PAYMENTS)
+        .map(|i| {
+            let digest = [i as u8 + 1; 32]; // stand-in for the digest of the transaction carrying it
+            (shielding_payment(to, 100_000_000, &digest).expect("making a private payment"), digest)
+        })
+        .collect();
+    let make_secs = t.elapsed().as_secs_f64() / PAYMENTS as f64;
+    let decoded: Vec<_> = made.iter().map(|(bytes, digest)| (codec::decode(bytes).expect("own payment").0, *digest)).collect();
+    let actions = decoded[0].0.actions().len();
+    println!("   {make_secs:.2} s per payment ({} bytes, {actions} private actions each)", made[0].0.len());
+
+    // 2. One at a time: how the node checks each arriving payment today
+    println!("\n2. CHECKING one payment at a time (how the node checks each payment today), for {} s...", RUN.as_secs());
+    let t = Instant::now();
+    let mut checked = 0usize;
+    while t.elapsed() < RUN {
+        for (bundle, digest) in &decoded {
+            verify_payment(bundle, &vk, digest).expect("a valid payment");
+            checked += 1;
+        }
+    }
+    let one_rate = checked as f64 / t.elapsed().as_secs_f64();
+    println!("   {:.0} ms per payment = {one_rate:.1} payments per second", 1000.0 / one_rate);
+
+    // 3. Many at once on every CPU thread: a block full of private payments is checked like this
+    println!("\n3. CHECKING on all {threads} threads at once (how a block full of payments gets checked), for {} s...", RUN.as_secs());
+    let t = Instant::now();
+    let total: usize = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..threads)
+            .map(|_| {
+                let (vk, made) = (&vk, &made);
+                std::thread::Builder::new()
+                    .stack_size(STACK)
+                    .spawn_scoped(scope, move || {
+                        let mine: Vec<_> = made.iter().map(|(b, d)| (codec::decode(b).expect("own payment").0, *d)).collect();
+                        let mut n = 0usize;
+                        while t.elapsed() < RUN {
+                            for (bundle, digest) in &mine {
+                                verify_payment(bundle, vk, digest).expect("a valid payment");
+                                n += 1;
+                            }
+                        }
+                        n
+                    })
+                    .expect("starting a checking thread")
+            })
+            .collect();
+        workers.into_iter().map(|w| w.join().expect("checking thread")).sum()
+    });
+    let all_rate = total as f64 / t.elapsed().as_secs_f64();
+    println!("   {all_rate:.1} payments per second");
+
+    // 4. Batch check: not used by the node yet, measured to see what switching to it would gain
+    println!("\n4. CHECKING in batches of {PAYMENTS} on one thread (not used by the node yet), for {} s...", RUN.as_secs());
+    let t = Instant::now();
+    let mut batched = 0usize;
+    while t.elapsed() < RUN {
+        assert!(verify_payments_batch(&decoded, &vk), "valid payments must pass the batch check");
+        batched += PAYMENTS;
+    }
+    let batch_rate = batched as f64 / t.elapsed().as_secs_f64();
+    println!("   {batch_rate:.1} payments per second ({:.1}x one at a time)", batch_rate / one_rate);
+
+    // 5. What blocks allow: the most private payments one block can carry under the block mass limits
+    let payload: Vec<u8> = PRIVATE_PAYMENT_MAGIC.iter().copied().chain(made[0].0.iter().copied()).collect();
+    let mut tx = Transaction::new_non_finalized(TX_VERSION, vec![], vec![], 0, SUBNETWORK_ID_NATIVE, 0, payload);
+    tx.finalize();
+    let masses = MassCalculator::new_with_consensus_params(&DEVNET_PARAMS).calc_non_contextual_masses(&tx);
+    let limits = DEVNET_PARAMS.block_mass_limits;
+    let per_block = (limits.compute / masses.compute_mass.max(1)).min(limits.transient / masses.transient_mass.max(1));
+    let blocks_per_sec = 1000.0 / DEVNET_PARAMS.target_time_per_block as f64;
+    let full_load = per_block as f64 * blocks_per_sec;
+    let mempool_threads = (threads / 4).max(1);
+    let waiting_room_rate = all_rate * mempool_threads as f64 / threads as f64;
+
+    println!("\nRESULT");
+    println!("  Making a payment (wallet):           {make_secs:.2} s each");
+    println!("  Checking, one at a time:             {one_rate:.1} per second");
+    println!("  Checking, all {threads} threads:              {all_rate:.1} per second");
+    println!("  Checking in batches (future option): {batch_rate:.1} per second on one thread");
+    println!(
+        "  A block holds at most {per_block} private payments of this size (compute mass {} each of {} per block, \n  transient mass {} each of {}), so at {blocks_per_sec:.0} block(s) per second the network can ask for up to {full_load:.0} per second.",
+        masses.compute_mass, limits.compute, masses.transient_mass, limits.transient
+    );
+    if all_rate >= full_load {
+        println!(
+            "  This PC checks private payments {:.1}x faster than full blocks need: it keeps up even if every block is full of them.",
+            all_rate / full_load
+        );
+    } else {
+        println!(
+            "  This PC checks private payments at {:.0}% of what full blocks would need: blocks full of private payments would make it fall behind. Send this to Claude.",
+            100.0 * all_rate / full_load
+        );
+    }
+    println!(
+        "  Payments waiting to get into a block are checked on {mempool_threads} of the {threads} threads: about {waiting_room_rate:.0} per second can arrive before they queue up."
+    );
+    println!("\nSend Claude this RESULT block.");
 }
 
 fn finish_attack(blocked: usize, tried: usize) {
