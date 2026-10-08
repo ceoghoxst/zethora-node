@@ -126,6 +126,15 @@ Repo: github.com/ceoghoxst/zethora-node, branch `zethora` (a rusty-kaspa fork). 
    per-step drops telescope to reward(0), so total extra <= 2,824 x 0.2746 ~ 775 ZTHR < 1,000 reserve. The CapExceeded
    backstop makes an over-paying block invalid (the chain would stall, never overpay). full_emission_schedule walks
    the whole schedule only in release mode. No reset needed.
+18. B6a RandomZ (ZTH-SPEC-000 §4.4, SPEC-005 §5.1): randomx-rs v1.6.0 (tari, commit 6733ed4) vendored in ./randomz
+   (workspace dep `randomx-rs = { path = "randomz" }`, upstream tests removed since they check stock hashes). RandomX
+   config changed only where RandomX documents it as safe: salt "RandomZ\x01", IROR/IROL 6/4, FADD_R/FSUB_R 15/17,
+   FADD_M/FSUB_M 6/4 (configuration.h AND src/asm/configuration.asm for Windows MASM). Same memory/time cost as RandomX.
+   Checked in the sandbox: stock build reproduces RandomX's official vector; RandomZ interpreter = JIT = fast mode.
+   Tests (kaspa-pow randomz): RandomZ vectors, "not stock RandomX" guard, devnet PoW vector. DEVNET RESET REQUIRED
+   (every PoW hash changed). Miner speed test: `cargo run --release -p zethora-miner -- bench` (light-mode setup and
+   per-block check time, dataset time, fast-mode H/s on 1, half, all threads). Key rotation = step 6b (not done: the
+   key must be computable for any header incl. pruning-proof headers, and per-epoch 256 MB cache inits cost ~1 s).
 
 ## Known gaps / next steps
 - ANCHOR_DEPTH 600 assumes ~1 block/s; scale with real block rate before testnet.
@@ -135,7 +144,7 @@ Repo: github.com/ceoghoxst/zethora-node, branch `zethora` (a rusty-kaspa fork). 
   overshoot bound (window 661x40 + 248) is ~7,300 ZTHR > the 1,000 reserve, so the CapExceeded backstop could fire
   near the end of emission and STALL the chain). Simnet is also 10 bps (tests only). Kaspa tests that use
   MAINNET/TESTNET params will need care when that changes.
-- Pruning-point sync of shielded state: 3a, 3b, 3c done and verified live (item 15). Privacy step 4 speed test done (item 16). Privacy section A complete. B5 (100M check) done (item 17); next B6 final RandomZ + speed test.
+- Pruning-point sync of shielded state: 3a, 3b, 3c done and verified live (item 15). Privacy step 4 speed test done (item 16). Privacy section A complete. B5 (100M check) done (item 17). B6a RandomZ params + bench (item 18); 6b key rotation next.
   The whole private state is held in memory on both sides during the download, and the server builds it before
   sending the header (client waits DEFAULT_TIMEOUT); fine now, stream it before mainnet.
 - Banning by IP: two nodes on one PC share 127.0.0.1, so a ban there hits both. Fine for devnet.

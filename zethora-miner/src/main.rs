@@ -7,17 +7,19 @@
 //! Usage:  cargo run --release --bin zethora-miner
 //! The node must be running with:  --devnet --enable-unsynced-mining
 //!
+//! Speed test (no node needed, stop the real miner first):  cargo run --release -p zethora-miner -- bench
+//!
 //! The miner keeps its key in `zethora-miner-key.txt` (devnet test coins only).
 
 use kaspa_addresses::{Address, Prefix, Version};
 use kaspa_consensus_core::{header::Header, network::NetworkType};
 use kaspa_grpc_client::GrpcClient;
 use kaspa_rpc_core::api::rpc::RpcApi;
-use secp256k1::{Keypair, SecretKey, SECP256K1};
+use secp256k1::{Keypair, SECP256K1, SecretKey};
 use std::{
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -41,8 +43,96 @@ fn load_or_create_key() -> Keypair {
     kp
 }
 
+/// RandomZ speed test (step 6): what checking mining work costs a node, and how fast this PC mines.
+fn bench() {
+    use kaspa_pow::randomz::{FastHasher, new_mining_dataset, pow_input, pow_value_light};
+    const RUN: Duration = Duration::from_secs(10);
+    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    println!("RandomZ speed test on this PC ({threads} CPU threads). Takes about 2-3 minutes; stop the node and the miner first.\n");
+
+    // 1. Node side: light mode (256 MB), one hash per block to check
+    println!("1. NODE: preparing light mode (256 MB, done once at node start)...");
+    let t = Instant::now();
+    let first = pow_value_light(&pow_input(&[1; 32], 0, 0));
+    let setup = t.elapsed().as_secs_f64();
+    println!("   ready in {setup:.2} s");
+    println!("   checking mining work, one block at a time, for {} s...", RUN.as_secs());
+    let t = Instant::now();
+    let mut checked = 0u64;
+    while t.elapsed() < RUN {
+        let _ = pow_value_light(&pow_input(&[2; 32], checked, checked));
+        checked += 1;
+    }
+    let check_ms = t.elapsed().as_secs_f64() * 1000.0 / checked as f64;
+    println!("   {check_ms:.1} ms per block");
+
+    // 2. Miner side: fast mode (about 2 GB dataset), many hashes per second
+    println!("\n2. MINER: building the fast-mode dataset (about 2 GB, on one thread like the miner does today)...");
+    let t = Instant::now();
+    let dataset = new_mining_dataset();
+    let dataset_secs = t.elapsed().as_secs_f64();
+    println!("   ready in {dataset_secs:.0} s");
+    // Sanity: fast and light mode must agree on the same input
+    let same = FastHasher::new(&dataset).pow_value(&pow_input(&[1; 32], 0, 0)) == first;
+    println!("   fast mode and light mode give the same hash: {}", if same { "YES" } else { "NO (send this to Claude)" });
+
+    let mut rates = Vec::new();
+    // RandomX usually peaks around 8 threads on 6-core desktop chips (2 MB of CPU cache per thread)
+    let mut counts = vec![1, threads / 2, threads.min(8), threads];
+    counts.retain(|&n| n > 0);
+    counts.sort_unstable();
+    counts.dedup();
+    for n in counts {
+        println!("   mining on {n} thread(s) for {} s...", RUN.as_secs());
+        let t = Instant::now();
+        let total: u64 = std::thread::scope(|s| {
+            let workers: Vec<_> = (0..n)
+                .map(|i| {
+                    let dataset = &dataset;
+                    s.spawn(move || {
+                        let hasher = FastHasher::new(dataset);
+                        let mut nonce = (i as u64) << 40;
+                        let mut done = 0u64;
+                        while t.elapsed() < RUN {
+                            let _ = hasher.pow_value(&pow_input(&[3; 32], 0, nonce));
+                            nonce += 1;
+                            done += 1;
+                        }
+                        done
+                    })
+                })
+                .collect();
+            workers.into_iter().map(|w| w.join().unwrap()).sum()
+        });
+        let rate = total as f64 / t.elapsed().as_secs_f64();
+        println!("   {rate:.0} H/s");
+        rates.push((n, rate));
+    }
+
+    let block_secs = 1.0; // devnet and planned mainnet: 1 block per second (ZTH-SPEC-005)
+    println!("\nRESULT");
+    println!("  Node: light mode ready in {setup:.2} s; checking one block's mining work takes {check_ms:.1} ms");
+    println!(
+        "        = {:.1}% of one CPU thread at 1 block per second (a full sync re-checks {:.0} blocks per second per thread)",
+        100.0 * check_ms / 1000.0 / block_secs,
+        1000.0 / check_ms
+    );
+    println!(
+        "  Miner: dataset ready in {dataset_secs:.0} s (one thread); fast and light mode agree: {}",
+        if same { "YES" } else { "NO" }
+    );
+    for (n, rate) in &rates {
+        println!("  Mining speed on {n:>2} thread(s): {rate:>7.0} H/s");
+    }
+    println!("  (No large pages and no hash pipelining yet: dedicated miners like XMRig get more on the same PC.)");
+    println!("\nSend Claude this RESULT block.");
+}
+
 #[tokio::main]
 async fn main() {
+    if std::env::args().nth(1).as_deref() == Some("bench") {
+        return tokio::task::spawn_blocking(bench).await.expect("speed test");
+    }
     let kp = load_or_create_key();
     let address = Address::new(Prefix::from(NetworkType::Devnet), Version::PubKey, &kp.x_only_public_key().0.serialize());
     println!("Zethora devnet miner");

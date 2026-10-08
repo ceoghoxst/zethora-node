@@ -1,0 +1,21 @@
+# Zethora: vendored copy of tari-project/randomx-rs v1.6.0 (BSD-3-Clause, commit 6733ed4), building "RandomZ":
+# the RandomX library in ./RandomX with Zethora's own parameters (RandomX/src/configuration.h; ZTH-SPEC-000 §4.4,
+# ZTH-SPEC-005 §5.1). Only the parameters changed, see ZETHORA.md. The upstream tests were removed because they check
+# stock RandomX hashes; RandomZ's own test vectors live in consensus/pow/src/randomz.rs.
+[package]
+name = "randomx-rs"
+description = "Rust bindings for RandomZ (RandomX with Zethora parameters), vendored from tari-project/randomx-rs"
+authors = ["The Tari Development Community", "DeionRaven Labs (Zethora parameters)"]
+license = "BSD-3-Clause"
+version = "1.6.0"
+edition = "2018"
+build = "build.rs"
+publish = false
+
+[dependencies]
+libc = "0.2.121"
+bitflags = "1.3.2"
+thiserror = "1.0.50"
+
+[build-dependencies]
+cmake = "0.1"

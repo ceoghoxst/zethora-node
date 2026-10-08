@@ -237,7 +237,8 @@ pbkdf2 = "0.12.2"
 portable-atomic = { version = "1.5.1", features = ["float"] }
 prost = "0.14.3"
 rand = "0.8.5"
-randomx-rs = { git = "https://github.com/tari-project/randomx-rs", tag = "v1.6.0" }
+# Zethora: RandomZ = RandomX with Zethora parameters, vendored in ./randomz (see randomz/ZETHORA.md)
+randomx-rs = { path = "randomz" }
 rand_chacha = "0.3.1"
 rand_core = { version = "0.6.4", features = ["std"] }
 rand_distr = "0.4.3"
