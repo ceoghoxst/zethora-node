@@ -109,11 +109,33 @@ Repo: github.com/ceoghoxst/zethora-node, branch `zethora` (a rusty-kaspa fork). 
    on all CPU threads, and Orchard batch checking (new zethora_shielded::verify_payments_batch, not used by consensus
    yet). Compares with the most private payments a block can carry (devnet block mass limits vs. the payment's compute
    and transient mass, PROOF_MASS_PER_ACTION 15,000) at the devnet block rate, and the mempool checker's quarter of
-   the threads. Result feeds step 18 (tune speed settings). Result pending.
+   the threads. Result feeds step 18 (tune speed settings).
+   RESULT on his Ryzen 5 2600 (12 threads), Oct 7, 2026: making 1.49 s/payment (9,144 bytes, 2 actions); checking one
+   at a time 13 ms = 77.7/s; all 12 threads 123.2/s (halo2 already multithreads each check, so parallel gains little);
+   Orchard batch of 6 on one thread 220.6/s (2.8x). Payment mass: compute 39,242 of 500,000, transient 36,968 of
+   1,000,000 -> 12 private payments per block = 12/s at 1 bps. PC has 10.3x headroom over full blocks; mempool
+   checker (3 threads) ~31/s. For step 18: blocks, not CPU, cap private throughput (PROOF_MASS_PER_ACTION 15,000 is
+   conservative); switching block/mempool checks to batch checking is the big speed win. Privacy section A DONE.
+17. B5 reward schedule = 100M check (ZTH-SPEC-001 §5): consensus rule in zethora_supply::ledger_step: a block that
+   would bring total_issued above CAP_UNITS (100,000,000 ZTHR) is invalid (SupplyError::CapExceeded); never fires on
+   an honest chain (backstop). zethora_subsidy: exact full-schedule walk (jumps while floor(R/D) is constant; matches
+   a C reference and the node's step-by-step lookup): 50% at 8 y, 75% at 16, 93.75% at 32, 99.6% at 64; reward hits 0
+   at DAA score EMISSION_END_SCORE 8,126,002,948 (~257.5 y at 1 bps); TOTAL_EMISSION = 999,989,999,635,776,057 zets
+   = 99,998,999.9635776057 ZTHR (+1,000 ZTHR reserve never mined). DAG overshoot bound: each block is paid at its own
+   DAA score; a paid merged block lags its place by <= difficulty window + mergeset (2,644 + 180 on devnet); the
+   per-step drops telescope to reward(0), so total extra <= 2,824 x 0.2746 ~ 775 ZTHR < 1,000 reserve. The CapExceeded
+   backstop makes an over-paying block invalid (the chain would stall, never overpay). full_emission_schedule walks
+   the whole schedule only in release mode. No reset needed.
 
 ## Known gaps / next steps
 - ANCHOR_DEPTH 600 assumes ~1 block/s; scale with real block rate before testnet.
-- Pruning-point sync of shielded state: 3a, 3b, 3c done and verified live (item 15). Privacy step 4 (speed test) tooling ready (item 16).
+- TESTNET_PARAMS and MAINNET_PARAMS are still Kaspa's 10 blocks/sec (BlockrateParams::new::<10>()), and their genesis
+  is Kaspa's. The reward divisor D assumes 1 block/sec: set both to 1 block/sec with Zethora genesis blocks before any
+  testnet launch (rewards would otherwise come 10x faster; the 100M cap rule still holds, but at 10 bps the DAG
+  overshoot bound (window 661x40 + 248) is ~7,300 ZTHR > the 1,000 reserve, so the CapExceeded backstop could fire
+  near the end of emission and STALL the chain). Simnet is also 10 bps (tests only). Kaspa tests that use
+  MAINNET/TESTNET params will need care when that changes.
+- Pruning-point sync of shielded state: 3a, 3b, 3c done and verified live (item 15). Privacy step 4 speed test done (item 16). Privacy section A complete. B5 (100M check) done (item 17); next B6 final RandomZ + speed test.
   The whole private state is held in memory on both sides during the download, and the server builds it before
   sending the header (client waits DEFAULT_TIMEOUT); fine now, stream it before mainnet.
 - Banning by IP: two nodes on one PC share 127.0.0.1, so a ban there hits both. Fine for devnet.

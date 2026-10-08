@@ -12,7 +12,13 @@
 //!
 //! A bookkeeping bug that creates or loses even one zet makes the ledger unbalanced, and the
 //! private pool's public balance (the turnstile) can never go below zero.
+//!
+//! The hard cap (ZTH-SPEC-001 §5): no block may bring the total ever issued above 100,000,000 ZTHR
+//! (`CAP_UNITS`). The reward schedule itself stops ~1,000 ZTHR short of it (see `zethora_subsidy`), so this
+//! rule never fires on an honest chain; it is the backstop that keeps the cap even if a future bug or an
+//! unforeseen block pattern paid too much: such a block is invalid.
 
+use crate::processes::zethora_subsidy::CAP_UNITS;
 use kaspa_consensus_core::coinbase::PoolState;
 use std::fmt;
 
@@ -26,6 +32,8 @@ pub enum SupplyError {
     CounterOverflow(&'static str),
     /// The ledger does not add up.
     Unbalanced { transparent: u64, pool: u64, burned: u64, shielded: u64, issued: u64 },
+    /// The block would bring the total ever issued above the 100,000,000 ZTHR hard cap.
+    CapExceeded { issued: u64 },
 }
 
 impl fmt::Display for SupplyError {
@@ -40,6 +48,9 @@ impl fmt::Display for SupplyError {
                 f,
                 "ledger does not balance: visible {transparent} + fee pool {pool} + burned {burned} + private pool {shielded} != issued {issued} zets"
             ),
+            SupplyError::CapExceeded { issued } => {
+                write!(f, "total issued would be {issued} zets, above the 100,000,000 ZTHR hard cap ({CAP_UNITS} zets)")
+            }
         }
     }
 }
@@ -81,6 +92,9 @@ pub struct BlockFlows {
 pub fn ledger_step(parent: PoolState, after_pool: PoolState, flows: BlockFlows) -> Result<PoolState, SupplyError> {
     let total_burned = after_pool.total_burned.checked_add(flows.unpaid).ok_or(SupplyError::CounterOverflow("total burned"))?;
     let total_issued = parent.total_issued.checked_add(flows.issued).ok_or(SupplyError::CounterOverflow("total issued"))?;
+    if total_issued > CAP_UNITS {
+        return Err(SupplyError::CapExceeded { issued: total_issued });
+    }
     let visible = parent.transparent_supply as i128 + flows.visible_change + flows.coinbase_out as i128;
     let transparent_supply = u64::try_from(visible).map_err(|_| SupplyError::VisibleSupplyOutOfRange(visible))?;
     let shielded_balance = turnstile(parent.shielded_balance, flows.shielded_in, flows.shielded_out)?;
@@ -187,6 +201,19 @@ mod tests {
         // Taking out more than went in is rejected even if the visible side "adds up"
         let flows = BlockFlows { visible_change: 400_001, shielded_out: 400_001, ..Default::default() };
         assert!(matches!(ledger_step(inside, inside, flows), Err(SupplyError::ShieldedPoolNegative { .. })));
+    }
+
+    #[test]
+    fn issuing_past_the_hard_cap_is_refused() {
+        // A ledger with 5 zets left under the cap (kept balanced: everything issued is visible)
+        let near = PoolState { total_issued: CAP_UNITS - 5, transparent_supply: CAP_UNITS - 5, ..Default::default() };
+        assert_eq!(check_balanced(&near), Ok(()));
+        // Issuing exactly up to the cap is fine...
+        let ok = BlockFlows { issued: 5, coinbase_out: 5, ..Default::default() };
+        assert_eq!(ledger_step(near, near, ok).unwrap().total_issued, CAP_UNITS);
+        // ...one zet more is refused, even though the ledger itself would balance
+        let over = BlockFlows { issued: 6, coinbase_out: 6, ..Default::default() };
+        assert_eq!(ledger_step(near, near, over), Err(SupplyError::CapExceeded { issued: CAP_UNITS + 1 }));
     }
 
     #[test]
