@@ -13,7 +13,7 @@ use kaspa_consensus_core::{
 };
 use kaspa_core::info;
 use kaspa_database::{
-    prelude::{CachePolicy, ConnBuilder, StoreResultUnitExt},
+    prelude::{CachePolicy, ConnBuilder, StoreResultExt, StoreResultUnitExt},
     utils::DbLifetime,
 };
 use kaspa_hashes::Hash;
@@ -109,6 +109,21 @@ impl ProofContext {
             return Err(PruningImportError::PruningProofNotEnoughHeaders);
         }
 
+        // Zethora: each header's mining work uses the RandomZ key of its DAA score's epoch, and a proof reaches back to
+        // genesis. For a peer's proof (the only one validated with logging; the node's own proofs are built from its
+        // checked headers), first the claimed epochs are bounded (by the pruning point's, and by the time since
+        // genesis), so a bogus proof cannot make us prepare many keys. Then the mining work of all headers is computed
+        // up front, grouped by epoch, so each epoch's key is prepared once instead of once per level. The node's own
+        // proof reuses the block levels stored with its headers instead.
+        let own_proof = !log_validating;
+        if !own_proof {
+            let proof_pp_daa_score = proof[0].last().expect("checked if empty").daa_score;
+            ppm.zethora_check_pow_epochs(proof_pp_daa_score, proof.iter().flatten().map(|header| header.as_ref()))?;
+            if !ppm.skip_proof_of_work {
+                kaspa_pow::precompute_pow(proof.iter().flatten().map(|header| header.as_ref()));
+            }
+        }
+
         let ghostdag_k = ppm.ghostdag_k;
 
         let headers_estimate = ppm.estimate_proof_unique_size(proof);
@@ -189,7 +204,12 @@ impl ProofContext {
                 if header.parents_by_level.is_empty() && header.hash != ppm.genesis_hash {
                     return Err(PruningImportError::NonGenesisParentlessHeader(header.hash));
                 }
-                let (header_level, pow_passes) = calc_block_level_check_pow(header, ppm.max_block_level);
+                let stored =
+                    if own_proof { ppm.headers_store.get_header_with_block_level(header.hash).optional().unwrap() } else { None };
+                let (header_level, pow_passes) = match stored {
+                    Some(stored) => (stored.block_level, true), // checked when the node stored it
+                    None => calc_block_level_check_pow(header, ppm.max_block_level),
+                };
                 if header_level < level {
                     return Err(PruningImportError::PruningProofWrongBlockLevel(header.hash, header_level, level));
                 }
@@ -438,6 +458,7 @@ impl PruningProofManager {
         challenger_relay_blue_work: BlueWorkType,
     ) -> ControlFlow<(), Result<(), ProofWeakness>> {
         ControlFlow::Continue(self.compare_proofs_inner(
+            // Zethora: `false` means "the node's own proof" (no RandomZ epoch bound); pass `true` for a peer's proof
             ProofContext::from_proof(self, defender, false).expect("local")?,
             ProofContext::from_proof(self, challenger, false).expect("local")?,
             defender_relay_blue_work,

@@ -185,6 +185,11 @@ impl ConsensusServices {
             params.finality_depth(),
             params.ghostdag_k(),
             params.skip_proof_of_work,
+            kaspa_pow::randomz::EpochClock {
+                genesis_daa_score: params.genesis.daa_score,
+                genesis_timestamp_ms: params.genesis.timestamp,
+                target_time_per_block_ms: params.target_time_per_block(),
+            },
             is_consensus_exiting,
         ));
 

@@ -57,6 +57,34 @@ impl PruningProofManager {
         // Build the descriptor based on the new proof before modifying it
         let descriptor = PruningProofDescriptor::from_proof(&proof, pruning_point, true);
 
+        // Zethora: the trusted blocks and the header-only chain segment sent with the pruning point are near it (within
+        // a few DAA windows / the finality depth, far less than a RandomZ key epoch), so refuse any that claims a key
+        // epoch further than one from the pruning point's before computing PoW (for block levels below), then compute
+        // all of it in one go, one light-mode setup per epoch.
+        {
+            let near_headers = || {
+                trusted_set
+                    .iter()
+                    .map(|tb| tb.block.header.as_ref())
+                    .chain(header_only_chain_segment.iter().map(|header| header.as_ref()))
+            };
+            if !self.skip_proof_of_work {
+                let pp_epoch = kaspa_pow::randomz::epoch_of(pruning_point_header.daa_score);
+                let (low, high) = (pp_epoch.saturating_sub(1), pp_epoch.saturating_add(1));
+                if let Some(far) =
+                    near_headers().find(|header| !(low..=high).contains(&kaspa_pow::randomz::epoch_of(header.daa_score)))
+                {
+                    return Err(PruningImportError::ZethoraPowEpochImplausible(
+                        far.hash,
+                        kaspa_pow::randomz::epoch_of(far.daa_score),
+                        low,
+                        high,
+                    ));
+                }
+            }
+            kaspa_pow::precompute_pow(near_headers());
+        }
+
         // Create a copy of the proof, since we're going to be mutating the proof passed to us
         let proof_sets = (0..=self.max_block_level)
             .map(|level| BlockHashSet::from_iter(proof[level as usize].iter().map(|header| header.hash)))

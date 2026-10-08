@@ -58,6 +58,9 @@ pub enum RuleError {
     #[error("expected header daa score {0} but got {1}")]
     UnexpectedHeaderDaaScore(u64, u64),
 
+    #[error("Zethora: header DAA score {0} is in mining key epoch {1}, outside the epochs this node can accept now ({2} to {3})")]
+    ZethoraPowEpochOutOfRange(u64, u64, u64, u64),
+
     #[error("expected header blue score {0} but got {1}")]
     UnexpectedHeaderBlueScore(u64, u64),
 

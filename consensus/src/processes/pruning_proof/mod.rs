@@ -118,6 +118,8 @@ pub struct PruningProofManager {
     finality_depth: u64,
     ghostdag_k: KType,
     skip_proof_of_work: bool,
+    /// Zethora: bounds the RandomZ key epochs that proof headers can claim
+    epoch_clock: kaspa_pow::randomz::EpochClock,
 
     is_consensus_exiting: Arc<AtomicBool>,
 }
@@ -139,6 +141,7 @@ impl PruningProofManager {
         finality_depth: u64,
         ghostdag_k: KType,
         skip_proof_of_work: bool,
+        epoch_clock: kaspa_pow::randomz::EpochClock,
         is_consensus_exiting: Arc<AtomicBool>,
     ) -> Self {
         Self {
@@ -174,9 +177,40 @@ impl PruningProofManager {
             finality_depth,
             ghostdag_k,
             skip_proof_of_work,
+            epoch_clock,
 
             is_consensus_exiting,
         }
+    }
+
+    /// Zethora: the highest RandomZ key epoch a header of a proof (or a past pruning point) for a pruning point with
+    /// this DAA score may claim. Such headers are in the pruning point's past, so their DAA scores are not above its
+    /// own (one epoch of slack), and the pruning point's own score must fit the time since genesis
+    /// (`EpochClock::max_plausible_epoch`). This caps how many keys a bogus proof can make us prepare.
+    fn zethora_max_pow_epoch(&self, pruning_point_daa_score: u64) -> u64 {
+        let below_pruning_point = kaspa_pow::randomz::epoch_of(pruning_point_daa_score).saturating_add(1);
+        below_pruning_point.min(self.epoch_clock.max_plausible_epoch(kaspa_core::time::unix_now()))
+    }
+
+    /// Zethora: refuses `headers` if any claims a key epoch above `zethora_max_pow_epoch`, before their PoW is computed.
+    fn zethora_check_pow_epochs<'a>(
+        &self,
+        pruning_point_daa_score: u64,
+        headers: impl IntoIterator<Item = &'a Header>,
+    ) -> PruningImportResult<()> {
+        if self.skip_proof_of_work {
+            return Ok(());
+        }
+        let limit = self.zethora_max_pow_epoch(pruning_point_daa_score);
+        if let Some(header) = headers.into_iter().find(|header| kaspa_pow::randomz::epoch_of(header.daa_score) > limit) {
+            return Err(PruningImportError::ZethoraPowEpochImplausible(
+                header.hash,
+                kaspa_pow::randomz::epoch_of(header.daa_score),
+                0,
+                limit,
+            ));
+        }
+        Ok(())
     }
 
     pub fn import_pruning_points(&self, pruning_points: &[Arc<Header>]) -> PruningImportResult<()> {
@@ -184,6 +218,14 @@ impl PruningProofManager {
         if unique_count < pruning_points.len() {
             return Err(PruningImportError::DuplicatedPastPruningPoints(pruning_points.len() - unique_count));
         }
+        // Zethora: past pruning points span every RandomZ key epoch, so check the epochs they claim, then compute their PoW
+        // (for the block levels below) in one go, one light-mode setup per epoch
+        if let Some(last) = pruning_points.last() {
+            self.zethora_check_pow_epochs(last.daa_score, pruning_points.iter().map(|header| header.as_ref()))?;
+        }
+        kaspa_pow::precompute_pow(
+            pruning_points.iter().filter(|header| !self.headers_store.has(header.hash).unwrap()).map(|header| header.as_ref()),
+        );
         for (i, header) in pruning_points.iter().enumerate() {
             self.past_pruning_points_store.set(i as u64, header.hash).unwrap();
 

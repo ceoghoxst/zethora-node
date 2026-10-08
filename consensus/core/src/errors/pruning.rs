@@ -110,6 +110,9 @@ pub enum PruningImportError {
 
     #[error("Zethora: the downloaded private state does not match the pruning point {0}: {1}")]
     ZethoraPrivateStateMismatch(Hash, String),
+
+    #[error("Zethora: pruning point sync header {0} claims mining key epoch {1}, outside the plausible ones ({2} to {3})")]
+    ZethoraPowEpochImplausible(Hash, u64, u64, u64),
 }
 
 #[derive(Error, Debug, Clone)]

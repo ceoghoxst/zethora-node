@@ -3,12 +3,12 @@
 // public for benchmarks
 #[doc(hidden)]
 pub mod matrix;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod randomz;
 #[cfg(feature = "wasm32-sdk")]
 pub mod wasm;
 #[doc(hidden)]
 pub mod xoshiro;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod randomz;
 
 use std::cmp::max;
 
@@ -25,6 +25,8 @@ pub struct State {
     pub(crate) hasher: PowHash,
     pub(crate) pre_pow_hash: [u8; 32],
     pub(crate) timestamp: u64,
+    /// Zethora: the RandomZ key epoch of the block (from its DAA score, see `randomz`)
+    pub(crate) epoch: u64,
 }
 
 impl State {
@@ -33,14 +35,24 @@ impl State {
         let target = Uint256::from_compact_target_bits(header.bits);
         // Zero out the time and nonce.
         let pre_pow_hash = hashing::header::hash_override_nonce_time(header, 0, 0);
-        Self::from_parts(pre_pow_hash, header.timestamp, target)
+        let state = Self::from_parts(pre_pow_hash, header.timestamp, target);
+        #[cfg(not(target_arch = "wasm32"))]
+        let state = Self { epoch: randomz::epoch_of(header.daa_score), ..state };
+        state
     }
 
+    /// Note (Zethora): the RandomZ key epoch is 0 here; use `State::new` to check a real header (its DAA score sets the
+    /// epoch).
     pub fn from_parts(pre_pow_hash: kaspa_hashes::Hash, timestamp: u64, target: Uint256) -> Self {
         // PRE_POW_HASH || TIME || 32 zero byte padding || NONCE
         let hasher = PowHash::new(pre_pow_hash, timestamp);
         let matrix = Matrix::generate(pre_pow_hash);
-        Self { matrix, target, hasher, pre_pow_hash: pre_pow_hash.as_bytes(), timestamp }
+        Self { matrix, target, hasher, pre_pow_hash: pre_pow_hash.as_bytes(), timestamp, epoch: 0 }
+    }
+
+    /// Zethora: the RandomZ key epoch this block's PoW uses.
+    pub fn epoch(&self) -> u64 {
+        self.epoch
     }
 
     /// The target this block's PoW must meet.
@@ -61,7 +73,7 @@ impl State {
         // Zethora: RandomX proof of work on native builds (ZTH-SPEC-000 §4.4)
         #[cfg(not(target_arch = "wasm32"))]
         {
-            randomz::pow_value_light(&self.pow_input(nonce))
+            randomz::pow_value_light(self.epoch, &self.pow_input(nonce))
         }
         // Original kHeavyHash, kept only for the wasm SDK build
         #[cfg(target_arch = "wasm32")]
@@ -96,6 +108,22 @@ pub fn calc_block_level_check_pow(header: &Header, max_block_level: BlockLevel) 
     let (passed, pow) = state.check_pow(header.nonce);
     let block_level = calc_level_from_pow(pow, max_block_level);
     (block_level, passed)
+}
+
+/// Zethora: computes (and remembers) the PoW of many headers at once, grouped by RandomZ key epoch, so that checking
+/// them one by one afterwards (e.g. the headers of a pruning proof, which span every epoch since genesis) builds each
+/// epoch's light-mode setup only once.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn precompute_pow<'a>(headers: impl IntoIterator<Item = &'a Header>) {
+    let items: Vec<_> = headers
+        .into_iter()
+        .filter(|header| !header.parents_by_level.is_empty()) // genesis needs no PoW
+        .map(|header| {
+            let state = State::new(header);
+            (state.epoch, state.pow_input(header.nonce))
+        })
+        .collect();
+    randomz::precompute_light(&items);
 }
 
 pub fn calc_level_from_pow(pow: Uint256, max_block_level: BlockLevel) -> BlockLevel {

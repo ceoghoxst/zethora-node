@@ -1,8 +1,9 @@
 //! Zethora devnet CPU miner (prototype).
 //!
 //! Connects to a local Zethora node, asks it for a block template, searches for a
-//! valid nonce on all CPU threads with RandomX (fast mode), and submits the block.
-//! Repeats forever. Needs about 2.5 GB of RAM.
+//! valid nonce on all CPU threads with RandomZ (fast mode), and submits the block.
+//! Repeats forever. Needs about 2.5 GB of RAM. The mining key changes every 2^20 DAA
+//! scores (about 12 days); the miner then rebuilds its dataset (about half a minute).
 //!
 //! Usage:  cargo run --release --bin zethora-miner
 //! The node must be running with:  --devnet --enable-unsynced-mining
@@ -53,14 +54,14 @@ fn bench() {
     // 1. Node side: light mode (256 MB), one hash per block to check
     println!("1. NODE: preparing light mode (256 MB, done once at node start)...");
     let t = Instant::now();
-    let first = pow_value_light(&pow_input(&[1; 32], 0, 0));
+    let first = pow_value_light(0, &pow_input(&[1; 32], 0, 0));
     let setup = t.elapsed().as_secs_f64();
     println!("   ready in {setup:.2} s");
     println!("   checking mining work, one block at a time, for {} s...", RUN.as_secs());
     let t = Instant::now();
     let mut checked = 0u64;
     while t.elapsed() < RUN {
-        let _ = pow_value_light(&pow_input(&[2; 32], checked, checked));
+        let _ = pow_value_light(0, &pow_input(&[2; 32], checked, checked));
         checked += 1;
     }
     let check_ms = t.elapsed().as_secs_f64() * 1000.0 / checked as f64;
@@ -69,7 +70,7 @@ fn bench() {
     // 2. Miner side: fast mode (about 2 GB dataset), many hashes per second
     println!("\n2. MINER: building the fast-mode dataset (about 2 GB, on one thread like the miner does today)...");
     let t = Instant::now();
-    let dataset = new_mining_dataset();
+    let dataset = new_mining_dataset(0);
     let dataset_secs = t.elapsed().as_secs_f64();
     println!("   ready in {dataset_secs:.0} s");
     // Sanity: fast and light mode must agree on the same input
@@ -138,11 +139,6 @@ async fn main() {
     println!("Zethora devnet miner");
     println!("Paying rewards to: {address}");
 
-    println!("Preparing RandomX dataset (about 2 GB, takes a minute)...");
-    let t0 = Instant::now();
-    let dataset = kaspa_pow::randomz::new_mining_dataset();
-    println!("Dataset ready in {:.0}s", t0.elapsed().as_secs_f64());
-
     let client = GrpcClient::connect(NODE_URL.to_string()).await.expect("Cannot reach the node. Is it running with --devnet?");
     let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
     println!("Mining on {threads} threads. Press Ctrl+C to stop.\n");
@@ -151,6 +147,8 @@ async fn main() {
     let mut total_reward: u64 = 0;
     let hashes = Arc::new(AtomicU64::new(0));
     let start = Instant::now();
+    // The fast-mode dataset and the key epoch it was built for (rebuilt when the key changes)
+    let mut dataset: Option<(u64, kaspa_pow::randomz::SharedDataset)> = None;
 
     loop {
         let template = match client.get_block_template(address.clone(), b"zethora-miner".to_vec()).await {
@@ -163,6 +161,22 @@ async fn main() {
         };
         let header: Header = (&template.block.header).try_into().expect("bad template header");
         let state = Arc::new(kaspa_pow::State::new(&header));
+        let epoch = state.epoch();
+        if dataset.as_ref().is_none_or(|(built_for, _)| *built_for != epoch) {
+            let first = dataset.is_none();
+            dataset = None; // free the old 2 GB first
+            if first {
+                println!("Preparing the RandomZ dataset for mining key {epoch} (about 2 GB, takes about half a minute)...");
+            } else {
+                println!("Mining key changed to {epoch} at DAA {}: rebuilding the dataset (about half a minute)...", header.daa_score);
+            }
+            let t0 = Instant::now();
+            let built = tokio::task::block_in_place(|| kaspa_pow::randomz::new_mining_dataset(epoch));
+            println!("Dataset ready in {:.0}s", t0.elapsed().as_secs_f64());
+            dataset = Some((epoch, built));
+            continue; // the template is old by now
+        }
+        let mining_dataset = dataset.as_ref().map(|(_, d)| d.clone()).expect("built above");
 
         // Search nonces on all threads until one wins or the template gets old.
         let found = Arc::new(AtomicBool::new(false));
@@ -172,7 +186,7 @@ async fn main() {
         let workers: Vec<_> = (0..threads as u64)
             .map(|t| {
                 let (state, found, winner, hashes, dataset) =
-                    (state.clone(), found.clone(), winner.clone(), hashes.clone(), dataset.clone());
+                    (state.clone(), found.clone(), winner.clone(), hashes.clone(), mining_dataset.clone());
                 std::thread::spawn(move || {
                     let hasher = kaspa_pow::randomz::FastHasher::new(&dataset);
                     let target = state.target();

@@ -135,6 +135,24 @@ Repo: github.com/ceoghoxst/zethora-node, branch `zethora` (a rusty-kaspa fork). 
    (every PoW hash changed). Miner speed test: `cargo run --release -p zethora-miner -- bench` (light-mode setup and
    per-block check time, dataset time, fast-mode H/s on 1, half, all threads). Key rotation = step 6b (not done: the
    key must be computable for any header incl. pruning-proof headers, and per-epoch 256 MB cache inits cost ~1 s).
+   BENCH on his Ryzen 5 2600 (Oct 7, 2026): light mode ready 1.79 s; one block's PoW check 18.0 ms (1.8% of a thread at
+   1 bps; full sync ~56 blocks/s/thread); dataset 29 s on one thread; fast mode agrees with light; mining 300 H/s on
+   1 thread, 1,144 on 6, 1,217 on 8, 1,291 on 12 (no large pages, no pipelining; XMRig-class miners get more: B8).
+19. B6b RandomZ key rotation (consensus/pow/src/randomz.rs): key = "ZethoraRandomZ" ++ epoch (u64 LE), epoch =
+   daa_score >> 20 (~12 days at 1 bps), a fixed public sequence as RandomX's README allows; the header's DAA score is
+   checked exactly by consensus, so miners can't pick keys. Node: LRU of 4 light setups (256 MB each, ~1.8 s to build)
+   + thread-local VM per epoch + memo of 200k recent (epoch,input)->value; precompute_light/precompute_pow compute many
+   headers grouped by epoch (<= 4 temporary setups in parallel) for pruning proofs and past pruning points. DoS guards:
+   (a) header processor (check_pow_epoch_plausible, before PoW): ordinary headers must be in epochs
+   [epoch(pp)-1, epoch(max(pp, headers tip))+1], trusted ones epoch(pp)+-1; outside -> MissingParents if a parent is
+   unknown (orphan/IBD path), else RuleError::ZethoraPowEpochOutOfRange. (b) a peer's proof and past pruning points:
+   every header epoch <= min(epoch(proof pp)+1, EpochClock::max_plausible_epoch(now)) (2x the blocks the time since
+   genesis allows, +2 epochs); trusted blocks + header-only chain segment (apply_proof): epoch(pp)+-1; else
+   PruningImportError::ZethoraPowEpochImplausible. The node's own (defender) proof uses stored block levels, no PoW.
+   Memo keeps whole precomputed batches (clears before a batch that doesn't fit). All skipped with skip_proof_of_work. Miner
+   keeps (epoch, dataset) and rebuilds (~30 s) when the template's epoch changes. Tests: kaspa-pow randomz (epoch
+   vectors e1b60624... epoch 0 / 60fae6cc... epoch 1 for pow_input([7;32],1000,1)), kaspa-consensus
+   zethora_pow_epoch. DEVNET RESET REQUIRED (every key changed).
 
 ## Known gaps / next steps
 - ANCHOR_DEPTH 600 assumes ~1 block/s; scale with real block rate before testnet.
@@ -144,9 +162,14 @@ Repo: github.com/ceoghoxst/zethora-node, branch `zethora` (a rusty-kaspa fork). 
   overshoot bound (window 661x40 + 248) is ~7,300 ZTHR > the 1,000 reserve, so the CapExceeded backstop could fire
   near the end of emission and STALL the chain). Simnet is also 10 bps (tests only). Kaspa tests that use
   MAINNET/TESTNET params will need care when that changes.
-- Pruning-point sync of shielded state: 3a, 3b, 3c done and verified live (item 15). Privacy step 4 speed test done (item 16). Privacy section A complete. B5 (100M check) done (item 17). B6a RandomZ params + bench (item 18); 6b key rotation next.
+- Pruning-point sync of shielded state: 3a, 3b, 3c done and verified live (item 15). Privacy step 4 speed test done (item 16). Privacy section A complete. B5 (100M check) done (item 17). B6a RandomZ params + bench (item 18); B6b key rotation (item 19); B7 seed nodes next.
   The whole private state is held in memory on both sides during the download, and the server builds it before
   sending the header (client waits DEFAULT_TIMEOUT); fine now, stream it before mainnet.
+- RandomZ: a node joining by pruning proof builds one 256 MB light setup per epoch since genesis (~30 per year at
+  1 bps, 4 in parallel: ~15 s per year of chain); a bogus proof can make it build up to ~2x that before failing, and
+  nothing bans for that yet, so a peer can repeat it on every reconnect (ban for invalid proofs before testnet). At
+  10 bps (testnet/mainnet params today) an epoch is ~29 h: fix the block rate first. The miner stalls ~30 s at each
+  key change; prebuild the next epoch's dataset in the miner app (B8).
 - Banning by IP: two nodes on one PC share 127.0.0.1, so a ban there hits both. Fine for devnet.
 - Before testnet: bans are per IP only; other invalid blocks (not forged payments) only disconnect.
 - Needs a human crypto reviewer before private sending reaches a public network, then a professional audit before launch.
