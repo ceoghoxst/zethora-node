@@ -21,6 +21,14 @@ Repo: github.com/ceoghoxst/zethora-node, branch `zethora` (a rusty-kaspa fork). 
   node 2 `.\target\release\kaspad.exe --devnet --appdir=C:\Users\deion\zethora-node2-data --listen=127.0.0.1:26621 --rpclisten=127.0.0.1:26620 --connect=127.0.0.1:26611 --override-params-file=devnet\fast-pruning.json --disable-upnp`.
   Going back to the normal devnet afterwards needs `--reset-db --yes` without the override file.
 
+- Seed node (step 7): Oracle Cloud Always Free Ampere A1 (ARM), Ubuntu, home region US West (San Jose), tenancy ceoghoxst.
+  Setup/update on the server: `curl -fsSL https://raw.githubusercontent.com/ceoghoxst/zethora-node/zethora/seed/setup-seed.sh | bash`
+  (service `zethora-seed` runs with --yes so a devnet-reset update wipes and re-downloads instead of looping; binary
+  /usr/local/bin/zethora-node, data ~/zethora-data, RPC on the server's 127.0.0.1 only;
+  logs `journalctl -u zethora-seed -f`). Cloud firewall: ingress TCP 26611 in the VCN security list.
+  PC node with the seed: add `--seed=<server IP> --disable-upnp` to the node command. `compare` against the server:
+  third window `ssh -N -L 26620:127.0.0.1:26610 ubuntu@<server IP>` (forwards the server's RPC to the PC's 26620 = "node 2").
+
 ## Done and verified on his devnet (as of Oct 7, 2026)
 1. Supply ledger: every block proves visible + fee pool + burned + private == issued (BALANCED). Planted-bug attack test caught 20 fake zets.
 2. Private pool = Zcash Orchard 0.16.0 (pinned rev 616a669), fixed circuit, used unmodified. Payload "ZSHP" + encoded bundle.
@@ -153,6 +161,16 @@ Repo: github.com/ceoghoxst/zethora-node, branch `zethora` (a rusty-kaspa fork). 
    keeps (epoch, dataset) and rebuilds (~30 s) when the template's epoch changes. Tests: kaspa-pow randomz (epoch
    vectors e1b60624... epoch 0 / 60fae6cc... epoch 1 for pow_input([7;32],1000,1)), kaspa-consensus
    zethora_pow_epoch. DEVNET RESET REQUIRED (every key changed).
+20. B7 seed nodes, part 1 (network identity + seed option + server script): mainnet/testnet/simnet ports moved off
+   Kaspa's (Kaspa + 10,000: P2P 26111 / testnet-10 26211 / -12 26311 / other 26411 / simnet 26511, gRPC 26110/26210/26510,
+   wRPC borsh 27x10, json 28x10; devnet already 26610/26611/27610/28610), test zethora_ports_never_use_kaspa_defaults.
+   Kaspa's DNS seeders removed from mainnet/testnet (they lead to Kaspa nodes; the handshake already refuses them since
+   the network name is "zethora-..."). New kaspad option `--seed=<hostname or IP>` (repeatable, no port: seed lookups
+   use the default P2P port; IP literals resolve without DNS) replaces the network's seed list; ignored with --connect /
+   --nodnsseed. Startup logs "Seed nodes: ..." or "No seed nodes for this network". seed/setup-seed.sh builds and runs a
+   seed node on Ubuntu (checks RandomZ vectors on the server's CPU first, systemd service, iptables port). No stored-state
+   change, no reset. NOT live-tested yet: part 2 = run the server, PC joins via --seed, compare AGREE over the SSH tunnel,
+   then bake the server's (reserved) IP or a hostname into DEVNET_PARAMS.dns_seeders.
 
 ## Known gaps / next steps
 - ANCHOR_DEPTH 600 assumes ~1 block/s; scale with real block rate before testnet.
@@ -162,7 +180,7 @@ Repo: github.com/ceoghoxst/zethora-node, branch `zethora` (a rusty-kaspa fork). 
   overshoot bound (window 661x40 + 248) is ~7,300 ZTHR > the 1,000 reserve, so the CapExceeded backstop could fire
   near the end of emission and STALL the chain). Simnet is also 10 bps (tests only). Kaspa tests that use
   MAINNET/TESTNET params will need care when that changes.
-- Pruning-point sync of shielded state: 3a, 3b, 3c done and verified live (item 15). Privacy step 4 speed test done (item 16). Privacy section A complete. B5 (100M check) done (item 17). B6a RandomZ params + bench (item 18); B6b key rotation (item 19); B7 seed nodes next.
+- Pruning-point sync of shielded state: 3a, 3b, 3c done and verified live (item 15). Privacy step 4 speed test done (item 16). Privacy section A complete. B5 (100M check) done (item 17). B6a RandomZ params + bench (item 18); B6b key rotation (item 19); B7 part 1 (item 20), live test next.
   The whole private state is held in memory on both sides during the download, and the server builds it before
   sending the header (client waits DEFAULT_TIMEOUT); fine now, stream it before mainnet.
 - RandomZ: a node joining by pruning proof builds one 256 MB light setup per epoch since genesis (~30 per year at
@@ -171,6 +189,9 @@ Repo: github.com/ceoghoxst/zethora-node, branch `zethora` (a rusty-kaspa fork). 
   10 bps (testnet/mainnet params today) an epoch is ~29 h: fix the block rate first. The miner stalls ~30 s at each
   key change; prebuild the next epoch's dataset in the miner app (B8).
 - Banning by IP: two nodes on one PC share 127.0.0.1, so a ban there hits both. Fine for devnet.
+- Seeds: one seed run by DeionRaven Labs is a single point of failure and sees every new node's IP; add independent
+  seeds (community-run, DNS seeders with several A records) before mainnet. Seed nodes only hand out addresses, they
+  can't change the chain. The wallet code (wallet/core) still has Kaspa's public-node resolver; not used by our tools.
 - Before testnet: bans are per IP only; other invalid blocks (not forged payments) only disconnect.
 - Needs a human crypto reviewer before private sending reaches a public network, then a professional audit before launch.
 - Miner app ideas (demos only, not linked to the real miner): "Raven Room" (pixel room + mine) and "Zethora Miner"

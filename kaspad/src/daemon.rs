@@ -567,7 +567,23 @@ Do you confirm? (y/n)";
     // connect_peers means no DNS seeding and no outbound/inbound peers
     let outbound_target = if connect_peers.is_empty() { args.outbound_target } else { 0 };
     let inbound_limit = if connect_peers.is_empty() { args.inbound_limit } else { 0 };
-    let dns_seeders = if connect_peers.is_empty() && !args.disable_dns_seeding { config.dns_seeders } else { &[] };
+    let dns_seeders: &'static [&'static str] = if connect_peers.is_empty() && !args.disable_dns_seeding {
+        if args.seeds.is_empty() {
+            config.dns_seeders
+        } else {
+            // --seed replaces the built-in seed list. Leaked once at startup: the connection manager keeps 'static strs.
+            let seeds: Vec<&'static str> =
+                args.seeds.iter().map(|s| -> &'static str { Box::leak(s.clone().into_boxed_str()) }).collect();
+            Box::leak(seeds.into_boxed_slice())
+        }
+    } else {
+        &[]
+    };
+    if dns_seeders.is_empty() {
+        info!("No seed nodes for this network: peers come only from --addpeer/--connect and peers we already know");
+    } else {
+        info!("Seed nodes: {}", dns_seeders.join(", "));
+    }
 
     let grpc_server_addr = args.rpclisten.unwrap_or(ContextualNetAddress::loopback()).normalize(config.default_rpc_port());
 

@@ -89,6 +89,9 @@ pub struct Args {
     pub disable_upnp: bool,
     #[serde(rename = "nodnsseed")]
     pub disable_dns_seeding: bool,
+    /// Zethora seed nodes (`--seed`); when set they replace the network's built-in seed list.
+    #[serde(rename = "seed")]
+    pub seeds: Vec<String>,
     #[serde(rename = "nogrpc")]
     pub disable_grpc: bool,
     pub ram_scale: f64,
@@ -148,6 +151,7 @@ impl Default for Args {
 
             disable_upnp: false,
             disable_dns_seeding: false,
+            seeds: vec![],
             disable_grpc: false,
             ram_scale: 1.0,
             retention_period_days: None,
@@ -253,7 +257,7 @@ pub fn cli() -> Command {
                 .num_args(0..=1)
                 .require_equals(true)
                 .value_parser(clap::value_parser!(ContextualNetAddress))
-                .help("Interface:port to listen for gRPC connections (default port: 16110, testnet: 16210)."),
+                .help("Interface:port to listen for gRPC connections (default port: 26110, testnet: 26210, devnet: 26610)."),
         )
         .arg(
             Arg::new("rpclisten-borsh")
@@ -264,7 +268,7 @@ pub fn cli() -> Command {
                 .require_equals(true)
                 .default_missing_value("default") // TODO: Find a way to use defaults.rpclisten_borsh
                 .value_parser(clap::value_parser!(WrpcNetAddress))
-                .help("Interface:port to listen for wRPC Borsh connections (default port: 17110, testnet: 17210)."),
+                .help("Interface:port to listen for wRPC Borsh connections (default port: 27110, testnet: 27210, devnet: 27610)."),
 
         )
         .arg(
@@ -276,7 +280,7 @@ pub fn cli() -> Command {
                 .require_equals(true)
                 .default_missing_value("default") // TODO: Find a way to use defaults.rpclisten_json
                 .value_parser(clap::value_parser!(WrpcNetAddress))
-                .help("Interface:port to listen for wRPC JSON connections (default port: 18110, testnet: 18210)."),
+                .help("Interface:port to listen for wRPC JSON connections (default port: 28110, testnet: 28210, devnet: 28610)."),
         )
         .arg(arg!(--unsaferpc "Enable RPC commands which affect the state of the node").env("KASPAD_UNSAFERPC"))
         .arg(
@@ -306,7 +310,7 @@ pub fn cli() -> Command {
                 .value_name("IP[:PORT]")
                 .require_equals(true)
                 .value_parser(clap::value_parser!(ContextualNetAddress))
-                .help("Add an interface:port to listen for connections (default all interfaces port: 16111, testnet: 16211)."),
+                .help("Add an interface:port to listen for connections (default all interfaces port: 26111, testnet: 26211, devnet: 26611)."),
         )
         .arg(
             Arg::new("outpeers")
@@ -409,6 +413,16 @@ Setting to 0 prevents the preallocation and sets the maximum to {}, leading to 0
         )
         .arg(arg!(--"disable-upnp" "Disable upnp").env("KASPAD_DISABLE_UPNP"))
         .arg(arg!(--"nodnsseed" "Disable DNS seeding for peers").env("KASPAD_NODNSSEED"))
+        .arg(
+            Arg::new("seeds")
+                .long("seed")
+                .env("KASPAD_SEED")
+                .value_name("HOST|IP")
+                .action(ArgAction::Append)
+                .require_equals(true)
+                .value_parser(parse_seed)
+                .help("Seed node to ask for peers: a hostname or IP, no port (seeds answer on the default P2P port). Can be given more than once; replaces the network's built-in seed list. Ignored with --connect or --nodnsseed."),
+        )
         .arg(arg!(--"nogrpc" "Disable gRPC server").env("KASPAD_NOGRPC"))
         .arg(
             Arg::new("ram-scale")
@@ -538,6 +552,7 @@ impl Args {
             block_template_cache_lifetime: defaults.block_template_cache_lifetime,
             disable_upnp: arg_match_unwrap_or::<bool>(&m, "disable-upnp", defaults.disable_upnp),
             disable_dns_seeding: arg_match_unwrap_or::<bool>(&m, "nodnsseed", defaults.disable_dns_seeding),
+            seeds: arg_match_many_unwrap_or::<String>(&m, "seeds", defaults.seeds),
             disable_grpc: arg_match_unwrap_or::<bool>(&m, "nogrpc", defaults.disable_grpc),
             ram_scale: arg_match_unwrap_or::<f64>(&m, "ram-scale", defaults.ram_scale),
             retention_period_days: m.get_one::<f64>("retention-period-days").cloned().or(defaults.retention_period_days),
@@ -570,6 +585,26 @@ fn arg_match_unwrap_or<T: Clone + Send + Sync + 'static>(m: &clap::ArgMatches, a
     m.get_one::<T>(arg_id).cloned().filter(|_| m.value_source(arg_id) != Some(DefaultValue)).unwrap_or(default)
 }
 
+/// A seed node is a hostname or an IP address, without a port: seed lookups always use the network's default P2P
+/// port (`ConnectionManager::dns_seed_single`), so "1.2.3.4:26611" would silently never resolve.
+fn parse_seed(s: &str) -> Result<String, String> {
+    let s = s.trim();
+    if s.parse::<std::net::IpAddr>().is_ok() {
+        return Ok(s.to_string());
+    }
+    let is_label = |l: &str| {
+        !l.is_empty()
+            && l.len() <= 63
+            && !l.starts_with('-')
+            && !l.ends_with('-')
+            && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    };
+    if !s.is_empty() && s.len() <= 253 && s.split('.').all(is_label) {
+        return Ok(s.to_ascii_lowercase());
+    }
+    Err(format!("invalid --seed '{s}': use a hostname or an IP address without a port (seeds answer on the default P2P port)"))
+}
+
 fn arg_match_many_unwrap_or<T: Clone + Send + Sync + 'static>(m: &clap::ArgMatches, arg_id: &str, default: Vec<T>) -> Vec<T> {
     match m.get_many::<T>(arg_id) {
         Some(val_ref) => val_ref.cloned().collect(),
@@ -595,6 +630,18 @@ mod tests {
         let args = Args::parse(["kaspad", r"--ua-rule=allow;regex:(^|/)kaspad:", r"--ua-rule=reject;ver:kaspad<1.1.1"]).unwrap();
 
         assert_eq!(args.ua_rule, vec![r"allow;regex:(^|/)kaspad:", r"reject;ver:kaspad<1.1.1"]);
+    }
+
+    #[test]
+    fn zethora_seed_arg() {
+        let args = Args::parse(["kaspad", "--devnet", "--seed=129.146.1.2", "--seed=Seed1.Zethora.example"]).unwrap();
+        assert_eq!(args.seeds, vec!["129.146.1.2".to_string(), "seed1.zethora.example".to_string()]);
+        let args = Args::parse(["kaspad", "--seed=2001:db8::1"]).unwrap();
+        assert_eq!(args.seeds, vec!["2001:db8::1".to_string()]);
+        assert!(Args::parse(["kaspad"]).unwrap().seeds.is_empty());
+        for bad in ["--seed=129.146.1.2:26611", "--seed=", "--seed=bad host", "--seed=-x.com", "--seed=a..b"] {
+            assert!(Args::parse(["kaspad", bad]).is_err(), "{bad} should be refused");
+        }
     }
 
     #[test]

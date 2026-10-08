@@ -38,30 +38,32 @@ pub enum NetworkType {
     Simnet,
 }
 
+// Zethora ports: Kaspa's port + 10,000 on every network (devnet was moved first), so a Zethora node never
+// listens on or dials a Kaspa node's default port. The P2P handshake also checks the "zethora-" network name.
 impl NetworkType {
     pub fn default_rpc_port(&self) -> u16 {
         match self {
-            NetworkType::Mainnet => 16110,
-            NetworkType::Testnet => 16210,
-            NetworkType::Simnet => 16510,
+            NetworkType::Mainnet => 26110,
+            NetworkType::Testnet => 26210,
+            NetworkType::Simnet => 26510,
             NetworkType::Devnet => 26610,
         }
     }
 
     pub fn default_borsh_rpc_port(&self) -> u16 {
         match self {
-            NetworkType::Mainnet => 17110,
-            NetworkType::Testnet => 17210,
-            NetworkType::Simnet => 17510,
+            NetworkType::Mainnet => 27110,
+            NetworkType::Testnet => 27210,
+            NetworkType::Simnet => 27510,
             NetworkType::Devnet => 27610,
         }
     }
 
     pub fn default_json_rpc_port(&self) -> u16 {
         match self {
-            NetworkType::Mainnet => 18110,
-            NetworkType::Testnet => 18210,
-            NetworkType::Simnet => 18510,
+            NetworkType::Mainnet => 28110,
+            NetworkType::Testnet => 28210,
+            NetworkType::Simnet => 28510,
             NetworkType::Devnet => 28610,
         }
     }
@@ -241,13 +243,13 @@ impl NetworkId {
         // this reasoning so we keep it on the same port in order to simplify RPC client management (hence [`default_rpc_port`]
         // is defined on the [`NetworkType`] struct
         match self.network_type {
-            NetworkType::Mainnet => 16111,
+            NetworkType::Mainnet => 26111,
             NetworkType::Testnet => match self.suffix {
-                Some(10) => 16211,
-                Some(12) => 16311,
-                None | Some(_) => 16411,
+                Some(10) => 26211,
+                Some(12) => 26311,
+                None | Some(_) => 26411,
             },
-            NetworkType::Simnet => 16511,
+            NetworkType::Simnet => 26511,
             NetworkType::Devnet => 26611,
         }
     }
@@ -474,5 +476,37 @@ mod tests {
                 Err(err) => assert_eq!(err.to_string(), expected.unwrap_err().to_string(), "{}: unexpected error", name),
             }
         }
+    }
+
+    #[test]
+    fn zethora_ports_never_use_kaspa_defaults() {
+        // Kaspa's default ports (gRPC, wRPC borsh, wRPC json, P2P) on every network, incl. testnet-10/11/12.
+        let kaspa: [u16; 16] =
+            [16110, 16210, 16510, 16610, 17110, 17210, 17510, 17610, 18110, 18210, 18510, 18610, 16111, 16211, 16311, 16411];
+        let kaspa_p2p_extra: [u16; 2] = [16511, 16611];
+        let mut ours = vec![];
+        for net in NetworkType::iter() {
+            ours.extend([net.default_rpc_port(), net.default_borsh_rpc_port(), net.default_json_rpc_port()]);
+        }
+        let ids = [
+            NetworkId::new(NetworkType::Mainnet),
+            NetworkId::with_suffix(NetworkType::Testnet, 10),
+            NetworkId::with_suffix(NetworkType::Testnet, 11),
+            NetworkId::with_suffix(NetworkType::Testnet, 12),
+            NetworkId::new(NetworkType::Simnet),
+            NetworkId::new(NetworkType::Devnet),
+        ];
+        for id in ids {
+            ours.push(id.default_p2p_port());
+        }
+        for port in &ours {
+            assert!(!kaspa.contains(port) && !kaspa_p2p_extra.contains(port), "port {port} is a Kaspa default port");
+        }
+        // Expected values, so a change is deliberate.
+        assert_eq!(NetworkId::new(NetworkType::Mainnet).default_p2p_port(), 26111);
+        assert_eq!(NetworkId::with_suffix(NetworkType::Testnet, 10).default_p2p_port(), 26211);
+        assert_eq!(NetworkId::new(NetworkType::Devnet).default_p2p_port(), 26611);
+        assert_eq!(NetworkType::Mainnet.default_rpc_port(), 26110);
+        assert_eq!(NetworkType::Devnet.default_rpc_port(), 26610);
     }
 }
