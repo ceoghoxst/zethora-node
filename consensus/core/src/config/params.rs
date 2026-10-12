@@ -623,7 +623,7 @@ pub const MAINNET_PARAMS: Params = Params {
     max_block_level: 225,
     pruning_proof_m: 1000,
 
-    blockrate: BlockrateParams::new::<10>(),
+    blockrate: BlockrateParams::new::<1>(),
 
     pre_crescendo_target_time_per_block: 1000,
 
@@ -673,7 +673,7 @@ pub const TESTNET_PARAMS: Params = Params {
     max_block_level: 250,
     pruning_proof_m: 1000,
 
-    blockrate: BlockrateParams::new::<10>(),
+    blockrate: BlockrateParams::new::<1>(),
 
     pre_crescendo_target_time_per_block: 1000,
 
@@ -716,7 +716,7 @@ pub const SIMNET_PARAMS: Params = Params {
     pruning_proof_m: PRUNING_PROOF_M,
 
     // For simnet, we deviate from default 10BPS configuration and allow at least 64 parents in order to support mempool benchmarks out of the box
-    blockrate: BlockrateParams::new::<10>().increase_max_block_parents(64),
+    blockrate: BlockrateParams::new::<1>().increase_max_block_parents(64),
 
     pre_crescendo_target_time_per_block: TenBps::target_time_per_block(),
 
