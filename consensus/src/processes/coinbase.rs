@@ -515,95 +515,11 @@ mod tests {
         (epoch, total)
     }
 
-    #[test]
-    fn subsidy_test() {
-        const PRE_DEFLATIONARY_PHASE_BASE_SUBSIDY: u64 = 50000000000;
-        const DEFLATIONARY_PHASE_INITIAL_SUBSIDY: u64 = 44000000000;
-        const SECONDS_PER_MONTH: u64 = 2629800;
-        const SECONDS_PER_HALVING: u64 = SECONDS_PER_MONTH * 12;
-
-        for network_id in NetworkId::iter() {
-            let mut params: Params = network_id.into();
-            if params.crescendo_activation != ForkActivation::always() {
-                // We test activation scenarios in verify_crescendo_emission_schedule
-                params.crescendo_activation = ForkActivation::never();
-            }
-            let cbm = create_manager(&params);
-            let bps = params.bps_history().before();
-
-            let pre_deflationary_phase_base_subsidy = PRE_DEFLATIONARY_PHASE_BASE_SUBSIDY / bps;
-            let deflationary_phase_initial_subsidy = DEFLATIONARY_PHASE_INITIAL_SUBSIDY / bps;
-            let blocks_per_halving = SECONDS_PER_HALVING * bps;
-
-            struct Test {
-                name: &'static str,
-                daa_score: u64,
-                expected: u64,
-            }
-
-            let mut tests = vec![
-                Test {
-                    name: "first mined block",
-                    daa_score: 1,
-                    expected: if params.deflationary_phase_daa_score > 0 {
-                        pre_deflationary_phase_base_subsidy
-                    } else {
-                        deflationary_phase_initial_subsidy
-                    },
-                },
-                Test {
-                    name: "start of deflationary phase",
-                    daa_score: params.deflationary_phase_daa_score,
-                    expected: deflationary_phase_initial_subsidy,
-                },
-                Test {
-                    name: "after one halving",
-                    daa_score: params.deflationary_phase_daa_score + blocks_per_halving,
-                    expected: deflationary_phase_initial_subsidy / 2,
-                },
-                Test {
-                    name: "after 2 halvings",
-                    daa_score: params.deflationary_phase_daa_score + 2 * blocks_per_halving,
-                    expected: deflationary_phase_initial_subsidy / 4,
-                },
-                Test {
-                    name: "after 5 halvings",
-                    daa_score: params.deflationary_phase_daa_score + 5 * blocks_per_halving,
-                    expected: deflationary_phase_initial_subsidy / 32,
-                },
-                Test {
-                    name: "after 32 halvings",
-                    daa_score: params.deflationary_phase_daa_score + 32 * blocks_per_halving,
-                    expected: (DEFLATIONARY_PHASE_INITIAL_SUBSIDY / 2_u64.pow(32)).div_ceil(bps),
-                },
-                Test {
-                    name: "just before subsidy depleted",
-                    daa_score: params.deflationary_phase_daa_score + 35 * blocks_per_halving,
-                    expected: 1,
-                },
-                Test {
-                    name: "after subsidy depleted",
-                    daa_score: params.deflationary_phase_daa_score + 36 * blocks_per_halving,
-                    expected: 0,
-                },
-            ];
-
-            if params.deflationary_phase_daa_score > 0 {
-                tests.push(Test {
-                    name: "before deflationary phase",
-                    daa_score: params.deflationary_phase_daa_score - 1,
-                    expected: pre_deflationary_phase_base_subsidy,
-                });
-            }
-
-            for t in tests {
-                assert_eq!(cbm.calc_block_subsidy(t.daa_score), t.expected, "{} test '{}' failed", network_id, t.name);
-                if bps == 1 {
-                    assert_eq!(cbm.legacy_calc_block_subsidy(t.daa_score), t.expected, "{} test '{}' failed", network_id, t.name);
-                }
-            }
-        }
-    }
+        // Zethora replaced Kaspa's halving-based subsidy schedule with a
+    // smooth-decay schedule (ZTH-SPEC-001 §5). The full schedule is
+    // verified by the zethora_subsidy module's own tests and by
+    // tools/emission. The old Kaspa test that checked the 50-coin
+    // schedule has been removed because it no longer applies.
 
     #[test]
     fn payload_serialization_test() {
