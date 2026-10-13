@@ -398,7 +398,7 @@ impl Drop for UtxosChangedSubscription {
             reason = "`fetch_update` returned `Ok(previous)`, which implies that `previous >= 1`."
         )]
         let subscriptions =
-            match UTXOS_CHANGED_SUBSCRIPTIONS.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| count.checked_sub(1)) {
+            match UTXOS_CHANGED_SUBSCRIPTIONS.try_update(Ordering::SeqCst, Ordering::SeqCst, |count| count.checked_sub(1)) {
                 Ok(previous) => previous - 1,
                 Err(current) => current,
             };
@@ -476,7 +476,7 @@ impl Single for UtxosChangedSubscription {
                     MutationOutcome::with_mutated(current.clone(), mutations)
                 }
                 (UtxosChangedState::Selected, UtxosChangedMutation::Remove) => {
-                    // State Selected(S) + Mutation Remove(R) => Mutated state Selected(S – R) or mutated new state None or no change
+                    // State Selected(S) + Mutation Remove(R) => Mutated state Selected(S â€“ R) or mutated new state None or no change
                     let removed = data.unregister(scope.addresses, context);
                     match (removed.is_empty(), data.indexes.is_empty()) {
                         (false, false) => {
@@ -504,7 +504,7 @@ impl Single for UtxosChangedSubscription {
                     }
                 }
                 (UtxosChangedState::Selected, UtxosChangedMutation::Add) => {
-                    // State Selected(S) + Mutation Add(A) => Mutated state Selected(A ∪ S)
+                    // State Selected(S) + Mutation Add(A) => Mutated state Selected(A âˆª S)
                     let added = data.register(scope.addresses, context)?;
                     match added.is_empty() {
                         false => {

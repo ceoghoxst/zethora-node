@@ -483,7 +483,7 @@ fn test_bind_addr_from_port_empty() {
     assert_eq!(bind_addr_from_port("   "), "");
 }
 
-// Stratum line buffer tests (issue #1017 — cap incomplete lines to prevent memory exhaustion)
+// Stratum line buffer tests (issue #1017 â€” cap incomplete lines to prevent memory exhaustion)
 #[cfg(test)]
 #[test]
 fn test_append_line_data_accepts_data_under_limit() {
@@ -990,7 +990,7 @@ fn test_unmarshal_event_with_nested_objects() {
 #[test]
 fn test_unmarshal_event_with_unicode() {
     use kaspa_stratum_bridge::jsonrpc_event::unmarshal_event;
-    let json = r#"{"jsonrpc":"2.0","method":"mining.subscribe","params":["测试"],"id":1}"#;
+    let json = r#"{"jsonrpc":"2.0","method":"mining.subscribe","params":["æµ‹è¯•"],"id":1}"#;
     let event = unmarshal_event(json).unwrap();
     assert_eq!(event.method, "mining.subscribe");
     assert_eq!(event.params.len(), 1);
@@ -1662,13 +1662,13 @@ mod comprehensive_tests {
 
         // Assign first extranonce
         let extranonce1 =
-            counter.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |val| if val < max_extranonce { Some(val + 1) } else { Some(0) });
+            counter.try_update(Ordering::SeqCst, Ordering::SeqCst, |val| if val < max_extranonce { Some(val + 1) } else { Some(0) });
         assert!(extranonce1.is_ok());
         assert_eq!(extranonce1.unwrap(), 0);
 
         // Assign second extranonce
         let extranonce2 =
-            counter.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |val| if val < max_extranonce { Some(val + 1) } else { Some(0) });
+            counter.try_update(Ordering::SeqCst, Ordering::SeqCst, |val| if val < max_extranonce { Some(val + 1) } else { Some(0) });
         assert!(extranonce2.is_ok());
         assert_eq!(extranonce2.unwrap(), 1);
     }
