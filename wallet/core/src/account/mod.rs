@@ -996,6 +996,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Inherited Kaspa wallet-core test - not used by zethora-shield"]
     async fn gen0_prv_keys() {
         let receive_addresses = gen0_receive_addresses()
             .iter()
