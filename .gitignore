@@ -16,3 +16,11 @@ Servers.toml
 release
 package-sizes.js
 rustbridge_*.log
+# Zethora working files - not part of the source tree
+*.patch
+apply-*.ps1
+CLAUDE.md.bak
+zethora-miner-key.txt
+zethora_*_genesis_values.txt
+consensus/core/zethora_*_genesis_values.txt
+ZETHORA-WINDOWS.txt
