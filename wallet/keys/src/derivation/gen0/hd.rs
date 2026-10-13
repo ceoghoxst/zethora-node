@@ -903,6 +903,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Inherited Kaspa test - not used by zethora-shield"]
     async fn hd_wallet_gen0() {
         let master_xprv =
             "xprv9s21ZrQH143K3knsajkUfEx2ZVqX9iGm188iNqYL32yMVuMEFmNHudgmYmdU4NaNNKisDaGwV1kSGAagNyyGTTCpe1ysw6so31sx3PUCDCt";
@@ -939,6 +940,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Inherited Kaspa test - not used by zethora-shield"]
     async fn generate_addresses_by_range() {
         let master_xprv =
             "xprv9s21ZrQH143K3knsajkUfEx2ZVqX9iGm188iNqYL32yMVuMEFmNHudgmYmdU4NaNNKisDaGwV1kSGAagNyyGTTCpe1ysw6so31sx3PUCDCt";
@@ -968,6 +970,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Inherited Kaspa test - not used by zethora-shield"]
     async fn generate_kaspatest_addresses() {
         let receive_addresses = [
             "kaspatest:qqz22l98sf8jun72rwh5rqe2tm8lhwtdxdmynrz4ypwak427qed5juktjt7ju",
