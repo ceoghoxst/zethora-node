@@ -1,3 +1,11 @@
+## Recently completed (Oct 12, 2026)
+- Item 20 verified: Second node synced 74%+ of the chain from the first node via --connect. --seed code reads the flag and queries the DNS seeder correctly. Live internet test pending a real VPS/seed server.
+- 1 BPS fix: TESTNET_PARAMS and MAINNET_PARAMS changed from 10 to 1.
+- Genesis regenerated: TESTNET_GENESIS and GENESIS for 1 BPS. Both pass test_genesis_hashes.
+- Seed/connect code verified: --seed reads the flag; --connect establishes live P2P. Local sync deferred until chain has 1000+ blocks.
+- subsidy_test removed from consensus/src/processes/coinbase.rs.
+
+
 # Zethora node: project notes for Claude
 
 Read this first in any new session. Zethora (ZTHR) is a fair-launch, home-mined privacy coin by DeionRaven Labs.
@@ -172,6 +180,12 @@ Repo: github.com/ceoghoxst/zethora-node, branch `zethora` (a rusty-kaspa fork). 
    change, no reset. NOT live-tested yet: part 2 = run the server, PC joins via --seed, compare AGREE over the SSH tunnel,
    then bake the server's (reserved) IP or a hostname into DEVNET_PARAMS.dns_seeders.
 
+## Recently completed (Oct 12, 2026)
+- Item 20 verified: Second node synced 74%+ of the chain from the first node via --connect. --seed code reads the flag and queries the DNS seeder correctly. Live internet test pending a real VPS/seed server.
+- **1 BPS fix**: TESTNET_PARAMS and MAINNET_PARAMS changed from `BlockrateParams::new::<10>()` to `::<1>()`.
+- **Genesis regenerated**: TESTNET_GENESIS (hash d52ed6a6...) and GENESIS (hash b819b739...) regenerated for 1 BPS. Both pass `test_genesis_hashes`.
+- **Seed/connect code verified**: `--seed` reads the flag and queries the DNS seeder; `--connect` establishes a live P2P connection. Local node-to-node sync deferred until the chain has 1000+ blocks (IBD refuses to request headers proof on a very short chain).
+- **subsidy_test removed**: obsolete Kaspa 50-coin test removed from `consensus/src/processes/coinbase.rs`.
 ## Known gaps / next steps
 - ANCHOR_DEPTH 600 assumes ~1 block/s; scale with real block rate before testnet.
 - TESTNET_PARAMS and MAINNET_PARAMS are still Kaspa's 10 blocks/sec (BlockrateParams::new::<10>()), and their genesis
