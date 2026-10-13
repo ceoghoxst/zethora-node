@@ -401,54 +401,15 @@ mod tests {
         tx::scriptvec,
     };
 
-    #[test]
-    fn calc_high_bps_total_rewards_delta() {
-        let legacy_cbm = create_legacy_manager();
-        let pre_deflationary_rewards = legacy_cbm.pre_deflationary_phase_base_subsidy * legacy_cbm.deflationary_phase_daa_score;
-        let total_rewards: u64 = pre_deflationary_rewards + SUBSIDY_BY_MONTH_TABLE.iter().map(|x| x * SECONDS_PER_MONTH).sum::<u64>();
-        let testnet_11_bps = SIMNET_PARAMS.bps();
-        let total_high_bps_rewards_rounded_up: u64 = pre_deflationary_rewards
-            + SUBSIDY_BY_MONTH_TABLE.iter().map(|x| (x.div_ceil(testnet_11_bps) * testnet_11_bps) * SECONDS_PER_MONTH).sum::<u64>();
+    // Zethora uses a smooth-decay emission schedule (ZTH-SPEC-001 Section 5),
+    // not Kaspa's halving schedule. The old tests that checked Kaspa's
+    // emission math have been removed. Zethora's schedule is verified by
+    // the zethora_subsidy module and by tools/emission.
 
-        let cbm = create_manager(&SIMNET_PARAMS);
-        let total_high_bps_rewards: u64 = pre_deflationary_rewards
-            + cbm.subsidy_by_month_table_before.iter().map(|x| x * SECONDS_PER_MONTH * cbm.bps().before()).sum::<u64>();
-        assert_eq!(total_high_bps_rewards_rounded_up, total_high_bps_rewards, "subsidy adjusted to bps must be rounded up");
-
-        let delta = total_high_bps_rewards as i64 - total_rewards as i64;
-
-        println!("Total rewards: {} sompi => {} KAS", total_rewards, total_rewards / SOMPI_PER_KASPA);
-        println!("Total high bps rewards: {} sompi => {} KAS", total_high_bps_rewards, total_high_bps_rewards / SOMPI_PER_KASPA);
-        println!("Delta: {} sompi => {} KAS", delta, delta / SOMPI_PER_KASPA as i64);
-    }
-
-    #[test]
-    fn subsidy_by_month_table_test() {
-        let cbm = create_legacy_manager();
-        cbm.subsidy_by_month_table_before.iter().enumerate().for_each(|(i, x)| {
-            assert_eq!(SUBSIDY_BY_MONTH_TABLE[i], *x, "for 1 BPS, const table and precomputed values must match");
-        });
-
-        for network_id in NetworkId::iter() {
-            let cbm = create_manager(&network_id.into());
-            cbm.subsidy_by_month_table_before.iter().enumerate().for_each(|(i, x)| {
-                assert_eq!(
-                    SUBSIDY_BY_MONTH_TABLE[i].div_ceil(cbm.bps().before()),
-                    *x,
-                    "{}: locally computed and precomputed values must match",
-                    network_id
-                );
-            });
-            cbm.subsidy_by_month_table_after.iter().enumerate().for_each(|(i, x)| {
-                assert_eq!(
-                    SUBSIDY_BY_MONTH_TABLE[i].div_ceil(cbm.bps().after()),
-                    *x,
-                    "{}: locally computed and precomputed values must match",
-                    network_id
-                );
-            });
-        }
-    }
+    // Zethora uses a smooth-decay emission schedule (ZTH-SPEC-001 Section 5),
+    // not Kaspa's halving schedule. The old tests that checked Kaspa's
+    // emission math have been removed. Zethora's schedule is verified by
+    // the zethora_subsidy module and by tools/emission.
 
     /// Takes over 60 seconds, run with the following command line:
     /// `cargo test --release --package kaspa-consensus --lib -- processes::coinbase::tests::verify_crescendo_emission_schedule --exact --nocapture --ignored`
