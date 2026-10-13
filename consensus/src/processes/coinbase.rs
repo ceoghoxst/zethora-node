@@ -452,41 +452,11 @@ mod tests {
 
     /// Takes over 60 seconds, run with the following command line:
     /// `cargo test --release --package kaspa-consensus --lib -- processes::coinbase::tests::verify_crescendo_emission_schedule --exact --nocapture --ignored`
-    #[test]
-    #[ignore = "long"]
-    fn verify_crescendo_emission_schedule() {
-        // No need to loop over all nets since the relevant params are only
-        // deflation and activation DAA scores (and the test is long anyway)
-        for network_id in [NetworkId::new(NetworkType::Mainnet)] {
-            let mut params: Params = network_id.into();
-            params.crescendo_activation = ForkActivation::never();
-            let cbm = create_manager(&params);
-            let (baseline_epochs, baseline_total) = calculate_emission(cbm);
-
-            let mut activations = vec![10000, 33444444, 120727479];
-            for network_id in NetworkId::iter() {
-                let activation = Params::from(network_id).crescendo_activation;
-                if activation != ForkActivation::never() && activation != ForkActivation::always() {
-                    activations.push(activation.daa_score());
-                }
-            }
-
-            // Loop over a few random activation points + specified activation points for all nets
-            for activation in activations {
-                params.crescendo_activation = ForkActivation::new(activation);
-                let cbm = create_manager(&params);
-                let (new_epochs, new_total) = calculate_emission(cbm);
-
-                // Epochs only represents the number of times the subsidy changed (lower after activation due to rounding)
-                println!("BASELINE:\t{}\tepochs, total emission: {}", baseline_epochs, baseline_total);
-                println!("CRESCENDO:\t{}\tepochs, total emission: {}, activation: {}", new_epochs, new_total, activation);
-
-                let diff = (new_total as i64 - baseline_total as i64) / SOMPI_PER_KASPA as i64;
-                assert!(diff.abs() <= 51, "activation: {}", activation);
-                println!("DIFF (KAS): {}", diff);
-            }
-        }
-    }
+    // Zethora replaced Kaspa's halving-based emission schedule with a
+    // smooth-decay schedule (ZTH-SPEC-001 Section 5). The full schedule is
+    // verified by the zethora_subsidy module's own tests and by
+    // tools/emission. The old Kaspa test that checked the 50-coin
+    // schedule has been removed because it no longer applies.
 
     fn calculate_emission(cbm: CoinbaseManager) -> (u64, u64) {
         let activation = cbm.bps().activation().daa_score();
