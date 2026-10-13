@@ -395,56 +395,10 @@ mod tests {
     use super::*;
     use crate::params::MAINNET_PARAMS;
     use kaspa_consensus_core::{
-        config::params::{ForkActivation, Params, SIMNET_PARAMS},
-        constants::SOMPI_PER_KASPA,
-        network::{NetworkId, NetworkType},
+        config::params::Params,
         tx::scriptvec,
     };
 
-    // Zethora uses a smooth-decay emission schedule (ZTH-SPEC-001 Section 5),
-    // not Kaspa's halving schedule. The old tests that checked Kaspa's
-    // emission math have been removed. Zethora's schedule is verified by
-    // the zethora_subsidy module and by tools/emission.
-
-    // Zethora uses a smooth-decay emission schedule (ZTH-SPEC-001 Section 5),
-    // not Kaspa's halving schedule. The old tests that checked Kaspa's
-    // emission math have been removed. Zethora's schedule is verified by
-    // the zethora_subsidy module and by tools/emission.
-
-    /// Takes over 60 seconds, run with the following command line:
-    /// `cargo test --release --package kaspa-consensus --lib -- processes::coinbase::tests::verify_crescendo_emission_schedule --exact --nocapture --ignored`
-    // Zethora replaced Kaspa's halving-based emission schedule with a
-    // smooth-decay schedule (ZTH-SPEC-001 Section 5). The full schedule is
-    // verified by the zethora_subsidy module's own tests and by
-    // tools/emission. The old Kaspa test that checked the 50-coin
-    // schedule has been removed because it no longer applies.
-
-    fn calculate_emission(cbm: CoinbaseManager) -> (u64, u64) {
-        let activation = cbm.bps().activation().daa_score();
-        let mut current = 0;
-        let mut total = 0;
-        let mut epoch = 0u64;
-        let mut prev = cbm.calc_block_subsidy(0);
-        loop {
-            let subsidy = cbm.calc_block_subsidy(current);
-            // Pre activation we expect the legacy calc (1bps)
-            if current < activation {
-                assert_eq!(cbm.legacy_calc_block_subsidy(current), subsidy);
-            }
-            if subsidy == 0 {
-                break;
-            }
-            total += subsidy;
-            if subsidy != prev {
-                println!("epoch: {}, subsidy: {}", epoch, subsidy);
-                prev = subsidy;
-                epoch += 1;
-            }
-            current += 1;
-        }
-
-        (epoch, total)
-    }
 
         // Zethora replaced Kaspa's halving-based subsidy schedule with a
     // smooth-decay schedule (ZTH-SPEC-001 §5). The full schedule is
@@ -552,8 +506,4 @@ mod tests {
         )
     }
 
-    /// Return a CoinbaseManager with legacy golang 1 BPS properties
-    fn create_legacy_manager() -> CoinbaseManager {
-        CoinbaseManager::new(150, 204, 15778800 - 259200, 50000000000, ForkedParam::new_const(1))
-    }
 }
