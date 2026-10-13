@@ -205,8 +205,17 @@ impl TestConsensus {
         mut txs: Vec<Transaction>,
     ) -> MutableBlock {
         let mut header = self.build_header_with_parents(hash, parents);
-        let cb_payload: Vec<u8> = header.blue_score.to_le_bytes().iter().copied() // Blue score
-            .chain(self.consensus.services.coinbase_manager.calc_block_subsidy(header.daa_score).to_le_bytes().iter().copied()) // Subsidy
+        // Zethora coinbase payload: blue score, subsidy, 5x8 pool/ledger fields,
+        // 32-byte coin list root, 32-byte private state fingerprint, script pubkey.
+        let cb_payload: Vec<u8> = header.blue_score.to_le_bytes().iter().copied()
+            .chain(self.consensus.services.coinbase_manager.calc_block_subsidy(header.daa_score).to_le_bytes().iter().copied())
+            .chain([0u8; 8].iter().copied()) // pool balance
+            .chain([0u8; 8].iter().copied()) // total burned
+            .chain([0u8; 8].iter().copied()) // total issued
+            .chain([0u8; 8].iter().copied()) // transparent supply
+            .chain([0u8; 8].iter().copied()) // shielded balance
+            .chain([0u8; 32].iter().copied()) // private coin list root
+            .chain([0u8; 32].iter().copied()) // private state fingerprint
             .chain((0_u16).to_le_bytes().iter().copied()) // Script public key version
             .chain((0_u8).to_le_bytes().iter().copied()) // Script public key length
             .collect();
