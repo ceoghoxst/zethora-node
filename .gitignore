@@ -24,3 +24,9 @@ zethora-miner-key.txt
 zethora_*_genesis_values.txt
 consensus/core/zethora_*_genesis_values.txt
 ZETHORA-WINDOWS.txt
+# Overnight test logs
+overnight-test-*.log
+# Backup files from editing
+*.bak
+# Genesis scratch file
+consensus/core/zethora_genesis_values.txt
