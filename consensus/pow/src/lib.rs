@@ -19,9 +19,13 @@ use kaspa_math::Uint256;
 
 /// State is an intermediate data structure with pre-computed values to speed up mining.
 pub struct State {
+    /// Only read on wasm32 (Kaspa kHeavyHash fallback). Native builds use RandomZ.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     pub(crate) matrix: Matrix,
     pub(crate) target: Uint256,
     // PRE_POW_HASH || TIME || 32 zero byte padding; without NONCE
+    /// Only read on wasm32 (Kaspa kHeavyHash fallback). Native builds use RandomZ.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     pub(crate) hasher: PowHash,
     pub(crate) pre_pow_hash: [u8; 32],
     pub(crate) timestamp: u64,
