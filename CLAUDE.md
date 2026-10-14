@@ -232,3 +232,18 @@ Repo: github.com/ceoghoxst/zethora-node, branch `zethora` (a rusty-kaspa fork). 
 - [ ] **Human crypto review**: private sending is off for testnet/mainnet until an outside cryptographer reviews the Orchard/Halo2 integration.
 - [ ] **Stream private state download**: currently held fully in memory during P2P sync. Stream it before mainnet.
 - [ ] **B8 miner prebuild**: miner stalls ~30 s at each epoch key rotation (~12 days). Prebuild next epoch's dataset in the background.
+
+## Known test failures (as of Oct 14, 2026)
+
+### kaspa-testing-integration: daemon_integration_tests uses stale short coinbase payloads
+- Symptom: PayloadLenBelowMin(32, 123) at consensus/src/pipeline/virtual_processor/utxo_validation.rs:478
+- Cause: daemon_integration_tests builds blocks with a 32-byte coinbase payload. Zethora requires 123+ (supply ledger + coin list root + private state fingerprint).
+- Impact: 1 test binary fails. Does not affect devnet, node startup, P2P, mining, or any Zethora-specific code.
+- Fix path: update the daemon test helper to build Zethora-shaped coinbases (similar to what was done for consensus test_consensus.rs on Oct 13).
+- Status: deferred. Not blocking testnet.
+
+### How to run tests
+The workspace test suite passes except for the above. Run per-crate rather than --workspace to skip the known failure:
+  cargo test -p kaspa-consensus --lib
+  cargo test -p kaspa-txscript --lib
+  cargo test -p kaspa-wallet-core --lib
