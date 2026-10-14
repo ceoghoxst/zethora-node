@@ -199,27 +199,27 @@ impl BlockEventLogger {
 
                 match (summary.submit_count, summary.relay_count) {
                     (0, 0) => {}
-                    (1, 0) => info!("Accepted block {} via submit block", summary.submit()),
-                    (n, 0) => info!("Accepted {} blocks ...{} via submit block", n, summary.submit()),
-                    (0, 1) => info!("Accepted block {} via relay", summary.relay()),
-                    (0, m) => info!("Accepted {} blocks ...{} via relay", m, summary.relay()),
+                    (1, 0) => { info!("Accepted block {} via submit block", summary.submit()); },
+                    (n, 0) => { info!("Accepted {} blocks ...{} via submit block", n, summary.submit()); },
+                    (0, 1) => { info!("Accepted block {} via relay", summary.relay()); },
+                    (0, m) => { info!("Accepted {} blocks ...{} via relay", m, summary.relay()); },
                     (n, m) => {
                         #[allow(clippy::arithmetic_side_effects, reason = "ARITH-SAFETY(COUNTER)")]
                         {
-                            info!("Accepted {} blocks ...{}, {} via relay and {} via submit block", n + m, summary.submit(), m, n)
+                            { info!("Accepted {} blocks ...{}, {} via relay and {} via submit block", n + m, summary.submit(), m, n); }
                         }
                     }
                 }
 
                 match (summary.orphan_count, summary.orphan_roots_count) {
                     (0, 0) => {}
-                    (n, m) => info!("Orphaned {} block(s) ...{} and queued {} missing roots", n, summary.orphan(), m),
+                    (n, m) => { info!("Orphaned {} block(s) ...{} and queued {} missing roots", n, summary.orphan(), m); },
                 }
 
                 match summary.unorphan_count {
                     0 => {}
-                    1 => info!("Unorphaned block {}", summary.unorphan()),
-                    n => info!("Unorphaned {} block(s) ...{}", n, summary.unorphan()),
+                    1 => { info!("Unorphaned block {}", summary.unorphan()); },
+                    n => { info!("Unorphaned {} block(s) ...{}", n, summary.unorphan()); },
                 }
             }
         });
@@ -523,8 +523,8 @@ impl FlowContext {
                 logger.log(BlockLogEvent::Unorphaned(unorphaned_blocks[0].0.hash(), unorphaned_blocks.len()));
             } else {
                 match unorphaned_blocks.len() {
-                    1 => info!("Unorphaned block {}", unorphaned_blocks[0].0.hash()),
-                    n => info!("Unorphaned {} blocks: {}", n, unorphaned_blocks.iter().map(|b| b.0.hash()).reusable_format(", ")),
+                    1 => { info!("Unorphaned block {}", unorphaned_blocks[0].0.hash()); },
+                    n => { info!("Unorphaned {} blocks: {}", n, unorphaned_blocks.iter().map(|b| b.0.hash()).reusable_format(", ")); },
                 }
             }
         }
@@ -560,10 +560,10 @@ impl FlowContext {
             logger.log(event)
         } else {
             match event {
-                BlockLogEvent::Relay(hash) => info!("Accepted block {} via relay", hash),
-                BlockLogEvent::Submit(hash) => info!("Accepted block {} via submit block", hash),
+                BlockLogEvent::Relay(hash) => { info!("Accepted block {} via relay", hash); },
+                BlockLogEvent::Submit(hash) => { info!("Accepted block {} via submit block", hash); },
                 BlockLogEvent::Orphaned(orphan, roots_count) => {
-                    info!("Received a block with {} missing ancestors, adding to orphan pool: {}", roots_count, orphan)
+                    { info!("Received a block with {} missing ancestors, adding to orphan pool: {}", roots_count, orphan); }
                 }
                 _ => {}
             }
