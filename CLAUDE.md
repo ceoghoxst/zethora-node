@@ -247,3 +247,22 @@ The workspace test suite passes except for the above. Run per-crate rather than 
   cargo test -p kaspa-consensus --lib
   cargo test -p kaspa-txscript --lib
   cargo test -p kaspa-wallet-core --lib
+
+## Dependency security status (Oct 14, 2026)
+
+### Fixed
+Ran cargo audit, found 13 vulnerabilities. Updated 12 of them:
+- ruint 1.17.2 -> 1.20.1 (arithmetic correctness)
+- rustls 0.23.39 -> 0.23.46 (4 CVEs)
+- h2 0.4.6 -> 0.4.20 (DoS)
+- quinn-proto 0.11.14 -> 0.11.19 (5 CVEs)
+- crossbeam-epoch 0.9.18 -> 0.9.21
+- anyhow 1.0.97 -> 1.0.104
+
+### Accepted risk
+- tracing-subscriber 0.2.25 (RUSTSEC-2025-0055): log poisoning via ANSI escapes. Low severity (cosmetic log issue, not remotely exploitable). Pinned transitively; updating requires dependency archaeology not worth the effort now. Revisit before mainnet.
+
+### Non-blocking warnings
+16 unmaintained/unsound/yanked warnings from inherited Kaspa deps. Not exploitable. Tracked but not blocking.
+
+Re-run with: cargo audit
