@@ -2,7 +2,9 @@
 //!
 //! A private payment travels in a normal (native subnetwork) transaction's payload:
 //!
-//!     payload = PRIVATE_PAYMENT_MAGIC (4 bytes) || encoded private payment
+//! ```text
+//! payload = PRIVATE_PAYMENT_MAGIC (4 bytes) || encoded private payment
+//! ```
 //!
 //! The encoded payment format is defined in the `zethora-shielded` crate (`codec`). This module only
 //! reads the few fields consensus needs without decoding the whole payment: the action count (for mass)

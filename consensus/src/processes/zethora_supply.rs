@@ -2,7 +2,9 @@
 //!
 //! Every chain block carries a ledger of where every zet is, in its coinbase payload:
 //!
-//!     transparent_supply + pool_balance + total_burned + shielded_balance == total_issued
+//! ```text
+//! transparent_supply + pool_balance + total_burned + shielded_balance == total_issued
+//! ```
 //!
 //! All values describe the moment after the block's coinbase is counted. Nodes rebuild the ledger
 //! from what the block actually did (the real UTXO changes, the rewards it pays, the fee pool step)
