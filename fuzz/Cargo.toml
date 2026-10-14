@@ -1,0 +1,27 @@
+[package]
+name = "zethora-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+kaspa-consensus-core = { path = "../consensus/core" }
+kaspa-addresses = { path = "../crypto/addresses" }
+
+[[bin]]
+name = "zethora_private"
+path = "fuzz_targets/zethora_private.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "address_parse"
+path = "fuzz_targets/address_parse.rs"
+test = false
+doc = false
+bench = false
