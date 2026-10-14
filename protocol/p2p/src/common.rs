@@ -96,6 +96,13 @@ impl ProtocolError {
         }
     }
 
+    /// Zethora (ZTH-IMPL-020 D1): the peer sent a pruning proof whose RandomZ epoch is
+    /// implausible. Honest software cannot produce this: the epoch is derived from a
+    /// block's DAA score, which consensus checks exactly.
+    pub fn is_implausible_pow_epoch(&self) -> bool {
+        matches!(self, Self::PruningImportError(PruningImportError::ZethoraPowEpochImplausible(..)))
+    }
+
     pub fn is_connection_closed_error(&self) -> bool {
         matches!(self, Self::ConnectionClosed)
     }
