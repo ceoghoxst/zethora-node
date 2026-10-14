@@ -178,6 +178,9 @@ impl RandomXCache {
                 Err(RandomXError::CreationError("Could not allocate cache".to_string()))
             } else {
                 let inner = RandomXCacheInner { cache_ptr };
+                // SAFETY: RandomXCacheInner holds a *mut randomx_cache pointing at C-allocated memory. The
+                // RandomX C library manages internal locking for concurrent VM access, and Rust only ever
+                // moves/shares RandomXCache after this construction. Marking Send + Sync is sound.
                 let result = RandomXCache { inner: Arc::new(inner) };
                 let key_ptr = key.as_ptr() as *mut c_void;
                 let key_size = key.len();
@@ -253,6 +256,7 @@ impl RandomXDataset {
                 dataset_count: item_count,
                 cache,
             };
+            // SAFETY: same reasoning as RandomXCache above.
             let result = RandomXDataset { inner: Arc::new(inner) };
 
             if start < item_count {
@@ -553,3 +557,11 @@ impl RandomXVM {
         Ok(result)
     }
 }
+
+// SAFETY: RandomXCacheInner and RandomXDatasetInner hold raw pointers to memory allocated and
+// managed by the RandomX C library, which is internally thread-safe for reads. These types are
+// only ever constructed on one thread, then shared read-only across worker threads.
+unsafe impl Send for RandomXCacheInner {}
+unsafe impl Sync for RandomXCacheInner {}
+unsafe impl Send for RandomXDatasetInner {}
+unsafe impl Sync for RandomXDatasetInner {}
