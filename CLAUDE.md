@@ -217,3 +217,18 @@ Repo: github.com/ceoghoxst/zethora-node, branch `zethora` (a rusty-kaspa fork). 
 ## Safety rules for Claude
 - Never promise coins, staking returns or paid hashrate. No token exists yet.
 - Don't route around network blocks; if crates.io is blocked in the sandbox, his PC compiles and Claude checks against library sources.
+
+## Security verification log
+
+### Oct 13, 2026: Subsidy fields verified dead in production
+- **Finding**: Mainnet/Testnet pre_deflationary_phase_base_subsidy (50000000000) and deflationary_phase_daa_score are not read on any production code path.
+- **Proof**: calc_block_subsidy at consensus/src/processes/coinbase.rs:307 delegates to zethora_subsidy.subsidy(daa_score). The Kaspa fields are only read by kaspa_calc_block_subsidy (marked #[allow(dead_code)], never called) and legacy_calc_block_subsidy (marked #[cfg(test)]).
+- **Impact**: Mainnet cannot accidentally pay Kaspa's 500 KAS/block reward. Risk closed.
+- **Remaining cleanup (low priority)**: eventually remove the dead fields and their two unused functions. Do NOT remove fields alone - Simnet integration tests reference SIMNET_PARAMS.pre_deflationary_phase_base_subsidy as a constant.
+
+## Pre-testnet security checklist
+- [ ] **RandomZ DoS ban**: a peer can send bogus pruning proofs, forcing ~30 light setups (256 MB each). Add a ban rule for invalid proofs before testnet opens.
+- [ ] **Independent seed nodes**: currently only one seed (DeionRaven Labs). Add community-run or DNS seeder redundancy before mainnet.
+- [ ] **Human crypto review**: private sending is off for testnet/mainnet until an outside cryptographer reviews the Orchard/Halo2 integration.
+- [ ] **Stream private state download**: currently held fully in memory during P2P sync. Stream it before mainnet.
+- [ ] **B8 miner prebuild**: miner stalls ~30 s at each epoch key rotation (~12 days). Prebuild next epoch's dataset in the background.
