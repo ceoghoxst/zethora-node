@@ -216,9 +216,9 @@ impl Router {
                                 Ok(()) => {},
                                 Err(e) => {
                                     match e {
-                                        ProtocolError::IgnorableReject(reason) => debug!("P2P, got reject message: {} from peer: {}", reason, router),
-                                        ProtocolError::Rejected(reason) => warn!("P2P, got reject message: {} from peer: {}", reason, router),
-                                        e => warn!("P2P, route error: {} for peer: {}", e, router),
+                                        ProtocolError::IgnorableReject(reason) => { debug!("P2P, got reject message: {} from peer: {}", reason, router); }
+                                        ProtocolError::Rejected(reason) => { warn!("P2P, got reject message: {} from peer: {}", reason, router); }
+                                        e => { warn!("P2P, route error: {} for peer: {}", e, router); }
                                     }
                                     break;
                                 },
