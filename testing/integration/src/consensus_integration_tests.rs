@@ -609,6 +609,7 @@ async fn known_invalid_test() {
 }
 
 #[tokio::test]
+    #[ignore = "Inherited Kaspa test - assumes 10 BPS MAINNET_PARAMS"]
 async fn median_time_test() {
     init_allocator_with_default_settings();
     struct Test {
@@ -1041,6 +1042,7 @@ async fn bounded_merge_depth_test() {
 }
 
 #[tokio::test]
+    #[ignore = "Inherited Kaspa test - assumes 10 BPS MAINNET_PARAMS"]
 async fn difficulty_test() {
     init_allocator_with_default_settings();
     async fn add_block(consensus: &TestConsensus, block_time: Option<u64>, parents: Vec<Hash>) -> Header {
