@@ -19,7 +19,7 @@ use kaspa_database::prelude::{CachePolicy, DB, StoreResultExt};
 use kaspa_utils::networking::IpAddress;
 use local_ip_address::list_afinet_netifas;
 use parking_lot::Mutex;
-use stores::banned_address_store::{BannedAddressesStore, BannedAddressesStoreReader, ConnectionBanTimestamp, DbBannedAddressesStore};
+use stores::banned_address_store::{BannedAddressesStore, BannedAddressesStoreReader, ConnectionBan, DbBannedAddressesStore};
 use thiserror::Error;
 
 pub use stores::NetAddress;
@@ -50,6 +50,12 @@ pub enum UpnpError {
     #[error(transparent)]
     GetExternalIpError(#[from] GetExternalIpError),
 }
+
+/// ZTH-IMPL-020 D2: ban schedule (base, cap, reset window, max escalation level).
+const BAN_BASE_MS: u64 = 24 * 60 * 60 * 1000;         // 24 hours
+const BAN_MAX_MS: u64 = 7 * 24 * 60 * 60 * 1000;     // 7 days
+const RESET_WINDOW_MS: u64 = 24 * 60 * 60 * 1000;    // 24 hours
+const MAX_ESCALATION: u8 = 2;                       // levels: 0=24h, 1=48h, 2+=7d
 
 pub struct AddressManager {
     banned_address_store: DbBannedAddressesStore,
@@ -310,9 +316,28 @@ impl AddressManager {
         self.address_store.iterate_prioritized_random_addresses(exceptions)
     }
 
+    /// ZTH-IMPL-020 D2: ban duration escalates on repeat offences and resets after
+    /// a quiet window. Level 0 = 24h, 1 = 48h, 2+ = 7 days. A new ban more than
+    /// 24h after the previous one resets the level to 0.
     pub fn ban(&mut self, ip: IpAddress) {
-        self.banned_address_store.set(ip.into(), ConnectionBanTimestamp(unix_now())).unwrap();
+        let now = unix_now();
+        let escalation = match self.banned_address_store.get(ip.into()).optional().unwrap() {
+            Some(prev) if now.saturating_sub(prev.timestamp_ms) <= RESET_WINDOW_MS => {
+                prev.escalation.saturating_add(1).min(MAX_ESCALATION)
+            }
+            _ => 0,
+        };
+        self.banned_address_store.set(ip.into(), ConnectionBan { timestamp_ms: now, escalation }).unwrap();
         self.address_store.remove_by_ip(ip.into());
+    }
+
+    /// ZTH-IMPL-020 D2: ban duration depends on the recorded escalation level.
+    fn ban_duration_ms(escalation: u8) -> u64 {
+        match escalation {
+            0 => BAN_BASE_MS,
+            1 => BAN_BASE_MS * 2,
+            _ => BAN_MAX_MS,
+        }
     }
 
     pub fn unban(&mut self, ip: IpAddress) {
@@ -320,10 +345,9 @@ impl AddressManager {
     }
 
     pub fn is_banned(&mut self, ip: IpAddress) -> bool {
-        const MAX_BANNED_TIME: u64 = 24 * 60 * 60 * 1000;
         match self.banned_address_store.get(ip.into()).optional().unwrap() {
-            Some(timestamp) => {
-                if unix_now().saturating_sub(timestamp.0) > MAX_BANNED_TIME {
+            Some(entry) => {
+                if unix_now().saturating_sub(entry.timestamp_ms) > Self::ban_duration_ms(entry.escalation) {
                     self.unban(ip);
                     false
                 } else {

@@ -9,16 +9,21 @@ use std::net::{IpAddr, Ipv6Addr};
 use std::{error::Error, fmt::Display, sync::Arc};
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
-pub struct ConnectionBanTimestamp(pub u64);
+/// ZTH-IMPL-020 D2: a ban entry records when the ban started and its escalation level.
+/// Level 0 = 24h, 1 = 48h, 2+ = 7 days. A ban more than 24h in the past resets the level.
+pub struct ConnectionBan {
+    pub timestamp_ms: u64,
+    pub escalation: u8,
+}
 
-impl MemSizeEstimator for ConnectionBanTimestamp {}
+impl MemSizeEstimator for ConnectionBan {}
 
 pub trait BannedAddressesStoreReader {
-    fn get(&self, address: IpAddr) -> Result<ConnectionBanTimestamp, StoreError>;
+    fn get(&self, address: IpAddr) -> Result<ConnectionBan, StoreError>;
 }
 
 pub trait BannedAddressesStore: BannedAddressesStoreReader {
-    fn set(&mut self, ip: IpAddr, timestamp: ConnectionBanTimestamp) -> StoreResult<()>;
+    fn set(&mut self, ip: IpAddr, timestamp: ConnectionBan) -> StoreResult<()>;
     fn remove(&mut self, ip: IpAddr) -> StoreResult<()>;
 }
 
@@ -69,7 +74,7 @@ impl From<AddressKey> for IpAddr {
 #[derive(Clone)]
 pub struct DbBannedAddressesStore {
     db: Arc<DB>,
-    access: CachedDbAccess<AddressKey, ConnectionBanTimestamp>,
+    access: CachedDbAccess<AddressKey, ConnectionBan>,
 }
 
 impl DbBannedAddressesStore {
@@ -77,7 +82,7 @@ impl DbBannedAddressesStore {
         Self { db: Arc::clone(&db), access: CachedDbAccess::new(db, cache_policy, DatabaseStorePrefixes::BannedAddresses.into()) }
     }
 
-    pub fn iterator(&self) -> impl Iterator<Item = Result<(IpAddr, ConnectionBanTimestamp), Box<dyn Error>>> + '_ {
+    pub fn iterator(&self) -> impl Iterator<Item = Result<(IpAddr, ConnectionBan), Box<dyn Error>>> + '_ {
         self.access.iterator().map(|iter_result| match iter_result {
             Ok((key_bytes, connection_ban_timestamp)) => match <[u8; ADDRESS_KEY_SIZE]>::try_from(&key_bytes[..]) {
                 Ok(address_key_slice) => {
@@ -93,13 +98,13 @@ impl DbBannedAddressesStore {
 }
 
 impl BannedAddressesStoreReader for DbBannedAddressesStore {
-    fn get(&self, ip: IpAddr) -> Result<ConnectionBanTimestamp, StoreError> {
+    fn get(&self, ip: IpAddr) -> Result<ConnectionBan, StoreError> {
         self.access.read(ip.into())
     }
 }
 
 impl BannedAddressesStore for DbBannedAddressesStore {
-    fn set(&mut self, ip: IpAddr, timestamp: ConnectionBanTimestamp) -> StoreResult<()> {
+    fn set(&mut self, ip: IpAddr, timestamp: ConnectionBan) -> StoreResult<()> {
         self.access.write(DirectDbWriter::new(&self.db), ip.into(), timestamp)
     }
 
