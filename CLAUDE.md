@@ -308,3 +308,17 @@ Plan:
 - The seed node is a pre-testnet item, not blocking dev work
 
 Seed setup script already exists at seed/setup-seed.sh.
+
+## simpa is NOT a smart contract VM (Oct 15, 2026)
+
+The simpa crate in the workspace is Kaspa's network simulator, inherited with the fork.
+Its Cargo.toml description is literally "Kaspa Network Simulator". It contains:
+- src/main.rs (22 KB) - a CLI for running simulated networks
+- src/simulator/miner.rs, network.rs - network simulation logic
+- tests/smt_repro.rs - SMT pruning diagnostics
+
+It has NO virtual machine, NO bytecode execution, NO smart contract capability.
+The name sounds like a smart contract layer, but it is not.
+
+Programmability is now correctly labeled in the Lightpaper v0.3 as
+"planned research, not built". Do not represent it as a current feature.
