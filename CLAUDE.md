@@ -296,3 +296,15 @@ All 6 pieces implemented, tested, and committed. Verified:
 ### Still TODO before testnet
 - Live ban test: a malicious-peer tool that sends a malformed pruning proof to a real node and verifies the ban fires after 3 attempts within 10 minutes. Estimated 3-4 hours of test-infrastructure work. Not a blocker for devnet.
 - Restart the miner (it's been off for hours).
+
+## Oracle seed node status (Oct 15, 2026)
+
+Oracle Always Free ARM (VM.Standard.A1.Flex) in US-San Jose: out of capacity in AD-1
+at both 4 OCPU and 1 OCPU. Tried twice across two sessions.
+
+Plan:
+- Retry once at 5-7 AM Pacific (off-peak) tomorrow
+- If still failing, use Hetzner CAX11 (ARM, 2 vCPU, 4 GB) at ~\.64/month
+- The seed node is a pre-testnet item, not blocking dev work
+
+Seed setup script already exists at seed/setup-seed.sh.
