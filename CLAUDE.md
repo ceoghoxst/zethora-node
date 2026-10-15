@@ -266,3 +266,22 @@ Ran cargo audit, found 13 vulnerabilities. Updated 12 of them:
 16 unmaintained/unsound/yanked warnings from inherited Kaspa deps. Not exploitable. Tracked but not blocking.
 
 Re-run with: cargo audit
+
+## ZTH-IMPL-020 progress + DB reset note (Oct 15, 2026)
+
+Pieces 1-5 implemented and committed:
+- ProtocolError::is_implausible_pow_epoch classifier
+- FlowContext::ban_if_implausible_pow_epoch helpers
+- Ban fires on bogus pruning proof (DoS mitigated)
+- Threshold: 3 failures in 10 min before banning
+- Escalating schedule: 24h -> 48h -> 7d, resets after 24h clean
+
+### DB RESET REQUIRED on next devnet start
+The ban record format in components/addressmanager changed from a bare u64
+to a struct { timestamp_ms: u64, escalation: u8 }. Nodes reading old devnet
+databases will fail to deserialize ban entries. Use --reset-db --yes when
+starting devnet until the new format is the only one in use.
+
+### Remaining
+- Piece 6: unit tests for the classifier, threshold, and escalation.
+- Full testnet compliance requires this before strangers connect.
