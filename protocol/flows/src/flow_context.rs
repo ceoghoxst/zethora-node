@@ -413,6 +413,24 @@ impl FlowContext {
         }
     }
 
+    /// Zethora (ZTH-IMPL-020 D1): if `err` shows the peer sent a pruning proof whose RandomZ
+    /// epoch is implausible, ban its IP. Threshold and escalation are handled by the caller
+    /// (ZTH-IMPL-020 D2/D4). Peers added with --connect / --addpeer are never banned.
+    pub async fn ban_if_implausible_pow_epoch(&self, router: &Router, err: &ProtocolError) {
+        self.ban_ip_if_implausible_pow_epoch(router.net_address().ip(), err).await
+    }
+
+    /// Same as `ban_if_implausible_pow_epoch`, by IP (for orphan blocks validated later).
+    pub async fn ban_ip_if_implausible_pow_epoch(&self, ip: IpAddr, err: &ProtocolError) {
+        if !err.is_implausible_pow_epoch() {
+            return;
+        }
+        warn!("Banning peer IP {} for sending an implausible RandomZ epoch proof: {}", ip, err);
+        if let Some(connection_manager) = self.connection_manager() {
+            connection_manager.ban(ip).await;
+        }
+    }
+
     pub fn consensus(&self) -> ConsensusInstance {
         self.consensus_manager.consensus()
     }
