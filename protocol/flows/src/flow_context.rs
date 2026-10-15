@@ -239,6 +239,9 @@ pub struct FlowContextInner {
     ibd_metadata: Arc<RwLock<Option<IbdMetadata>>>,
     pub address_manager: Arc<Mutex<AddressManager>>,
     connection_manager: RwLock<Option<Arc<ConnectionManager>>>,
+    /// ZTH-IMPL-020 D4: per-IP attempt timestamps for implausible-epoch proofs, used
+    /// to apply the 3-in-10-minutes ban threshold. Entries older than the window are pruned.
+    implausible_pow_epoch_attempts: Arc<Mutex<HashMap<IpAddr, Vec<Instant>>>>,
     mining_manager: MiningManagerProxy,
     pub(crate) tick_service: Arc<TickService>,
     notification_root: Arc<ConsensusNotificationRoot>,
@@ -351,6 +354,7 @@ impl FlowContext {
                 hub,
                 address_manager,
                 connection_manager: Default::default(),
+                implausible_pow_epoch_attempts: Arc::new(Mutex::new(HashMap::new())),
                 mining_manager,
                 tick_service,
                 notification_root,
@@ -425,7 +429,26 @@ impl FlowContext {
         if !err.is_implausible_pow_epoch() {
             return;
         }
-        warn!("Banning peer IP {} for sending an implausible RandomZ epoch proof: {}", ip, err);
+        // ZTH-IMPL-020 D4: threshold of 3 failures in 10 minutes.
+        const WINDOW_SECS: u64 = 10 * 60;
+        const THRESHOLD: usize = 3;
+
+        let count = {
+            let mut attempts = self.implausible_pow_epoch_attempts.lock();
+            let entry = attempts.entry(ip).or_default();
+            let now = Instant::now();
+            entry.retain(|t| now.duration_since(*t).as_secs() < WINDOW_SECS);
+            entry.push(now);
+            entry.len()
+        };
+
+        if count < THRESHOLD {
+            warn!("Peer IP {} sent an implausible RandomZ epoch proof ({}/{}): {}", ip, count, THRESHOLD, err);
+            return;
+        }
+
+        warn!("Banning peer IP {} for {} implausible RandomZ epoch proofs in {}s: {}", ip, count, WINDOW_SECS, err);
+        self.implausible_pow_epoch_attempts.lock().remove(&ip);
         if let Some(connection_manager) = self.connection_manager() {
             connection_manager.ban(ip).await;
         }
