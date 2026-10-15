@@ -422,8 +422,19 @@ impl IbdFlow {
         let consensus = self.ctx.consensus().session().await;
 
         // The proof is validated in the context of current consensus
-        let proof =
-            consensus.clone().spawn_blocking(move |c| c.validate_pruning_proof(&proof, &proof_metadata).map(|()| proof)).await?;
+        // ZTH-IMPL-020: intercept the proof validation error so we can ban the peer before
+        // propagating it. ban_if_implausible_pow_epoch only fires on the RandomZ-epoch
+        // variant; other PruningImportErrors pass through unchanged.
+        let proof_result =
+            consensus.clone().spawn_blocking(move |c| c.validate_pruning_proof(&proof, &proof_metadata).map(|()| proof)).await;
+        let proof = match proof_result {
+            Ok(p) => p,
+            Err(e) => {
+                let err = ProtocolError::PruningImportError(e);
+                self.ctx.ban_if_implausible_pow_epoch(&self.router, &err).await;
+                return Err(err);
+            }
+        };
 
         let proof_pruning_point_header = proof[0].last().expect("was just ensured by validation");
         let proof_pruning_point = proof_pruning_point_header.hash;
