@@ -285,3 +285,14 @@ starting devnet until the new format is the only one in use.
 ### Remaining
 - Piece 6: unit tests for the classifier, threshold, and escalation.
 - Full testnet compliance requires this before strangers connect.
+
+## ZTH-IMPL-020 verified (Oct 15, 2026)
+
+All 6 pieces implemented, tested, and committed. Verified:
+- Unit tests: classifier (2 pass), ban escalation (3 pass)
+- Devnet startup with new ban record format: clean (no panic, no deserialize error)
+- --reset-db --yes handles the format change gracefully
+
+### Still TODO before testnet
+- Live ban test: a malicious-peer tool that sends a malformed pruning proof to a real node and verifies the ban fires after 3 attempts within 10 minutes. Estimated 3-4 hours of test-infrastructure work. Not a blocker for devnet.
+- Restart the miner (it's been off for hours).
