@@ -702,5 +702,25 @@ mod address_store_with_cache {
             );
             assert!(adjusted_p <= significance);
         }
+
+        #[test]
+        fn ban_duration_escalates_with_level() {
+            assert_eq!(AddressManager::ban_duration_ms(0), 24 * 60 * 60 * 1000);
+            assert_eq!(AddressManager::ban_duration_ms(1), 48 * 60 * 60 * 1000);
+            assert_eq!(AddressManager::ban_duration_ms(2), 7 * 24 * 60 * 60 * 1000);
+            assert_eq!(AddressManager::ban_duration_ms(99), 7 * 24 * 60 * 60 * 1000);
+        }
+
+        #[test]
+        fn first_ban_is_level_zero() {
+            let db = create_temp_db!(ConnBuilder::default().with_files_limit(10));
+            let mut config = Config::new(SIMNET_PARAMS);
+            config.disable_upnp = true;
+            let (am, _) = AddressManager::new(Arc::new(config), db.1, Arc::new(TickService::default()));
+            let mut am = am.lock();
+            let ip = IpAddress::from_str("203.0.113.11").unwrap();
+            am.ban(ip);
+            assert!(am.is_banned(ip));
+        }
     }
 }
