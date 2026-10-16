@@ -322,3 +322,73 @@ The name sounds like a smart contract layer, but it is not.
 
 Programmability is now correctly labeled in the Lightpaper v0.3 as
 "planned research, not built". Do not represent it as a current feature.
+
+## Pre-shield boundary verified (Oct 16, 2026)
+
+Question: can a forged value_balance reach the supply ledger without Orchard
+verification? (This is the Pirate Chain class of bug.)
+
+Answer: No. Verified by reading the code path end to end.
+
+Data flow for every non-coinbase transaction:
+
+  raw payload bytes
+      |
+      +-> decode() -> Bundle -> verify_payment() -> spend sigs + binding sig + proof
+      |
+      +-> value_balance(raw bytes) -> pool_flows -> ledger_step -> turnstile
+
+verify_payment (zethora-shielded/src/lib.rs) does three checks:
+  1. Each action's spend signature (covers the value_balance via sighash)
+  2. The binding signature (proves value_balance matches value commitments)
+  3. The Orchard proof (bundle.verify_proof)
+
+check_private_payment (tx_validation_in_isolation.rs:149) runs this before
+the ledger sees anything. A transaction that fails any check is rejected and
+its sender is banned (ZTH-SPEC-006 §8.3).
+
+Result: the value the ledger trusts is provably the same value the proof
+verifies. A single-byte change to the value balance fails both the spend
+signature and the binding signature. The turnstile cannot be tricked into
+releasing more than entered the pool.
+
+This closes the "turnstile accounting exploit" attack class for Zethora.
+The code is correct as written. No fix needed.
+
+Reference: zethora-supply ledger_step, zethora_private::pool_flows,
+zethora-shielded::verify_payment, tx_validation_in_isolation::check_private_payment.
+
+## Pre-shield boundary verified (Oct 16, 2026)
+
+Question: can a forged value_balance reach the supply ledger without Orchard
+verification? (This is the Pirate Chain class of bug.)
+
+Answer: No. Verified by reading the code path end to end.
+
+Data flow for every non-coinbase transaction:
+
+  raw payload bytes
+      |
+      +-> decode() -> Bundle -> verify_payment() -> spend sigs + binding sig + proof
+      |
+      +-> value_balance(raw bytes) -> pool_flows -> ledger_step -> turnstile
+
+verify_payment (zethora-shielded/src/lib.rs) does three checks:
+  1. Each action's spend signature (covers the value_balance via sighash)
+  2. The binding signature (proves value_balance matches value commitments)
+  3. The Orchard proof (bundle.verify_proof)
+
+check_private_payment (tx_validation_in_isolation.rs:149) runs this before
+the ledger sees anything. A transaction that fails any check is rejected and
+its sender is banned (ZTH-SPEC-006 §8.3).
+
+Result: the value the ledger trusts is provably the same value the proof
+verifies. A single-byte change to the value balance fails both the spend
+signature and the binding signature. The turnstile cannot be tricked into
+releasing more than entered the pool.
+
+This closes the "turnstile accounting exploit" attack class for Zethora.
+The code is correct as written. No fix needed.
+
+Reference: zethora-supply ledger_step, zethora_private::pool_flows,
+zethora-shielded::verify_payment, tx_validation_in_isolation::check_private_payment.
