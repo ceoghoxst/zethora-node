@@ -150,7 +150,7 @@ async fn main() {
     // The fast-mode dataset and the key epoch it was built for (rebuilt when the key changes)
     let mut dataset: Option<(u64, kaspa_pow::randomz::SharedDataset)> = None;
     let mut next_dataset: Option<(u64, kaspa_pow::randomz::SharedDataset)> = None;
-    let mut prebuild_task: Option<tokio::task::JoinHandle<(u64, kaspa_pow::randomz::SharedDataset)>> = None;
+    let mut prebuild_task: Option<tokio::task::JoinHandle<(u64, Option<kaspa_pow::randomz::SharedDataset>)>> = None;
 
     loop {
         let template = match client.get_block_template(address.clone(), b"zethora-miner".to_vec()).await {
@@ -174,7 +174,7 @@ async fn main() {
             let next_epoch = epoch + 1;
             println!("Approaching epoch change. Prebuilding dataset for epoch {next_epoch} in the background...");
             prebuild_task = Some(tokio::task::spawn_blocking(move || {
-                (next_epoch, kaspa_pow::randomz::new_mining_dataset(next_epoch))
+                (next_epoch, kaspa_pow::randomz::try_new_mining_dataset(next_epoch))
             }));
         }
 
@@ -183,11 +183,14 @@ async fn main() {
             if task.is_finished() {
                 let task = prebuild_task.take().unwrap();
                 match task.await {
-                    Ok((built_epoch, built_dataset)) => {
+                    Ok((built_epoch, Some(built_dataset))) => {
                         println!("Background dataset for epoch {built_epoch} is ready.");
                         next_dataset = Some((built_epoch, built_dataset));
                     }
-                    Err(e) => println!("Background dataset build failed: {e}"),
+                    Ok((built_epoch, None)) => {
+                        println!("Prebuild for epoch {built_epoch} failed (low memory). Will build synchronously later.");
+                    }
+                    Err(e) => println!("Background dataset task failed: {e}"),
                 }
             }
         }
