@@ -435,13 +435,18 @@ impl FlowContext {
 
         let count = {
             let mut attempts = self.implausible_pow_epoch_attempts.lock();
-            let entry = attempts.entry(ip).or_default();
             let now = Instant::now();
-            entry.retain(|t| now.duration_since(*t).as_secs() < WINDOW_SECS);
+            // ZTH-IMPL-020: Prevent memory exhaustion (DoS) from spoofed IPs
+            if attempts.len() > 10_000 {
+                attempts.retain(|_, v| {
+                    v.retain(|t| now.duration_since(*t).as_secs() < WINDOW_SECS);
+                    !v.is_empty()
+                });
+            }
+            let entry = attempts.entry(ip).or_default();
             entry.push(now);
             entry.len()
         };
-
         if count < THRESHOLD {
             warn!("Peer IP {} sent an implausible RandomZ epoch proof ({}/{}): {}", ip, count, THRESHOLD, err);
             return;
