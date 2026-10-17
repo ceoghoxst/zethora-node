@@ -6,3 +6,6 @@ pub mod service;
 pub mod user_agent_rule;
 pub mod v10;
 pub mod v11;
+
+#[cfg(test)]
+mod attack_test;
