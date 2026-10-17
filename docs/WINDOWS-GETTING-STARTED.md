@@ -1,4 +1,4 @@
-# Zethora on Windows — Getting Started
+# Zethora on Windows - Getting Started
 
 This guide takes a fresh Windows PC to a running Zethora devnet node and miner.
 
