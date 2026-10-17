@@ -149,6 +149,8 @@ async fn main() {
     let start = Instant::now();
     // The fast-mode dataset and the key epoch it was built for (rebuilt when the key changes)
     let mut dataset: Option<(u64, kaspa_pow::randomz::SharedDataset)> = None;
+    let mut next_dataset: Option<(u64, kaspa_pow::randomz::SharedDataset)> = None;
+    let mut prebuild_task: Option<tokio::task::JoinHandle<(u64, kaspa_pow::randomz::SharedDataset)>> = None;
 
     loop {
         let template = match client.get_block_template(address.clone(), b"zethora-miner".to_vec()).await {
@@ -162,9 +164,49 @@ async fn main() {
         let header: Header = (&template.block.header).try_into().expect("bad template header");
         let state = Arc::new(kaspa_pow::State::new(&header));
         let epoch = state.epoch();
+
+        // B8: Prebuild the next epoch dataset in the background if we are close.
+        // Epoch boundaries are every 1,048,576 DAA scores (1 << 20).
+        let next_boundary = (epoch + 1) << 20;
+        let blocks_left = next_boundary.saturating_sub(header.daa_score);
+
+        if blocks_left < 2000 && prebuild_task.is_none() && next_dataset.is_none() {
+            let next_epoch = epoch + 1;
+            println!("Approaching epoch change. Prebuilding dataset for epoch {next_epoch} in the background...");
+            prebuild_task = Some(tokio::task::spawn_blocking(move || {
+                (next_epoch, kaspa_pow::randomz::new_mining_dataset(next_epoch))
+            }));
+        }
+
+        // Check if the background prebuild finished
+        if let Some(task) = &prebuild_task {
+            if task.is_finished() {
+                let task = prebuild_task.take().unwrap();
+                match task.await {
+                    Ok((built_epoch, built_dataset)) => {
+                        println!("Background dataset for epoch {built_epoch} is ready.");
+                        next_dataset = Some((built_epoch, built_dataset));
+                    }
+                    Err(e) => println!("Background dataset build failed: {e}"),
+                }
+            }
+        }
+
         if dataset.as_ref().is_none_or(|(built_for, _)| *built_for != epoch) {
+            // Try to swap in the prebuilt one first
+            if let Some((built_epoch, built_dataset)) = next_dataset.take() {
+                if built_epoch == epoch {
+                    println!("Swapped in prebuilt dataset for epoch {epoch} instantly.");
+                    dataset = Some((built_epoch, built_dataset));
+                    continue;
+                } else {
+                    println!("Prebuilt epoch {built_epoch} did not match current epoch {epoch}. Discarding.");
+                }
+            }
+
+            // Fallback: build it synchronously
             let first = dataset.is_none();
-            dataset = None; // free the old 2 GB first
+            drop(dataset.take()); // free the old 2 GB first
             if first {
                 println!("Preparing the RandomZ dataset for mining key {epoch} (about 2 GB, takes about half a minute)...");
             } else {
