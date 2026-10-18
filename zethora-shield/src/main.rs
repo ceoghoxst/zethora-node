@@ -16,7 +16,7 @@
 //! (the chain is still read from node 1, which keeps the whole history).
 //!
 //! Both private wallets are derived from the miner's key file. Shielding pays its fee from a visible coin of the miner.
-//! Sending and unshielding are fully private (ZTH-SPEC-006 §9): the fee comes out of your private coins, and the
+//! Sending and unshielding are fully private (ZTH-SPEC-006 Â§9): the fee comes out of your private coins, and the
 //! transaction has no visible coin in it at all.
 
 use kaspa_addresses::{Address, Prefix, Version};
@@ -377,6 +377,18 @@ async fn send(n: &Nodes, m: &Miner, amount: u64) {
 }
 
 async fn unshield(n: &Nodes, m: &Miner, amount: u64) {
+    println!("\nWARNING: YOU ARE EXITING THE PRIVACY POOL");
+    println!("You are about to move funds from your private balance to a transparent address.");
+    println!("If you send this to a Centralized Exchange (CEX), they will require you to link this transaction to your real identity (KYC).");
+    println!("Your transaction history will become visible. Only proceed if you intend to cash out.");
+    print!("\nType 'yes' to confirm: ");
+    std::io::Write::flush(&mut std::io::stdout()).unwrap();
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input).expect("Failed to read input");
+    if input.trim().to_lowercase() != "yes" {
+        println!("Cancelled. Your funds are still private.");
+        return;
+    }
     assert!(
         amount >= MIN_CHANGE,
         "unshield at least {}: a tiny visible coin has a huge storage mass and is refused",
@@ -641,7 +653,7 @@ async fn compare() {
     }
 }
 
-/// Step 4 (ZTH-SPEC-006 §8): how fast this PC makes and checks private payments, and how that compares with the most
+/// Step 4 (ZTH-SPEC-006 Â§8): how fast this PC makes and checks private payments, and how that compares with the most
 /// private payments blocks can carry. Needs no node: it makes its own payments (into a throwaway private address) and
 /// checks them with the same function and key the node uses.
 fn speed() {
@@ -779,3 +791,4 @@ fn finish_attack(blocked: usize, tried: usize) {
         println!("RESULT: {blocked} of {tried} attacks blocked. Send this whole window to Claude.");
     }
 }
+
