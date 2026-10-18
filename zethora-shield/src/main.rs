@@ -308,6 +308,11 @@ async fn main() {
         }
         Some("send") => send(&n, &m, parse_amount(args.get(1))).await,
         Some("unshield") => unshield(&n, &m, parse_amount(args.get(1))).await,
+        Some("faucet") => {
+            let dest_str = args.get(1).expect("Usage: faucet <address>");
+            let dest = Address::try_from(dest_str.as_str()).expect("Invalid address");
+            faucet(&n, &m, dest).await;
+        }
         Some("attack") => attack(&n, &m).await,
         Some("replay") => replay(&n, &m).await,
         Some("bump") => bump(&n, &m, parse_amount(args.get(1))).await,
@@ -792,3 +797,17 @@ fn finish_attack(blocked: usize, tried: usize) {
     }
 }
 
+
+
+async fn faucet(n: &Nodes, m: &Miner, dest: Address) {
+    let amount = 1_000_000_000; // 1 ZTHR
+    println!("Faucet: Preparing to send 1.0 ZTHR to {}...", dest);
+    let (outpoint, entry) = visible_coins(&n.reader, &m.address).await.into_iter().next().expect("No mature coins to send");
+    let change = entry.amount.checked_sub(amount + FEE).expect("Not enough visible coins for faucet");
+    let mut tx = visible_part(m, outpoint, change);
+    let dest_script = kaspa_txscript::pay_to_address_script(&dest);
+    tx.outputs.push(kaspa_consensus_core::tx::TransactionOutput { value: amount, script_public_key: dest_script, covenant: None });
+    let tx = finish(m, tx, entry, Vec::new());
+    let _ = n.sender.submit_transaction((&tx).into(), false).await;
+    println!("Faucet sent 1.0 ZTHR to {}", dest);
+}
