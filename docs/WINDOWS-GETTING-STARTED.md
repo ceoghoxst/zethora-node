@@ -91,3 +91,27 @@ Your system clock is wrong. Run `w32tm /resync` and try again.
 
 **Node crashes immediately on start**
 You need to reset the devnet database. Add `--reset-db --yes` to your kaspad command.
+---
+
+## Alternative: Running with Docker
+
+If you have [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed, you can run a Zethora node without installing Rust, Clang, or CMake.
+
+### 1. Build the Docker Image
+Open PowerShell in the root of the `zethora-node` repository and run:
+
+    docker build -t zethora-node .
+
+*(This will compile the node inside a Linux container. It takes about 10-15 minutes the first time).*
+
+### 2. Run the Node
+Once the image is built, start the node:
+
+    docker run -d --name zethora-node -p 26611:26611 -p 26610:26610 zethora-node
+
+### 3. View the Logs
+To see what the node is doing:
+
+    docker logs -f zethora-node
+
+You should see `P2P Server starting on: 0.0.0.0:26611`.
