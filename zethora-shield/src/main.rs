@@ -160,9 +160,13 @@ fn private_tx_with_fee(
 
 /// Picks wallet ME's coins for `amount` plus the fee. Returns the coins and the private change left over.
 fn pick_with_fee(scanner: &Scanner, amount: u64) -> (Vec<OwnedCoin>, u64) {
-    let coins = scanner
-        .pick_coins(ME, amount + FEE)
-        .unwrap_or_else(|e| panic!("{e} (the {} fee comes out of your private coins too)", zthr(FEE)));
+    let coins = match scanner.pick_coins(ME, amount + FEE) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Error: {} (the {} fee comes out of your private coins too)", e, zthr(FEE));
+            std::process::exit(1);
+        }
+    };
     let change = coins.iter().map(OwnedCoin::value).sum::<u64>() - amount - FEE;
     (coins, change)
 }
@@ -315,13 +319,21 @@ async fn main() {
 
 async fn shield(n: &Nodes, m: &Miner, amount: u64) {
     println!("Visible address: {}", m.address);
-    let (outpoint, entry) =
-        visible_coins(&n.reader, &m.address).await.into_iter().next().expect("no mature coins yet: keep mining and try again later");
+    let (outpoint, entry) = match visible_coins(&n.reader, &m.address).await.into_iter().next() {
+        Some(c) => c,
+        None => {
+            eprintln!("Error: No mature coins yet. Keep mining and try again later.");
+            std::process::exit(1);
+        }
+    };
     let change = entry
         .amount
         .checked_sub(amount + FEE)
         .filter(|c| *c >= MIN_CHANGE)
-        .unwrap_or_else(|| panic!("largest mature coin is {}: shield a smaller amount", zthr(entry.amount)));
+        .unwrap_or_else(|| {
+            eprintln!("Error: Largest mature coin is {} ZTH, but you are trying to shield {} ZTH + fee. Shield a smaller amount.", zthr(entry.amount), zthr(amount));
+            std::process::exit(1);
+        });
     let tx = visible_part(m, outpoint, change);
     println!("Making the private payment (proving key takes a few seconds the first time)...");
     let _ = proving_key();
