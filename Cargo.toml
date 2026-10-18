@@ -55,6 +55,8 @@ members = [
     "mining/errors",
     "protocol/p2p",
     "protocol/flows",
+    "tools/evil-peer",
+    "tools/explorer",
     "components/addressmanager",
     "components/connectionmanager",
     "components/consensusmanager",

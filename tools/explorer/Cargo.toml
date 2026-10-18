@@ -1,0 +1,11 @@
+[package]
+name = "zethora-explorer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+kaspa-grpc-client = { path = "../../rpc/grpc/client" }
+kaspa-core = { path = "../../core" }
+tokio = { version = "1", features = ["full"] }
+prettytable-rs = "0.10"
+kaspa-rpc-core = { path = "../../rpc/core" }
