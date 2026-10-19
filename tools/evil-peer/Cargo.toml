@@ -1,0 +1,12 @@
+[package]
+name = "evil-peer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+kaspa-p2p-lib = { path = "../../protocol/p2p" }
+kaspa-consensus-core = { path = "../../consensus/core" }
+kaspa-core = { path = "../../core" }
+kaspa-utils = { path = "../../utils" }
+tokio = { version = "1", features = ["full"] }
+prost = "0.14.3"
