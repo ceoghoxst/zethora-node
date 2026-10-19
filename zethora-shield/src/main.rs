@@ -822,27 +822,41 @@ async fn faucet(n: &Nodes, m: &Miner, dest: Address) {
 }
 async fn autoshield(n: &Nodes, m: &Miner) {
     println!("Auto-Shield active. Watching for mature transparent coins...");
+
+    // Tracks outpoints we've submitted (or seen rejected) so we don't retry
+    // the same coin while its spend tx is in the mempool. This includes txs
+    // submitted by PREVIOUS autoshield process runs, whose mempool entries
+    // still exist when this process starts.
+    let mut in_flight: std::collections::HashMap<TransactionOutpoint, u64> = std::collections::HashMap::new();
+    let mut tick: u64 = 0;
+    const IN_FLIGHT_TTL_TICKS: u64 = 100; // ~17 min at 10s/tick
+
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        tick += 1;
 
         loop {
-            let coins = visible_coins(&n.reader, &m.address).await;
-            if coins.is_empty() {
-                break;
-            }
+            let all_coins = visible_coins(&n.reader, &m.address).await;
 
-            // Take the LARGEST coin — visible_coins already sorts descending.
-            // Shield exactly one coin per transaction. Multi-input shielding
-            // would require a different visible_part() and is not attempted here.
+            in_flight.retain(|_, submitted_at| *submitted_at + IN_FLIGHT_TTL_TICKS > tick);
+            in_flight.retain(|outpoint, _| all_coins.iter().any(|(o, _)| o == outpoint));
+
+            let coins: Vec<_> = all_coins
+                .into_iter()
+                .filter(|(outpoint, _)| !in_flight.contains_key(outpoint))
+                .collect();
+
+            if coins.is_empty() { break; }
+
             let (outpoint, entry) = coins.into_iter().next().unwrap();
+            let outpoint_tracked = outpoint.clone();
 
-            if entry.amount <= FEE + MIN_CHANGE {
-                // Remaining coins are all too small to shield after fees.
+            let change = MIN_CHANGE.max(1);
+            if entry.amount <= FEE + change {
                 break;
             }
 
-            let amount = entry.amount - FEE;
-            let change = 0;
+            let amount = entry.amount - FEE - change;
             let tx = visible_part(m, outpoint, change);
             let digest = zethora_private_payment_digest(&tx);
             let payment = match shielding_payment(
@@ -860,16 +874,25 @@ async fn autoshield(n: &Nodes, m: &Miner) {
 
             match n.sender.submit_transaction((&tx).into(), false).await {
                 Ok(_) => {
-                    println!("Auto-shielded {} ZTHR", zthr(amount));
-                    // Immediately loop to see if more coins matured on-chain.
-                    // Do NOT sleep here — the sleep at the top of the outer
-                    // loop would delay the next coin by 10s unnecessarily.
+                    println!("Auto-shielded {}", zthr(amount));
+                    in_flight.insert(outpoint_tracked, tick);
+                    // Continue to next coin without sleeping.
                 }
                 Err(e) => {
-                    eprintln!("Auto-shield: submit failed ({}), retrying next tick", e);
-                    // Break to outer loop so we sleep before retrying. This
-                    // avoids hammering a node that is rejecting submissions.
-                    break;
+                    let err_str = format!("{}", e);
+                    if err_str.contains("already spent") || err_str.contains("mempool") {
+                        // Coin is being spent by another tx (often one of ours
+                        // from a previous run). Skip it for TTL — it will be
+                        // pruned from visible_coins when the tx confirms.
+                        eprintln!("Auto-shield: skipping coin ({}), will retry after {}s",
+                                  err_str, IN_FLIGHT_TTL_TICKS * 10);
+                        in_flight.insert(outpoint_tracked, tick);
+                        continue;
+                    } else {
+                        // Unknown error — might be transient. Retry after sleep.
+                        eprintln!("Auto-shield: submit failed ({}), retrying next tick", e);
+                        break;
+                    }
                 }
             }
         }
