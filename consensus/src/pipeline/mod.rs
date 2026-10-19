@@ -7,3 +7,6 @@ pub mod virtual_processor;
 
 /// Re-export from consensus core
 pub use kaspa_consensus_core::api::counters::{ProcessingCounters, ProcessingCountersSnapshot};
+
+#[cfg(test)]
+mod tests;
