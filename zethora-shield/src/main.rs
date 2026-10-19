@@ -1,4 +1,4 @@
-//! zethora-shield: devnet tool for Zethora's private pool (ZTH-SPEC-006).
+﻿//! zethora-shield: devnet tool for Zethora's private pool (ZTH-SPEC-006).
 //!
 //! Run from the zethora-node folder, with the node running with --devnet --utxoindex:
 //!
@@ -16,7 +16,7 @@
 //! (the chain is still read from node 1, which keeps the whole history).
 //!
 //! Both private wallets are derived from the miner's key file. Shielding pays its fee from a visible coin of the miner.
-//! Sending and unshielding are fully private (ZTH-SPEC-006 Â§9): the fee comes out of your private coins, and the
+//! Sending and unshielding are fully private (ZTH-SPEC-006 Ã‚Â§9): the fee comes out of your private coins, and the
 //! transaction has no visible coin in it at all.
 
 use kaspa_addresses::{Address, Prefix, Version};
@@ -308,6 +308,15 @@ async fn main() {
         }
         Some("send") => send(&n, &m, parse_amount(args.get(1))).await,
         Some("unshield") => unshield(&n, &m, parse_amount(args.get(1))).await,
+        Some("autoshield") => {
+            autoshield(&n, &m).await;
+        }
+        Some("viewkey") => {
+            let private_wallet = PrivateWallet::from_seed(&m.seed);
+            let fvk = private_wallet.full_viewing_key();
+            println!("Your Private View Key: {}", format!("{:02x?}", fvk.to_bytes()));
+            println!("Give this to an exchange to verify your private deposits. It CANNOT spend your funds.");
+        }
         Some("faucet") => {
             let dest_str = args.get(1).expect("Usage: faucet <address>");
             let dest = Address::try_from(dest_str.as_str()).expect("Invalid address");
@@ -658,7 +667,7 @@ async fn compare() {
     }
 }
 
-/// Step 4 (ZTH-SPEC-006 Â§8): how fast this PC makes and checks private payments, and how that compares with the most
+/// Step 4 (ZTH-SPEC-006 Ã‚Â§8): how fast this PC makes and checks private payments, and how that compares with the most
 /// private payments blocks can carry. Needs no node: it makes its own payments (into a throwaway private address) and
 /// checks them with the same function and key the node uses.
 fn speed() {
@@ -810,4 +819,59 @@ async fn faucet(n: &Nodes, m: &Miner, dest: Address) {
     let tx = finish(m, tx, entry, Vec::new());
     let _ = n.sender.submit_transaction((&tx).into(), false).await;
     println!("Faucet sent 1.0 ZTHR to {}", dest);
+}
+async fn autoshield(n: &Nodes, m: &Miner) {
+    println!("Auto-Shield active. Watching for mature transparent coins...");
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+
+        loop {
+            let coins = visible_coins(&n.reader, &m.address).await;
+            if coins.is_empty() {
+                break;
+            }
+
+            // Take the LARGEST coin — visible_coins already sorts descending.
+            // Shield exactly one coin per transaction. Multi-input shielding
+            // would require a different visible_part() and is not attempted here.
+            let (outpoint, entry) = coins.into_iter().next().unwrap();
+
+            if entry.amount <= FEE + MIN_CHANGE {
+                // Remaining coins are all too small to shield after fees.
+                break;
+            }
+
+            let amount = entry.amount - FEE;
+            let change = 0;
+            let tx = visible_part(m, outpoint, change);
+            let digest = zethora_private_payment_digest(&tx);
+            let payment = match shielding_payment(
+                PrivateWallet::from_seed(&m.seed).address(),
+                amount,
+                &digest.as_bytes(),
+            ) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("Auto-shield: failed to build payment ({}), retrying next tick", e);
+                    break;
+                }
+            };
+            let tx = finish(m, tx, entry, payment);
+
+            match n.sender.submit_transaction((&tx).into(), false).await {
+                Ok(_) => {
+                    println!("Auto-shielded {} ZTHR", zthr(amount));
+                    // Immediately loop to see if more coins matured on-chain.
+                    // Do NOT sleep here — the sleep at the top of the outer
+                    // loop would delay the next coin by 10s unnecessarily.
+                }
+                Err(e) => {
+                    eprintln!("Auto-shield: submit failed ({}), retrying next tick", e);
+                    // Break to outer loop so we sleep before retrying. This
+                    // avoids hammering a node that is rejecting submissions.
+                    break;
+                }
+            }
+        }
+    }
 }
