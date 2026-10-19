@@ -1,4 +1,4 @@
-use super::{VirtualStateProcessor, bounds::SeqCommitBounds};
+﻿use super::{VirtualStateProcessor, bounds::SeqCommitBounds};
 use crate::{
     errors::{
         BlockProcessResult,
@@ -53,7 +53,7 @@ use std::{iter::once, ops::Deref};
 
 /// Per-lane activity and miner payload data extracted from a mergeset.
 pub(super) struct MergesetSeqData {
-    /// Per-lane activity leaves: lane_id → [activity_leaf hashes].
+    /// Per-lane activity leaves: lane_id â†’ [activity_leaf hashes].
     /// BTreeMap gives sorted iteration over lanes.
     pub lane_activities: std::collections::BTreeMap<[u8; 20], Vec<Hash>>,
     /// One payload leaf hash per merged block, in mergeset order.
@@ -86,14 +86,14 @@ pub(super) struct UtxoProcessingContext<'a> {
     pub mergeset_acceptance_data: Vec<MergesetBlockAcceptanceData>,
     pub mergeset_rewards: BlockHashMap<BlockRewardData>,
     pub pruning_sample_from_pov: Option<Hash>,
-    /// Zethora: the private coin list after this block's mergeset (ZTH-SPEC-006 §6.1)
+    /// Zethora: the private coin list after this block's mergeset (ZTH-SPEC-006 Â§6.1)
     pub note_tree: zethora_shielded::NoteCommitmentTree,
-    /// Zethora: whether this mergeset added private coins, i.e. produced a new coin list snapshot (anchor, §6.2)
+    /// Zethora: whether this mergeset added private coins, i.e. produced a new coin list snapshot (anchor, Â§6.2)
     pub note_tree_grew: bool,
-    /// Zethora: private coin tags (nullifiers) accepted by this mergeset so far, as a set and in order (§6.3)
+    /// Zethora: private coin tags (nullifiers) accepted by this mergeset so far, as a set and in order (Â§6.3)
     pub nullifiers: HashSet<[u8; 32]>,
     pub nullifier_list: Vec<[u8; 32]>,
-    /// Zethora: the private state fingerprint (ZTH-SPEC-006 §6.4) after this mergeset: every coin tag spent and every
+    /// Zethora: the private state fingerprint (ZTH-SPEC-006 Â§6.4) after this mergeset: every coin tag spent and every
     /// coin list snapshot produced on the chain so far. Unfinalized, so the next chain block can add to it.
     pub private_state: MuHash,
 }
@@ -129,19 +129,19 @@ impl VirtualStateProcessor {
         ctx: &mut UtxoProcessingContext,
         selected_parent_utxo_view: &V,
         pov_daa_score: u64,
-    ) {
-        // Zethora: start from the selected parent's private coin list (ZTH-SPEC-006 §6.1)
+    ) -> crate::errors::BlockProcessResult<()> {
+        // Zethora: start from the selected parent's private coin list (ZTH-SPEC-006 Â§6.1)
         let selected_parent = ctx.selected_parent();
-        ctx.note_tree = self.zethora_note_trees_store.get(selected_parent).unwrap_or_else(|e| {
-            panic!(
-                "Zethora: private coin list missing for {selected_parent} ({e}). (If this node joined from a pruning point, its private state download did not finish.) Restart with --reset-db"
-            )
-        });
-        ctx.private_state = self.zethora_private_states_store.get(selected_parent).unwrap_or_else(|e| {
-            panic!(
-                "Zethora: private state fingerprint missing for {selected_parent} ({e}). (If this node joined from a pruning point, its private state download did not finish.) Restart with --reset-db"
-            )
-        });
+        ctx.note_tree = self.zethora_note_trees_store.get(selected_parent).map_err(|e| {
+            crate::errors::RuleError::General(format!(
+                "Zethora: private coin list missing for {selected_parent} ({e}). This usually means the private state download from a pruning point did not finish. Try restarting the node to retry the download, or use --reset-db to fully resync."
+            ))
+        })?;
+        ctx.private_state = self.zethora_private_states_store.get(selected_parent).map_err(|e| {
+            crate::errors::RuleError::General(format!(
+                "Zethora: private state fingerprint missing for {selected_parent} ({e}). This usually means the private state download from a pruning point did not finish. Try restarting the node to retry the download, or use --reset-db to fully resync."
+            ))
+        })?;
 
         let selected_parent_transactions = self.block_transactions_store.get(ctx.selected_parent()).unwrap();
         let validated_coinbase = ValidatedTransaction::new_coinbase(&selected_parent_transactions[0]);
@@ -201,7 +201,7 @@ impl VirtualStateProcessor {
             }
 
             // Zethora: remember the private coin tags this block's accepted transactions spent, so a later block in
-            // the same mergeset can't spend them again (ZTH-SPEC-006 §6.3). Within one block they are unique (body rule).
+            // the same mergeset can't spend them again (ZTH-SPEC-006 Â§6.3). Within one block they are unique (body rule).
             for (vtx, _) in validated_transactions.iter() {
                 for nf in zethora_private::nullifiers(&vtx.tx.payload) {
                     if ctx.nullifiers.insert(nf) {
@@ -211,7 +211,7 @@ impl VirtualStateProcessor {
                 }
             }
 
-            // Zethora: add this block's new private coins to the list, in block order (ZTH-SPEC-006 §6.1).
+            // Zethora: add this block's new private coins to the list, in block order (ZTH-SPEC-006 Â§6.1).
             // Every node walks the mergeset in the same consensus order, so every node builds the same list.
             let mut private_txs: Vec<_> = validated_transactions
                 .iter()
@@ -257,6 +257,8 @@ impl VirtualStateProcessor {
                 ctx.ghostdag_data.blue_score,
             ));
         }
+
+        Ok(())
     }
 
     /// Verify that the current block fully respects its own UTXO view. We define a block as
@@ -338,7 +340,7 @@ impl VirtualStateProcessor {
             TxValidationFlags::Full,
             ctx.selected_parent(),
         );
-        // Zethora: the block's own transactions may not spend private coin tags its mergeset already spent (§6.3)
+        // Zethora: the block's own transactions may not spend private coin tags its mergeset already spent (Â§6.3)
         let reused = validated_transactions
             .iter()
             .filter(|(vtx, _)| zethora_private::nullifiers(&vtx.tx.payload).iter().any(|nf| ctx.nullifiers.contains(nf)))
@@ -390,7 +392,7 @@ impl VirtualStateProcessor {
             private_state,
         ) {
             Ok(template) => template.tx,
-            // Zethora: the block's coins do not add up, so it is invalid (ZTH-SPEC-006 §7.2)
+            // Zethora: the block's coins do not add up, so it is invalid (ZTH-SPEC-006 Â§7.2)
             Err(CoinbaseError::ZethoraSupply(reason)) => return Err(ZethoraSupplyMismatch(reason)),
             Err(e) => panic!("unexpected coinbase error: {e}"),
         };
@@ -400,7 +402,7 @@ impl VirtualStateProcessor {
     /// Zethora: net change in visible coins from the transactions a mergeset accepts, measured from the
     /// real UTXO diff. The diff also holds the selected parent's coinbase outputs, which are already
     /// counted in the parent's ledger, so they are taken out here. With correct bookkeeping the result
-    /// is minus the mergeset's total fees (ZTH-SPEC-006 §7.2).
+    /// is minus the mergeset's total fees (ZTH-SPEC-006 Â§7.2).
     pub(crate) fn visible_change_of(&self, mergeset_diff: &UtxoDiff, selected_parent: Hash) -> i128 {
         let added: i128 = mergeset_diff.add.values().map(|e| e.amount as i128).sum();
         let removed: i128 = mergeset_diff.remove.values().map(|e| e.amount as i128).sum();
@@ -430,7 +432,7 @@ impl VirtualStateProcessor {
 
     /// Zethora: is `anchor` a private coin list snapshot that a spend accepted on top of `selected_parent` may use?
     /// It must have been produced by a chain ancestor of (or by) `selected_parent` whose blue score is at least
-    /// `ANCHOR_DEPTH` below it (ZTH-SPEC-006 §6.2). Records of pruned chain blocks are rewritten to `ANCHORED_FOR_GOOD`
+    /// `ANCHOR_DEPTH` below it (ZTH-SPEC-006 Â§6.2). Records of pruned chain blocks are rewritten to `ANCHORED_FOR_GOOD`
     /// (keeping the blue score) by the pruning processor, and a node joining from a pruning point stores the snapshots
     /// it downloads the same way, so every node gives the same answer whether or not it has pruned or joined late.
     /// If reachability or the tip's header is unexpectedly missing, the anchor does not count.
@@ -449,8 +451,8 @@ impl VirtualStateProcessor {
     }
 
     /// Zethora: the private payment rules that depend on the chain a transaction is accepted on (ZTH-SPEC-006):
-    /// none of its coin tags is already spent on the chain of `selected_parent` or in `pending` (§6.3), and if it
-    /// spends private coins, its anchor is a matured snapshot of that chain's coin list (§6.2).
+    /// none of its coin tags is already spent on the chain of `selected_parent` or in `pending` (Â§6.3), and if it
+    /// spends private coins, its anchor is a matured snapshot of that chain's coin list (Â§6.2).
     pub(crate) fn check_private_payment_in_context(
         &self,
         tx: &Transaction,
@@ -546,7 +548,7 @@ impl VirtualStateProcessor {
         flags: TxValidationFlags,
         selected_parent: Hash,
     ) -> TxResult<ValidatedTransaction<'a>> {
-        // Zethora: private payment rules that depend on the chain: no spent coin tag reused (§6.3), anchor matured (§6.2)
+        // Zethora: private payment rules that depend on the chain: no spent coin tag reused (Â§6.3), anchor matured (Â§6.2)
         self.check_private_payment_in_context(transaction, selected_parent, &HashSet::new())?;
         let mut entries = Vec::with_capacity(transaction.inputs.len());
         for input in transaction.inputs.iter() {
@@ -648,7 +650,7 @@ impl VirtualStateProcessor {
     }
 
     // =========================================================================
-    // KIP-21: Sequencing commitment — shared helpers
+    // KIP-21: Sequencing commitment â€” shared helpers
     // =========================================================================
 
     /// Collect per-lane activity leaves and miner payload leaves from the mergeset.
