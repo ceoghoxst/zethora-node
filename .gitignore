@@ -30,3 +30,9 @@ overnight-test-*.log
 *.bak
 # Genesis scratch file
 consensus/core/zethora_genesis_values.txt
+
+# Script backup files
+*.bak*
+
+# Local log files
+*.log
