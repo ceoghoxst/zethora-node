@@ -1,4 +1,4 @@
-﻿use std::{collections::HashMap, fmt::Display};
+use std::{collections::HashMap, fmt::Display};
 
 use crate::{
     BlueWorkType,
@@ -172,11 +172,6 @@ pub enum RuleError {
     /// Currently this error is never created because it is impossible to submit such a block
     #[error("cannot add block body to a pruned block")]
     PrunedBlock,
-
-    /// Zethora: general-purpose consensus rule failure carrying a pre-formatted message.
-    /// Used for Zethora-specific checks (missing private state, etc.).
-    #[error("{0}")]
-    General(String),
 }
 
 pub type BlockProcessResult<T> = std::result::Result<T, RuleError>;
