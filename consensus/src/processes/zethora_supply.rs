@@ -225,3 +225,39 @@ mod tests {
         assert_eq!(err, SupplyError::VisibleSupplyOutOfRange(-1));
     }
 }
+
+#[cfg(test)]
+mod zethora_task4_smoke {
+    use super::turnstile;
+    use kaspa_consensus_core::zethora_private::private_state_spent_element;
+
+    #[test]
+    fn spent_element_is_deterministic_and_distinct() {
+        let n1 = [7u8; 32];
+        let n2 = [9u8; 32];
+
+        let e1a = private_state_spent_element(&n1);
+        let e1b = private_state_spent_element(&n1);
+        let e2  = private_state_spent_element(&n2);
+
+        assert_eq!(e1a, e1b, "same nullifier must map to same spent-element");
+        assert_ne!(e1a, e2, "different nullifiers must map to different spent-elements");
+        assert_eq!(e1a.len(), 33, "spent-element must be 33 bytes (tag + nullifier)");
+    }
+
+    #[test]
+    fn turnstile_is_sequential_and_rejects_second_debit() {
+        let start = 100u64;
+        let spend = 60u64;
+
+        let after_a = turnstile(start, 0, spend).expect("first spend should succeed");
+        assert_eq!(after_a, 40);
+
+        let after_b = turnstile(after_a, 0, spend);
+        assert!(after_b.is_err(), "second sequential spend must underflow");
+
+        let buggy_a = turnstile(start, 0, spend);
+        let buggy_b = turnstile(start, 0, spend);
+        assert!(buggy_a.is_ok() && buggy_b.is_ok(), "both succeed against parent");
+    }
+}
