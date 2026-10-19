@@ -1,9 +1,9 @@
-﻿# ZTH-SPEC-006 — Zethora Privacy Layer
+# ZTH-SPEC-006 — Zethora Privacy Layer
 
 | Field   | Value |
 |---------|-------|
 | Status  | Draft (devnet phase) |
-| Version | 0.1 (consolidated from code citations) |
+| Version | 0.2 (reorg test added) |
 | Date    | 2026-10-19 |
 | Authors | Zethora contributors |
 | Related | ZTH-SPEC-008 (fee pool), ZTH-IMPL-020 (RandomZ DoS ban), Zethora_Lightpaper_v0.3 |
@@ -282,13 +282,14 @@ Test: `fully_private_payment_needs_no_visible_coin` in `tx_validation_in_isolati
 | `fully_private_payment_needs_no_visible_coin` | `tx_validation_in_isolation.rs` | §9 |
 | `valid_shielding_payment_is_accepted_and_bound_to_its_transaction` | `tx_validation_in_isolation.rs` | §4 |
 | `shielding_is_accepted_with_spends_on_or_off` | `tx_validation_in_isolation.rs` | §7.3 |
+| `reorg_disconnects_anchor_producer_from_selected_chain` | `pipeline/tests/zethora_anchor_reorg.rs` | §6.2 (reorg transition) |
 
 ## Appendix C — Open questions for review
 
 Specific questions an external reviewer should examine. These are the "here is where we are unsure" list.
 
 1. **Parallel nullifier end-to-end.** Layers 3 and 4 of §6.3 are believed correct from code inspection. The end-to-end integration test requires 601 blocks of anchor-maturity setup and is not automated.
-2. **Anchor reorg behavior.** `try_is_chain_ancestor_of` handles the producing-block case, but the reorg that disconnects a producing block is not tested.
+2. **Anchor reorg behavior.** The core reorg transition is covered by a regression test (`consensus/src/pipeline/tests/zethora_anchor_reorg.rs`): `try_is_chain_ancestor_of` returns `true` before a reorg disconnects the producer, and `false` after. The full end-to-end path (real anchor + spend + reorg) is still deferred — it needs 601-block anchor-maturity setup (see item 1).
 3. **Emergency switch levels.** Only level (a) is implemented; (b)/(c) are implied but not defined.
 4. **Payload wire format byte layout.** Implemented in `codec.rs`; the spec defers to code.
 5. **Pruning-point download resumability.** Missing state returns a recoverable error and the node needs restart to retry. Auto-retry is deferred. A malicious peer could repeatedly interrupt download to deny service to a joining node.
@@ -302,3 +303,4 @@ Specific questions an external reviewer should examine. These are the "here is w
 | Version | Date | Changes |
 |---|---|---|
 | 0.1 | 2026-10-19 | Initial consolidation from code citations. Sections §4, §5, §6.1–§6.4, §7.1–§7.4, §8.1, §8.3, §9 specified. §8.2 and parts of §4 marked TBD. |
+| 0.2 | 2026-10-19 | Appendix C item 2: anchor reorg transition covered by consensus/src/pipeline/tests/zethora_anchor_reorg.rs. Version bumped. |
