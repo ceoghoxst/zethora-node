@@ -289,10 +289,10 @@ Test: `fully_private_payment_needs_no_visible_coin` in `tx_validation_in_isolati
 Specific questions an external reviewer should examine. These are the "here is where we are unsure" list.
 
 1. **Parallel nullifier end-to-end.** Layers 3 and 4 of §6.3 are believed correct from code inspection. The end-to-end integration test requires 601 blocks of anchor-maturity setup and is not automated.
-2. **Anchor reorg behavior.** The core reorg transition is covered by a regression test (`consensus/src/pipeline/tests/zethora_anchor_reorg.rs`): `try_is_chain_ancestor_of` returns `true` before a reorg disconnects the producer, and `false` after. The full end-to-end path (real anchor + spend + reorg) is still deferred — it needs 601-block anchor-maturity setup (see item 1).
+2. **Anchor reorg behavior.** The core reorg transition is partially covered by a regression test (`consensus/src/pipeline/tests/zethora_anchor_reorg.rs`): `try_is_chain_ancestor_of` returns `true` before a reorg disconnects the producer, and `false` after. The full end-to-end path (real anchor + spend + reorg) is still deferred — it needs 601-block anchor-maturity setup (see item 1).
 3. **Emergency switch levels.** Only level (a) is implemented; (b)/(c) are implied but not defined.
 4. **Payload wire format byte layout.** Implemented in `codec.rs`; the spec defers to code.
-5. **Pruning-point download resumability.** Missing state returns a recoverable error and the node needs restart to retry. Auto-retry is deferred. A malicious peer could repeatedly interrupt download to deny service to a joining node.
+5. **Pruning-point download resumability.** If a node is missing its private state (for example, the private-state download from a pruning point did not finish), it stops with a clear panic message telling the operator to restart with --reset-db. It does not continue with partial state. Automatic retry of an interrupted download is not implemented. A malicious peer could repeatedly interrupt the download to deny service to a joining node.
 6. **Fingerprint MuHash element collision.** Spent-element is 33 bytes (1-byte tag + 32 nullifier); anchor-element is 41 bytes (1-byte tag + 32 root + 8 blue score). Reviewer should verify these cannot collide.
 7. **Turnstile mid-mergeset rejection interaction.** §7.2 open question.
 8. **`ANCHOR_DEPTH` at 1 BPS vs. future higher rates.** Currently hardcoded 600; TODO in code to scale.
