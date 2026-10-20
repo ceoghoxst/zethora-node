@@ -85,7 +85,6 @@ impl CoinbaseManager {
         pre_deflationary_phase_base_subsidy: u64,
         bps_history: ForkedParam<u64>,
     ) -> Self {
-       
         Self {
             coinbase_payload_script_public_key_max_len,
             max_coinbase_payload_len,
@@ -292,8 +291,6 @@ impl CoinbaseManager {
     pub fn calc_block_subsidy(&self, daa_score: u64) -> u64 {
         // Zethora: reward = floor(Remaining / D), indexed by DAA score (ZTH-SPEC-001 Section 5)
         self.zethora_subsidy.subsidy(daa_score)
-    } 
-
 }
 
 #[cfg(test)]
