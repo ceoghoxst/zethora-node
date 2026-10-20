@@ -233,6 +233,32 @@ mod tests {
         });
     }
 
+        #[test]
+    fn test_genesis_hash_diversity() {
+        // The four network genesis hashes must be pairwise distinct. If two
+        // ever matched, a node would treat blocks from one network as valid
+        // on the other. This test fails if genesis.rs constants are ever
+        // set to collide (e.g. copy/paste error during regeneration).
+        let networks: [(&str, GenesisBlock); 4] = [
+            ("mainnet", GENESIS),
+              ("testnet", TESTNET_GENESIS),
+            ("simnet", SIMNET_GENESIS),
+            ("devnet", DEVNET_GENESIS),
+        ];
+        for i in 0..networks.len() {
+            for j in (i + 1)..networks.len() {
+                let (name_a, genesis_a) = &networks[i];
+                let (name_b, genesis_b) = &networks[j];
+                assert_ne!(
+                    genesis_a.hash, genesis_b.hash,
+                    "genesis hash collision between {} and {} -- the four network \
+                     genesis hashes must be pairwise distinct.",
+                    name_a, name_b,
+                );
+            }
+        }
+    }
+
     #[test]
     fn print_zethora_testnet_genesis() {
         let mut g = TESTNET_GENESIS;
