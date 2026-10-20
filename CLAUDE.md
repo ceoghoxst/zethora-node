@@ -222,9 +222,9 @@ Repo: github.com/ceoghoxst/zethora-node, branch `zethora` (a rusty-kaspa fork). 
 
 ### Oct 13, 2026: Subsidy fields verified dead in production
 - **Finding**: Mainnet/Testnet pre_deflationary_phase_base_subsidy (50000000000) and deflationary_phase_daa_score are not read on any production code path.
-- **Proof**: calc_block_subsidy at consensus/src/processes/coinbase.rs:307 delegates to zethora_subsidy.subsidy(daa_score). The Kaspa fields are only read by kaspa_calc_block_subsidy (marked #[allow(dead_code)], never called) and legacy_calc_block_subsidy (marked #[cfg(test)]).
 - **Impact**: Mainnet cannot accidentally pay Kaspa's 500 KAS/block reward. Risk closed.
-- **Remaining cleanup (low priority)**: eventually remove the dead fields and their two unused functions. Do NOT remove fields alone - Simnet integration tests reference SIMNET_PARAMS.pre_deflationary_phase_base_subsidy as a constant.
+- **Proof**: calc_block_subsidy (consensus/src/processes/coinbase.rs) delegates to zethora_subsidy.subsidy(daa_score). Kaspa's emission code (kaspa_calc_block_subsidy, legacy_calc_block_subsidy, SUBSIDY_BY_MONTH_TABLE) was removed on Oct 20, 2026, so nothing in the node reads Kaspa's subsidy schedule.
+- **Remaining cleanup (low priority)**: the params fields pre_deflationary_phase_base_subsidy / deflationary_phase_daa_score still exist. Do NOT remove them alone - Simnet integration tests reference SIMNET_PARAMS.pre_deflationary_phase_base_subsidy.
 
 ## Pre-testnet security checklist
 - [ ] **RandomZ DoS ban**: a peer can send bogus pruning proofs, forcing ~30 light setups (256 MB each). Add a ban rule for invalid proofs before testnet opens.
