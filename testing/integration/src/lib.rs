@@ -12,7 +12,7 @@ pub mod tasks;
 #[cfg(test)]
 // DISABLED: Inherited Kaspa tests assume 10 BPS MAINNET_PARAMS. Crashes on Windows
 // with STATUS_STACK_BUFFER_OVERRUN. Re-enable after rewriting for 1 BPS.
-// pub mod consensus_integration_tests;
+pub mod consensus_integration_tests;
 
 #[cfg(test)]
 pub mod consensus_pipeline_tests;
