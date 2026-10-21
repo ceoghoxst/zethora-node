@@ -291,7 +291,9 @@ impl CoinbaseManager {
     pub fn calc_block_subsidy(&self, daa_score: u64) -> u64 {
         // Zethora: reward = floor(Remaining / D), indexed by DAA score (ZTH-SPEC-001 Section 5)
         self.zethora_subsidy.subsidy(daa_score)
+    }
 }
+
 
 #[cfg(test)]
 mod tests {

@@ -724,7 +724,7 @@ pub const SIMNET_PARAMS: Params = Params {
 };
 
 pub const DEVNET_PARAMS: Params = Params {
-    dns_seeders: &["95.216.185.137"],
+    dns_seeders: &[],
     net: NetworkId::new(NetworkType::Devnet),
     genesis: DEVNET_GENESIS,
     timestamp_deviation_tolerance: TIMESTAMP_DEVIATION_TOLERANCE,
