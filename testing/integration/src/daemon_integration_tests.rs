@@ -8,6 +8,7 @@ use crate::common::{
 use kaspa_addresses::Address;
 use kaspa_alloc::init_allocator_with_default_settings;
 use kaspa_consensus::params::{Params, SIMNET_GENESIS, SIMNET_PARAMS};
+use kaspa_consensus::processes::zethora_subsidy::ZethoraSubsidy;
 use kaspa_consensus_core::{
     config::params::OverrideParams,
     constants::{TX_VERSION, TX_VERSION_TOCCATA},
@@ -329,20 +330,34 @@ async fn daemon_utxos_propagation_test() {
         mine_block(blank_address.clone(), &rpc_client1, &clients).await;
     }
 
+    // Zethora: compute expected rewards and add an independent anchor
+    let z = ZethoraSubsidy::new();
+    assert_eq!(z.subsidy(0), 2_745_536_136, "Anchor mismatch");
+    let expected_total_reward: u64 = (0..initial_blocks as u64).map(|daa| z.subsidy(daa)).sum();
+
     // Check the balance of the miner address
     let miner_balance = rpc_client2.get_balance_by_address(miner_address.clone()).await.unwrap();
-    assert_eq!(miner_balance, initial_blocks * SIMNET_PARAMS.pre_deflationary_phase_base_subsidy);
+    assert_eq!(miner_balance, expected_total_reward);
     let miner_balance = rpc_client1.get_balance_by_address(miner_address.clone()).await.unwrap();
-    assert_eq!(miner_balance, initial_blocks * SIMNET_PARAMS.pre_deflationary_phase_base_subsidy);
+    assert_eq!(miner_balance, expected_total_reward);
 
     // Get the miner UTXOs
     let utxos = fetch_spendable_utxos(&rpc_client1, miner_address.clone(), coinbase_maturity).await;
     assert_eq!(utxos.len(), EXTRA_BLOCKS - 1);
+
+    // Multiset comparison. DIAG proved block_daa_score=N pays subsidy(N-2).
+    // UTXOs span blocks 2..=10, so the amounts must equal subsidies 0..=8.
+    let mut actual_amounts = Vec::new();
     for utxo in utxos.iter() {
         assert!(utxo.1.is_coinbase);
-        assert_eq!(utxo.1.amount, SIMNET_PARAMS.pre_deflationary_phase_base_subsidy);
         assert_eq!(utxo.1.script_public_key, miner_spk);
+        actual_amounts.push(utxo.1.amount);
     }
+    let mut actual_sorted = actual_amounts.clone();
+    actual_sorted.sort();
+    let mut expected_sorted: Vec<u64> = (0..=8).map(|s| z.subsidy(s)).collect();
+    expected_sorted.sort();
+    assert_eq!(actual_sorted, expected_sorted, "Multiset mismatch between actual UTXO amounts and expected Zethora subsidies");
 
     // Drain UTXOs and Virtual DAA score changed notification channels
     clients.iter().for_each(|x| x.utxos_changed_listener().unwrap().drain());
@@ -352,8 +367,10 @@ async fn daemon_utxos_propagation_test() {
     // The transaction here is later used to verify utxo return address RPC
     const NUMBER_INPUTS: u64 = 2;
     const NUMBER_OUTPUTS: u64 = 2;
-    const TX_AMOUNT: u64 = SIMNET_PARAMS.pre_deflationary_phase_base_subsidy * (NUMBER_INPUTS * 5 - 1) / 5;
     let selected_utxos = &utxos[0..NUMBER_INPUTS as usize];
+    let spent_amount: u64 = selected_utxos.iter().map(|(_, e)| e.amount).sum::<u64>();
+    let tx_amount: u64 = spent_amount * 4 / 5;
+    let expected_added: u64 = (0..NUMBER_OUTPUTS).map(|_| tx_amount / NUMBER_OUTPUTS).sum();
     let tx_script_public_key = pay_to_address_script(&user_address);
     let inputs = selected_utxos
         .iter()
@@ -366,7 +383,7 @@ async fn daemon_utxos_propagation_test() {
         .collect();
     let outputs = (0..NUMBER_OUTPUTS)
         .map(|_| TransactionOutput {
-            value: TX_AMOUNT / NUMBER_OUTPUTS,
+            value: tx_amount / NUMBER_OUTPUTS,
             script_public_key: tx_script_public_key.clone(),
             covenant: None,
         })
@@ -411,18 +428,18 @@ async fn daemon_utxos_propagation_test() {
         assert_eq!(uc.added.len() as u64, NUMBER_OUTPUTS);
         assert_eq!(
             uc.removed.iter().map(|x| x.utxo_entry.amount).sum::<u64>(),
-            SIMNET_PARAMS.pre_deflationary_phase_base_subsidy * NUMBER_INPUTS
+            spent_amount
         );
-        assert_eq!(uc.added.iter().map(|x| x.utxo_entry.amount).sum::<u64>(), TX_AMOUNT);
+        assert_eq!(uc.added.iter().map(|x| x.utxo_entry.amount).sum::<u64>(), expected_added);
     }
 
     // Check the balance of both miner and user addresses
     for x in clients.iter() {
         let miner_balance = x.get_balance_by_address(miner_address.clone()).await.unwrap();
-        assert_eq!(miner_balance, (initial_blocks - NUMBER_INPUTS) * SIMNET_PARAMS.pre_deflationary_phase_base_subsidy);
+        assert_eq!(miner_balance, expected_total_reward - spent_amount);
 
         let user_balance = x.get_balance_by_address(user_address.clone()).await.unwrap();
-        assert_eq!(user_balance, TX_AMOUNT);
+        assert_eq!(user_balance, expected_added);
     }
 
     // UTXO Return Address Test
