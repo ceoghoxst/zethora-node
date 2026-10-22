@@ -218,6 +218,8 @@ Repo: github.com/ceoghoxst/zethora-node, branch `zethora` (a rusty-kaspa fork). 
 - Never promise coins, staking returns or paid hashrate. No token exists yet.
 - Do not claim "we detect farms", "we block farms" or "we prevent industrial mining". No such feature exists; any anti-farm idea is undecided and post-testnet.
 - Pools (decided Oct 22, 2026): documentation only (solo mining, and how a pool could use the stratum bridge). No official DeionRaven pool. Third-party pools welcome after testnet.
+- DeionRaven Labs is a project name, not a registered company (as of Oct 22, 2026). Do not describe it as a company, firm or legal entity in public docs; use "Maintained by DeionRaven (Deion Smith)".
+- Persistence rule: every decision goes to disk. See docs/PERSISTENCE-RULES.md for the standing rule and file map. Sessions are ephemeral; files are permanent.
 - Don't route around network blocks; if crates.io is blocked in the sandbox, his PC compiles and Claude checks against library sources.
 
 ## Security verification log
