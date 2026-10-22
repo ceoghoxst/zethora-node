@@ -14,40 +14,40 @@ Private sending stays DISABLED on testnet until the crypto review is complete. T
 
 ## Mandatory before testnet opens
 
-|#|Item|Why|Effort|
-|-|-|-|-|
-|1|Seed node running|Without one, strangers cannot find each other|1 hour (blocked on Oracle; $5 VPS solves it)|
-|2|RandomZ DoS ban implemented|Without it, one attacker can take the network down|4-6 hours (Piece 1 done)|
-|3|Windows getting-started guide|Most home miners use Windows|2-3 hours|
-|4|Prebuilt Windows binary|Removes the 30-minute Rust compile barrier|1-2 hours setup, ongoing|
-|5|Mining walkthrough|What to expect, expected hashrate, troubleshooting|1-2 hours|
-|6|Wallet walkthrough|How to see balance, send, receive|1-2 hours|
-|7|Testnet genesis verification|Confirm the regenerated genesis is what runs|30 min|
+| # | Item | Why | Effort |
+|---|---|---|---|
+| 1 | Seed node running | Without one, strangers cannot find each other | 1 hour (blocked on Oracle; $5 VPS solves it) |
+| 2 | RandomZ DoS ban implemented | Without it, one attacker can take the network down | 4-6 hours (Piece 1 done) |
+| 3 | Windows getting-started guide | Most home miners use Windows | 2-3 hours |
+| 4 | Prebuilt Windows binary | Removes the 30-minute Rust compile barrier | 1-2 hours setup, ongoing |
+| 5 | Mining walkthrough | What to expect, expected hashrate, troubleshooting | 1-2 hours |
+| 6 | Wallet walkthrough | How to see balance, send, receive | 1-2 hours |
+| 7 | Testnet genesis verification | Confirm the regenerated genesis is what runs | 30 min |
 
 ## Nice-to-have, not blocking launch
 
-* B8 miner prebuild (30s stall every \~12 days)
-* Multiple independent seed nodes (1 is enough; 3+ is better)
-* Streaming private state download (matters at scale, not at launch)
-* Basic block explorer
-* Fix daemon integration test
-* Prebuilt Linux binary
+- B8 miner prebuild (30s stall every ~12 days)
+- Multiple independent seed nodes (1 is enough; 3+ is better)
+- Streaming private state download (matters at scale, not at launch)
+- Basic block explorer
+- Fix daemon integration test
+- Prebuilt Linux binary
 
 ## Not needed for testnet
 
-* Crypto review (only gates private sending)
-* Smart contracts (simpa is work in progress)
-* Launchpad, AI marketplace, mobile apps
-* Any mainnet-specific hardening
+- Crypto review (only gates private sending)
+- Smart contracts (simpa is work in progress)
+- Launchpad, AI marketplace, mobile apps
+- Any mainnet-specific hardening
 
 ## Suggested timeline
 
 2-4 weeks of consistent work.
 
-* Week 1: Seed node + finish ZTH-IMPL-020 DoS ban
-* Week 2: Windows getting-started guide + prebuilt binary
-* Week 3: Mining and wallet walkthroughs, tested by you on a fresh folder
-* Week 4: Buffer. Fix what breaks. Announce.
+- Week 1: Seed node + finish ZTH-IMPL-020 DoS ban
+- Week 2: Windows getting-started guide + prebuilt binary
+- Week 3: Mining and wallet walkthroughs, tested by you on a fresh folder
+- Week 4: Buffer. Fix what breaks. Announce.
 
 Faster is fine. Slower is fine. Do not compress into less than 2 weeks: docs tested by strangers always surface surprises.
 
@@ -64,17 +64,16 @@ Ranked by realistic probability:
 
 All must be true:
 
-* \[ ] Seed node reachable from the public internet on TCP 26211
-* \[ ] A fresh Windows PC can follow the guide and reach a running node
-* \[ ] The same PC can start mining and see its balance grow
-* \[ ] Two nodes on different networks can sync via the seed
-* \[ ] ZTH-IMPL-020 DoS ban active and tested on devnet
-* \[ ] Testnet genesis hash matches what is committed
-* \[ ] Getting-started guide tested by someone who is not the author
+- [ ] Seed node reachable from the public internet on TCP 26211
+- [ ] A fresh Windows PC can follow the guide and reach a running node
+- [ ] The same PC can start mining and see its balance grow
+- [ ] Two nodes on different networks can sync via the seed
+- [ ] ZTH-IMPL-020 DoS ban active and tested on devnet
+- [ ] Testnet genesis hash matches what is committed
+- [ ] Getting-started guide tested by someone who is not the author
 
 ## Open questions
 
-* Prebuilt binaries or expect compilation? (Recommendation: binaries for Windows, source for Linux)
-* Who runs the second seed? (Community or DeionRaven Labs)
-* Announcement channel? (X, Reddit, Zcash forum, or all three)
-
+- Prebuilt binaries or expect compilation? (Recommendation: binaries for Windows, source for Linux)
+- Who runs the second seed? (Community or DeionRaven Labs)
+- Announcement channel? (X, Reddit, Zcash forum, or all three)
