@@ -428,3 +428,25 @@ consensus code changed.
 commit (1 passed, 0 failed). Hashes in genesis.rs: mainnet b819b739,
 testnet d52ed6a6 (provisional), devnet 5563e86a; all 0 coins, Zethora
 messages. Must pass again on the final testnet regen commit (TESTNET-LAUNCH G9).
+
+
+2026-10-22 - Correction (append-only). The "Known gaps" paragraph that
+states TESTNET/MAINNET are still 10 bps and their genesis is Kaspa's is
+STALE. Both were changed to 1 bps with Zethora genesis on 2026-10-12
+(see the two "Recently completed (Oct 12, 2026)" blocks). Read those
+known-gap lines as historical only. Also: the two "Recently completed
+(Oct 12, 2026)" blocks describe the same work but differ in detail and
+formatting; both remain in place. Evidence: CTO audit 2026-10-22
+(decision O4).
+
+2026-10-22 - docs/TESTNET-LAUNCH.md rev 5 saved and committed after CTO
+final audit. All O5-O8 answers and all three final-audit fixes
+incorporated. G1 testnet-10 / TCP 26211. G10 is a services.rs check (no
+params field). Section 2 uses print_zethora_testnet_genesis at
+genesis.rs:273; the values file is deleted, never committed.
+tools/faucet marked stub, untracked, not a gate. TESTNET-ROADMAP.md:67
+26611 -> 26211. Timestamp provisional. Next: roadmap #4 Windows binary
+plan. CTO APPROVED with 3 fixes. Note: the exact-duplicate removal
+CLAUDE.md:365-398 approved by CTO was NOT applied this session (line
+counts changed since the audit; deferred to avoid touching the wrong
+lines). Follow-up needed.
