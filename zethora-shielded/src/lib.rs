@@ -79,7 +79,10 @@ pub fn verify_payment(bundle: &Bundle<Authorized, i64>, vk: &VerifyingKey, tx_di
     for (i, action) in bundle.actions().iter().enumerate() {
         action.rk().verify(&sighash, action.authorization()).map_err(|_| VerifyError::SpendSignature(i))?;
     }
-    bundle.binding_validating_key().verify(&sighash, bundle.authorization().binding_signature()).map_err(|_| VerifyError::BindingSignature)?;
+    bundle
+        .binding_validating_key()
+        .verify(&sighash, bundle.authorization().binding_signature())
+        .map_err(|_| VerifyError::BindingSignature)?;
     bundle.verify_proof(vk).map_err(|_| VerifyError::Proof)
 }
 
@@ -195,8 +198,8 @@ impl NoteCommitmentTree {
                     return Err(TreeBytesError);
                 }
                 let ommers = (0..n).map(|i| hash_at(42 + 32 * i)).collect::<Result<Vec<_>, _>>()?;
-                let frontier = Frontier::from_parts(incrementalmerkletree::Position::from(position), leaf, ommers)
-                    .map_err(|_| TreeBytesError)?;
+                let frontier =
+                    Frontier::from_parts(incrementalmerkletree::Position::from(position), leaf, ommers).map_err(|_| TreeBytesError)?;
                 Ok(Self { frontier })
             }
             _ => Err(TreeBytesError),

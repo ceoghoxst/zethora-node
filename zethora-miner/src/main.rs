@@ -173,9 +173,8 @@ async fn main() {
         if blocks_left < 2000 && prebuild_task.is_none() && next_dataset.is_none() {
             let next_epoch = epoch + 1;
             println!("Approaching epoch change. Prebuilding dataset for epoch {next_epoch} in the background...");
-            prebuild_task = Some(tokio::task::spawn_blocking(move || {
-                (next_epoch, kaspa_pow::randomz::try_new_mining_dataset(next_epoch))
-            }));
+            prebuild_task =
+                Some(tokio::task::spawn_blocking(move || (next_epoch, kaspa_pow::randomz::try_new_mining_dataset(next_epoch))));
         }
 
         // Check if the background prebuild finished

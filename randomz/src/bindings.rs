@@ -47,28 +47,14 @@ extern "C" {
     pub fn randomx_release_cache(cache: *mut randomx_cache);
     pub fn randomx_alloc_dataset(flags: c_uint) -> *mut randomx_dataset;
     pub fn randomx_dataset_item_count() -> c_ulong;
-    pub fn randomx_init_dataset(
-        dataset: *mut randomx_dataset,
-        cache: *mut randomx_cache,
-        start_item: c_ulong,
-        item_count: c_ulong,
-    );
+    pub fn randomx_init_dataset(dataset: *mut randomx_dataset, cache: *mut randomx_cache, start_item: c_ulong, item_count: c_ulong);
     pub fn randomx_get_dataset_memory(dataset: *mut randomx_dataset) -> *mut c_void;
     pub fn randomx_release_dataset(dataset: *mut randomx_dataset);
-    pub fn randomx_create_vm(
-        flags: c_uint,
-        cache: *mut randomx_cache,
-        dataset: *mut randomx_dataset,
-    ) -> *mut randomx_vm;
+    pub fn randomx_create_vm(flags: c_uint, cache: *mut randomx_cache, dataset: *mut randomx_dataset) -> *mut randomx_vm;
     pub fn randomx_vm_set_cache(machine: *mut randomx_vm, cache: *mut randomx_cache);
     pub fn randomx_vm_set_dataset(machine: *mut randomx_vm, dataset: *mut randomx_dataset);
     pub fn randomx_destroy_vm(machine: *mut randomx_vm);
-    pub fn randomx_calculate_hash(
-        machine: *mut randomx_vm,
-        input: *const c_void,
-        input_size: usize,
-        output: *mut c_void,
-    );
+    pub fn randomx_calculate_hash(machine: *mut randomx_vm, input: *const c_void, input_size: usize, output: *mut c_void);
     pub fn randomx_calculate_hash_first(machine: *mut randomx_vm, input: *const c_void, input_size: usize);
     pub fn randomx_calculate_hash_next(
         machine: *mut randomx_vm,

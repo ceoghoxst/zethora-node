@@ -134,4 +134,3 @@ fn counterfeit_coin_proves_against_a_made_up_list() {
     let (bundle, _) = codec::decode(&counterfeit).unwrap();
     assert_ne!(bundle.anchor().to_bytes(), honest.root());
 }
-

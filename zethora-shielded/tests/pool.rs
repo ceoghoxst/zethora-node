@@ -77,7 +77,8 @@ fn make_payments() -> Payments {
     // 1. Shield: 5,000 zets enter the private pool (no spends allowed in this bundle)
     let shield = {
         let empty_anchor = MerkleHashOrchard::empty_root(32.into()).into();
-        let mut builder = Builder::new(BundleType::DEFAULT, BundleVersion::orchard_v2(), Flags::SPENDS_DISABLED, empty_anchor).unwrap();
+        let mut builder =
+            Builder::new(BundleType::DEFAULT, BundleVersion::orchard_v2(), Flags::SPENDS_DISABLED, empty_anchor).unwrap();
         builder.add_output(None, me, NoteValue::from_raw(5_000), [0u8; 512]).unwrap();
         let (unauthorized, _) = builder.build::<i64>(&mut rng).unwrap().unwrap();
         let sighash = sighash(&TX, unauthorized.commitment(TxVersion::V5).expect("representable flags").into());
@@ -97,9 +98,13 @@ fn make_payments() -> Payments {
     let cmx: ExtractedNoteCommitment = note.commitment().into();
     let (wallet_root, path) = single_leaf_witness(&cmx);
     let unshield = {
-        let mut builder =
-            Builder::new(BundleType::DEFAULT, BundleVersion::orchard_v2(), BundleVersion::orchard_v2().default_flags(), wallet_root.into())
-                .unwrap();
+        let mut builder = Builder::new(
+            BundleType::DEFAULT,
+            BundleVersion::orchard_v2(),
+            BundleVersion::orchard_v2().default_flags(),
+            wallet_root.into(),
+        )
+        .unwrap();
         builder.add_spend(fvk, note, path).unwrap();
         builder.add_output(None, me, NoteValue::from_raw(3_000), [0u8; 512]).unwrap();
         let (unauthorized, _) = builder.build::<i64>(&mut rng).unwrap().unwrap();

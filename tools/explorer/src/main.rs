@@ -1,11 +1,11 @@
 use kaspa_grpc_client::GrpcClient;
-use prettytable::{format, Cell, Row, Table};
 use kaspa_rpc_core::api::rpc::RpcApi;
+use prettytable::{format, Cell, Row, Table};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Connecting to Zethora node at 127.0.0.1:26610...");
-    
+
     // Connect to the local node
     let client = match GrpcClient::connect("grpc://127.0.0.1:26610".to_string()).await {
         Ok(c) => c,
@@ -26,13 +26,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut table = Table::new();
     table.set_format(*format::consts::FORMAT_BOX_CHARS);
-    
-    table.add_row(Row::new(vec![
-        Cell::new("DAA Score"),
-        Cell::new("Blue Score"),
-        Cell::new("Hash"),
-        Cell::new("Txs"),
-    ]));
+
+    table.add_row(Row::new(vec![Cell::new("DAA Score"), Cell::new("Blue Score"), Cell::new("Hash"), Cell::new("Txs")]));
 
     for block in blocks.block_hashes.iter().take(10) {
         // Fetch detailed block data

@@ -238,7 +238,7 @@ mod zethora_task4_smoke {
 
         let e1a = private_state_spent_element(&n1);
         let e1b = private_state_spent_element(&n1);
-        let e2  = private_state_spent_element(&n2);
+        let e2 = private_state_spent_element(&n2);
 
         assert_eq!(e1a, e1b, "same nullifier must map to same spent-element");
         assert_ne!(e1a, e2, "different nullifiers must map to different spent-elements");

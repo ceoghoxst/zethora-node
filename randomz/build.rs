@@ -26,9 +26,8 @@ use cmake::Config;
 
 #[allow(clippy::too_many_lines)]
 fn main() {
-    let randomx_path = Config::new(env::var("RANDOMX_DIR").unwrap_or_else(|_| "RandomX".to_string()))
-        .define("DARCH", "native")
-        .build();
+    let randomx_path =
+        Config::new(env::var("RANDOMX_DIR").unwrap_or_else(|_| "RandomX".to_string())).define("DARCH", "native").build();
 
     println!("cargo:rustc-link-search=native={}/lib64", randomx_path.display());
     println!("cargo:rustc-link-search=native={}/lib", randomx_path.display());

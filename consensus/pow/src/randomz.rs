@@ -252,9 +252,7 @@ pub fn precompute_light(items: &[(u64, [u8; POW_INPUT_LEN])]) -> Vec<Uint256> {
 /// Fallible version of new_mining_dataset, used by the miner when it prebuilds
 /// the next epoch in the background (returns None if memory is too low).
 pub fn try_new_mining_dataset(epoch: u64) -> Option<SharedDataset> {
-    RandomXDataset::new(flags() | RandomXFlag::FLAG_FULL_MEM, new_cache(epoch).0, 0)
-        .ok()
-        .map(SharedDataset)
+    RandomXDataset::new(flags() | RandomXFlag::FLAG_FULL_MEM, new_cache(epoch).0, 0).ok().map(SharedDataset)
 }
 
 pub fn new_mining_dataset(epoch: u64) -> SharedDataset {

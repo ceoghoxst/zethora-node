@@ -52,10 +52,10 @@ pub enum UpnpError {
 }
 
 /// ZTH-IMPL-020 D2: ban schedule (base, cap, reset window, max escalation level).
-const BAN_BASE_MS: u64 = 24 * 60 * 60 * 1000;         // 24 hours
-const BAN_MAX_MS: u64 = 7 * 24 * 60 * 60 * 1000;     // 7 days
-const RESET_WINDOW_MS: u64 = 24 * 60 * 60 * 1000;    // 24 hours
-const MAX_ESCALATION: u8 = 2;                       // levels: 0=24h, 1=48h, 2+=7d
+const BAN_BASE_MS: u64 = 24 * 60 * 60 * 1000; // 24 hours
+const BAN_MAX_MS: u64 = 7 * 24 * 60 * 60 * 1000; // 7 days
+const RESET_WINDOW_MS: u64 = 24 * 60 * 60 * 1000; // 24 hours
+const MAX_ESCALATION: u8 = 2; // levels: 0=24h, 1=48h, 2+=7d
 
 pub struct AddressManager {
     banned_address_store: DbBannedAddressesStore,

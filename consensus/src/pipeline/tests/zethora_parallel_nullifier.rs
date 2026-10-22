@@ -13,46 +13,27 @@ use crate::consensus::test_consensus::TestConsensus;
 use crate::constants::TX_VERSION_TOCCATA;
 use crate::model::stores::virtual_state::VirtualStateStoreReader;
 use crate::params::DEVNET_PARAMS;
+use kaspa_consensus_core::Hash;
 use kaspa_consensus_core::hashing::tx::zethora_private_payment_digest;
 use kaspa_consensus_core::subnets::SUBNETWORK_ID_NATIVE;
 use kaspa_consensus_core::tx::Transaction;
 use kaspa_consensus_core::zethora_private::PRIVATE_PAYMENT_MAGIC;
-use kaspa_consensus_core::Hash;
 
 fn private_spend_tx(fee: u64) -> Transaction {
     use zethora_shielded::scan::Scanner;
     use zethora_shielded::wallet::{PrivateWallet, shielding_payment};
 
-    let (me, friend) = (
-        PrivateWallet::from_seed(&[5; 32]),
-        PrivateWallet::friend_of(&[5; 32]),
-    );
+    let (me, friend) = (PrivateWallet::from_seed(&[5; 32]), PrivateWallet::friend_of(&[5; 32]));
     let (me_address, friend_address) = (me.address(), friend.address());
     let mut scanner = Scanner::new(vec![me, friend]);
-    scanner
-        .add_payment(&shielding_payment(me_address, 50_000, &[0; 32]).unwrap())
-        .unwrap();
+    scanner.add_payment(&shielding_payment(me_address, 50_000, &[0; 32]).unwrap()).unwrap();
     scanner.checkpoint().unwrap();
     let coins = scanner.pick_coins(0, 50_000).unwrap();
 
-    let mut tx = Transaction::new_non_finalized(
-        TX_VERSION_TOCCATA,
-        vec![],
-        vec![],
-        0,
-        SUBNETWORK_ID_NATIVE,
-        0,
-        vec![],
-    );
+    let mut tx = Transaction::new_non_finalized(TX_VERSION_TOCCATA, vec![], vec![], 0, SUBNETWORK_ID_NATIVE, 0, vec![]);
     let digest = zethora_private_payment_digest(&tx);
-    let payment = scanner
-        .spend_payment(
-            0,
-            &coins,
-            &[(friend_address, 30_000), (me_address, 20_000 - fee)],
-            &digest.as_bytes(),
-        )
-        .unwrap();
+    let payment =
+        scanner.spend_payment(0, &coins, &[(friend_address, 30_000), (me_address, 20_000 - fee)], &digest.as_bytes()).unwrap();
     tx.payload = PRIVATE_PAYMENT_MAGIC.iter().copied().chain(payment).collect();
     tx.finalize();
     tx
@@ -75,11 +56,7 @@ async fn nullifier_in_pending_set_is_rejected_by_private_double_spend() {
 
     // A private spend carries >= 1 nullifier (Orchard may pad with dummy
     // nullifiers from additional actions). All must be rejected on replay.
-    assert!(
-        !nfs.is_empty(),
-        "test tx must have at least one nullifier, got {}",
-        nfs.len()
-    );
+    assert!(!nfs.is_empty(), "test tx must have at least one nullifier, got {}", nfs.len());
 
     let genesis = consensus.params().genesis.hash;
 
@@ -88,9 +65,7 @@ async fn nullifier_in_pending_set_is_rejected_by_private_double_spend() {
         let mut pending = HashSet::new();
         pending.insert(*nf);
         assert!(
-            consensus
-                .virtual_processor()
-                .private_double_spend(&tx, genesis, &pending),
+            consensus.virtual_processor().private_double_spend(&tx, genesis, &pending),
             "REDDIT BUG: tx with nullifier {:?} in pending was not rejected",
             nf
         );
@@ -99,9 +74,7 @@ async fn nullifier_in_pending_set_is_rejected_by_private_double_spend() {
     // Case 2: empty pending -> MUST accept (no false positive).
     let empty: HashSet<[u8; 32]> = HashSet::new();
     assert!(
-        !consensus
-            .virtual_processor()
-            .private_double_spend(&tx, genesis, &empty),
+        !consensus.virtual_processor().private_double_spend(&tx, genesis, &empty),
         "false positive: empty pending triggered double-spend detection"
     );
 
@@ -109,9 +82,7 @@ async fn nullifier_in_pending_set_is_rejected_by_private_double_spend() {
     let mut other = HashSet::new();
     other.insert([0xFFu8; 32]);
     assert!(
-        !consensus
-            .virtual_processor()
-            .private_double_spend(&tx, genesis, &other),
+        !consensus.virtual_processor().private_double_spend(&tx, genesis, &other),
         "false positive: unrelated nullifier triggered rejection"
     );
 
@@ -151,23 +122,15 @@ async fn run_scenario(tx: Transaction, arrival: Arrival) -> Snapshot {
 
     match arrival {
         Arrival::AB => {
-            let r_a = consensus
-                .add_utxo_valid_block_with_parents(hash_a, vec![parent], vec![tx.clone()])
-                .await;
+            let r_a = consensus.add_utxo_valid_block_with_parents(hash_a, vec![parent], vec![tx.clone()]).await;
             eprintln!("insert A: {:?}", r_a);
-            let r_b = consensus
-                .add_utxo_valid_block_with_parents(hash_b, vec![parent], vec![tx])
-                .await;
+            let r_b = consensus.add_utxo_valid_block_with_parents(hash_b, vec![parent], vec![tx]).await;
             eprintln!("insert B: {:?}", r_b);
         }
         Arrival::BA => {
-            let r_b = consensus
-                .add_utxo_valid_block_with_parents(hash_b, vec![parent], vec![tx.clone()])
-                .await;
+            let r_b = consensus.add_utxo_valid_block_with_parents(hash_b, vec![parent], vec![tx.clone()]).await;
             eprintln!("insert B: {:?}", r_b);
-            let r_a = consensus
-                .add_utxo_valid_block_with_parents(hash_a, vec![parent], vec![tx])
-                .await;
+            let r_a = consensus.add_utxo_valid_block_with_parents(hash_a, vec![parent], vec![tx]).await;
             eprintln!("insert A: {:?}", r_a);
         }
     }
@@ -183,11 +146,7 @@ async fn run_scenario(tx: Transaction, arrival: Arrival) -> Snapshot {
 
     consensus.shutdown(handles);
 
-    Snapshot {
-        mergeset_nullifier_count: mergeset_nullifiers.len(),
-        mergeset_nullifiers,
-        total_pool_out,
-    }
+    Snapshot { mergeset_nullifier_count: mergeset_nullifiers.len(), mergeset_nullifiers, total_pool_out }
 }
 
 #[tokio::test]
@@ -206,11 +165,7 @@ async fn parallel_blocks_spending_same_nullifier_are_counted_once() {
         "REDDIT BUG: mergeset_nullifiers has {} entries (merge loop double-counts).",
         ab.mergeset_nullifier_count
     );
-    assert!(
-        ba.mergeset_nullifier_count <= 1,
-        "arrival BA: {} nullifiers — non-deterministic.",
-        ba.mergeset_nullifier_count
-    );
+    assert!(ba.mergeset_nullifier_count <= 1, "arrival BA: {} nullifiers — non-deterministic.", ba.mergeset_nullifier_count);
     assert_eq!(
         ab.mergeset_nullifier_count, ba.mergeset_nullifier_count,
         "arrival order changed nullifier count: AB={}, BA={}",

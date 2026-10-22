@@ -220,7 +220,13 @@ impl Scanner {
         outputs: &[(Address, u64)],
         tx_digest: &[u8; 32],
     ) -> Result<Vec<u8>, String> {
-        spend_payment_with(&self.wallets[wallet].0, coins.iter().map(|c| Ok((c.note, self.witness(c)?))), self.anchor()?, outputs, tx_digest)
+        spend_payment_with(
+            &self.wallets[wallet].0,
+            coins.iter().map(|c| Ok((c.note, self.witness(c)?))),
+            self.anchor()?,
+            outputs,
+            tx_digest,
+        )
     }
 }
 

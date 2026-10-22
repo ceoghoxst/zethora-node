@@ -309,7 +309,9 @@ impl Router {
         if let Some(signal) = op {
             let _ = signal.send(());
         } else {
-            { debug!("P2P, Router start was called more than once, router-id: {}", self.identity()); }
+            {
+                debug!("P2P, Router start was called more than once, router-id: {}", self.identity());
+            }
         }
     }
 

@@ -486,7 +486,7 @@ pub(crate) fn output_address(network_type: NetworkType) -> Address {
 }
 
 #[test]
-    #[ignore = "Inherited Kaspa wallet-core test - not used by zethora-shield"]
+#[ignore = "Inherited Kaspa wallet-core test - not used by zethora-shield"]
 fn test_generator_empty_utxo_noop() -> Result<()> {
     let generator = make_generator(test_network_id(), &[], &[], None, Fees::None, change_address, PaymentDestination::Change).unwrap();
     let tx = generator.generate_transaction().unwrap();
@@ -495,7 +495,7 @@ fn test_generator_empty_utxo_noop() -> Result<()> {
 }
 
 #[test]
-    #[ignore = "Inherited Kaspa wallet-core test - not used by zethora-shield"]
+#[ignore = "Inherited Kaspa wallet-core test - not used by zethora-shield"]
 fn test_generator_sweep_single_utxo_noop() -> Result<()> {
     let generator = make_generator(test_network_id(), &[10.0], &[], None, Fees::None, change_address, PaymentDestination::Change)
         .expect("single UTXO input: generator");
@@ -505,7 +505,7 @@ fn test_generator_sweep_single_utxo_noop() -> Result<()> {
 }
 
 #[test]
-    #[ignore = "Inherited Kaspa wallet-core test - not used by zethora-shield"]
+#[ignore = "Inherited Kaspa wallet-core test - not used by zethora-shield"]
 fn test_generator_sweep_two_utxos() -> Result<()> {
     make_generator(test_network_id(), &[10.0, 10.0], &[], None, Fees::None, change_address, PaymentDestination::Change)
         .expect("merge 2 UTXOs without fees: generator")
@@ -522,7 +522,7 @@ fn test_generator_sweep_two_utxos() -> Result<()> {
 }
 
 #[test]
-    #[ignore = "Inherited Kaspa wallet-core test - not used by zethora-shield"]
+#[ignore = "Inherited Kaspa wallet-core test - not used by zethora-shield"]
 fn test_generator_sweep_two_utxos_with_priority_fees_rejection() -> Result<()> {
     let generator = make_generator(
         test_network_id(),
@@ -541,7 +541,7 @@ fn test_generator_sweep_two_utxos_with_priority_fees_rejection() -> Result<()> {
 }
 
 #[test]
-    #[ignore = "Inherited Kaspa wallet-core test - not used by zethora-shield"]
+#[ignore = "Inherited Kaspa wallet-core test - not used by zethora-shield"]
 fn test_generator_large_payload_min_relay_fee() -> Result<()> {
     let network_id = test_network_id();
     let harness = make_generator_with_payload(
@@ -579,7 +579,7 @@ fn test_generator_large_payload_min_relay_fee() -> Result<()> {
 }
 
 #[test]
-    #[ignore = "Inherited Kaspa wallet-core test - not used by zethora-shield"]
+#[ignore = "Inherited Kaspa wallet-core test - not used by zethora-shield"]
 fn test_generator_compound_200k_10kas_transactions() -> Result<()> {
     generator(
         test_network_id(),
@@ -598,7 +598,7 @@ fn test_generator_compound_200k_10kas_transactions() -> Result<()> {
 }
 
 #[test]
-    #[ignore = "Inherited Kaspa wallet-core test - not used by zethora-shield"]
+#[ignore = "Inherited Kaspa wallet-core test - not used by zethora-shield"]
 fn test_generator_fee_rate_compound_200k_10kas_transactions() -> Result<()> {
     generator(
         test_network_id(),
@@ -617,7 +617,7 @@ fn test_generator_fee_rate_compound_200k_10kas_transactions() -> Result<()> {
 }
 
 #[test]
-    #[ignore = "Inherited Kaspa wallet-core test - not used by zethora-shield"]
+#[ignore = "Inherited Kaspa wallet-core test - not used by zethora-shield"]
 fn test_generator_compound_100k_random_transactions() -> Result<()> {
     let mut rng = StdRng::seed_from_u64(0);
     let inputs: Vec<f64> = (0..100_000).map(|_| rng.gen_range(0.001..10.0)).collect();
@@ -635,7 +635,7 @@ fn test_generator_compound_100k_random_transactions() -> Result<()> {
 }
 
 #[test]
-    #[ignore = "Inherited Kaspa wallet-core test - not used by zethora-shield"]
+#[ignore = "Inherited Kaspa wallet-core test - not used by zethora-shield"]
 fn test_generator_random_outputs() -> Result<()> {
     let mut rng = StdRng::seed_from_u64(0);
     let outputs: Vec<f64> = (0..30).map(|_| rng.gen_range(1.0..10.0)).collect();
@@ -652,7 +652,7 @@ fn test_generator_random_outputs() -> Result<()> {
 }
 
 #[test]
-    #[ignore = "Inherited Kaspa wallet-core test - not used by zethora-shield"]
+#[ignore = "Inherited Kaspa wallet-core test - not used by zethora-shield"]
 fn test_generator_dust_1_1() -> Result<()> {
     generator(
         test_network_id(),
@@ -677,7 +677,7 @@ fn test_generator_dust_1_1() -> Result<()> {
 }
 
 #[test]
-    #[ignore = "Inherited Kaspa wallet-core test - not used by zethora-shield"]
+#[ignore = "Inherited Kaspa wallet-core test - not used by zethora-shield"]
 fn test_generator_inputs_2_outputs_2_fees_exclude() -> Result<()> {
     generator(
         test_network_id(),
@@ -702,7 +702,7 @@ fn test_generator_inputs_2_outputs_2_fees_exclude() -> Result<()> {
 }
 
 #[test]
-    #[ignore = "Inherited Kaspa wallet-core test - not used by zethora-shield"]
+#[ignore = "Inherited Kaspa wallet-core test - not used by zethora-shield"]
 fn test_generator_inputs_100_outputs_1_fees_exclude_success() -> Result<()> {
     // generator(test_network_id(), &[10.0; 100], &[], Fees::sender(Kaspa(5.0)), [(output_address, Kaspa(990.0))].as_slice())
     generator(test_network_id(), &[10.0; 100], &[], None, Fees::sender(Kaspa(0.0)), [(output_address, Kaspa(990.0))].as_slice())
@@ -736,7 +736,7 @@ fn test_generator_inputs_100_outputs_1_fees_exclude_success() -> Result<()> {
 }
 
 #[test]
-    #[ignore = "Inherited Kaspa wallet-core test - not used by zethora-shield"]
+#[ignore = "Inherited Kaspa wallet-core test - not used by zethora-shield"]
 fn test_generator_inputs_100_outputs_1_fees_include_success() -> Result<()> {
     generator(
         test_network_id(),
@@ -776,7 +776,7 @@ fn test_generator_inputs_100_outputs_1_fees_include_success() -> Result<()> {
 }
 
 #[test]
-    #[ignore = "Inherited Kaspa wallet-core test - not used by zethora-shield"]
+#[ignore = "Inherited Kaspa wallet-core test - not used by zethora-shield"]
 fn test_generator_inputs_100_outputs_1_fees_exclude_insufficient_funds() -> Result<()> {
     generator(test_network_id(), &[10.0; 100], &[], None, Fees::sender(Kaspa(5.0)), [(output_address, Kaspa(1000.0))].as_slice())
         .unwrap()
@@ -794,7 +794,7 @@ fn test_generator_inputs_100_outputs_1_fees_exclude_insufficient_funds() -> Resu
 }
 
 #[test]
-    #[ignore = "Inherited Kaspa wallet-core test - not used by zethora-shield"]
+#[ignore = "Inherited Kaspa wallet-core test - not used by zethora-shield"]
 fn test_generator_inputs_1k_outputs_2_fees_exclude() -> Result<()> {
     generator(test_network_id(), &[10.0; 1_000], &[], None, Fees::sender(Kaspa(5.0)), [(output_address, Kaspa(9_000.0))].as_slice())
         .unwrap()
@@ -829,7 +829,7 @@ fn test_generator_inputs_1k_outputs_2_fees_exclude() -> Result<()> {
 }
 
 #[test]
-    #[ignore = "Inherited Kaspa wallet-core test - not used by zethora-shield"]
+#[ignore = "Inherited Kaspa wallet-core test - not used by zethora-shield"]
 fn test_generator_inputs_32k_outputs_2_fees_exclude() -> Result<()> {
     let f = 130.0;
     generator(
@@ -848,7 +848,7 @@ fn test_generator_inputs_32k_outputs_2_fees_exclude() -> Result<()> {
 }
 
 #[test]
-    #[ignore = "Inherited Kaspa wallet-core test - not used by zethora-shield"]
+#[ignore = "Inherited Kaspa wallet-core test - not used by zethora-shield"]
 fn test_generator_inputs_250k_outputs_2_sweep() -> Result<()> {
     let f = 130.0;
     let head = vec![f; 250_000];
@@ -898,7 +898,7 @@ fn test_generator_fan_out_1() -> Result<()> {
 }
 
 #[test]
-    #[ignore = "Inherited Kaspa wallet-core test - not used by zethora-shield"]
+#[ignore = "Inherited Kaspa wallet-core test - not used by zethora-shield"]
 fn test_generator_preserves_output_covenant_binding() -> Result<()> {
     let network_id = test_network_id();
     let covenant = CovenantBinding::new(0, Hash::from_u64_word(1));

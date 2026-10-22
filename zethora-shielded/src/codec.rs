@@ -166,8 +166,7 @@ pub fn decode(bytes: &[u8]) -> Result<(Bundle<Authorized, i64>, SupportedPool), 
             enc_ciphertext: NoteBytesData(r.array::<ENC_CIPHERTEXT_SIZE>()?),
             out_ciphertext: r.array()?,
         };
-        let action =
-            Action::from_parts(nf, rk, cmx, encrypted_note, cv_net, ()).map_err(|e| DecodeError::BadAction(e.to_string()))?;
+        let action = Action::from_parts(nf, rk, cmx, encrypted_note, cv_net, ()).map_err(|e| DecodeError::BadAction(e.to_string()))?;
         actions_without_auth.push(action);
     }
 

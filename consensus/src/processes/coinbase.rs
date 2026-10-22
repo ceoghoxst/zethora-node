@@ -293,15 +293,11 @@ impl CoinbaseManager {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::params::MAINNET_PARAMS;
-    use kaspa_consensus_core::{
-        config::params::Params,
-        tx::scriptvec,
-    };
+    use kaspa_consensus_core::{config::params::Params, tx::scriptvec};
 
     #[test]
     fn payload_serialization_test() {
@@ -402,5 +398,4 @@ mod tests {
             params.bps_history(),
         )
     }
-
 }

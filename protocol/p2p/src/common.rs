@@ -267,19 +267,12 @@ mod zethora_ban_tests {
 
     #[test]
     fn implausible_pow_epoch_is_recognized_for_ban() {
-        let bad = ProtocolError::PruningImportError(PruningImportError::ZethoraPowEpochImplausible(
-            Hash::default(),
-            42,
-            1,
-            2,
-        ));
+        let bad = ProtocolError::PruningImportError(PruningImportError::ZethoraPowEpochImplausible(Hash::default(), 42, 1, 2));
         assert!(bad.is_implausible_pow_epoch());
 
         // Not ban-worthy: other pruning errors, unrelated errors
-        let other_pruning = ProtocolError::PruningImportError(PruningImportError::ZethoraPrivateStateMismatch(
-            Hash::default(),
-            "test".into(),
-        ));
+        let other_pruning =
+            ProtocolError::PruningImportError(PruningImportError::ZethoraPrivateStateMismatch(Hash::default(), "test".into()));
         assert!(!other_pruning.is_implausible_pow_epoch());
         assert!(!ProtocolError::RuleError(RuleError::InvalidPoW).is_implausible_pow_epoch());
         assert!(!ProtocolError::Timeout(DEFAULT_TIMEOUT).is_implausible_pow_epoch());

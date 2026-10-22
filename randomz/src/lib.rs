@@ -41,23 +41,9 @@ pub mod test_utils;
 use std::{convert::TryFrom, num::TryFromIntError, ptr, sync::Arc};
 
 use bindings::{
-    randomx_alloc_cache,
-    randomx_alloc_dataset,
-    randomx_cache,
-    randomx_calculate_hash,
-    randomx_create_vm,
-    randomx_dataset,
-    randomx_dataset_item_count,
-    randomx_destroy_vm,
-    randomx_get_dataset_memory,
-    randomx_init_cache,
-    randomx_init_dataset,
-    randomx_release_cache,
-    randomx_release_dataset,
-    randomx_vm,
-    randomx_vm_set_cache,
-    randomx_vm_set_dataset,
-    RANDOMX_HASH_SIZE,
+    randomx_alloc_cache, randomx_alloc_dataset, randomx_cache, randomx_calculate_hash, randomx_create_vm, randomx_dataset,
+    randomx_dataset_item_count, randomx_destroy_vm, randomx_get_dataset_memory, randomx_init_cache, randomx_init_dataset,
+    randomx_release_cache, randomx_release_dataset, randomx_vm, randomx_vm_set_cache, randomx_vm_set_dataset, RANDOMX_HASH_SIZE,
 };
 use bitflags::bitflags;
 use libc::{c_ulong, c_void};
@@ -66,12 +52,7 @@ use thiserror::Error;
 /// The size, in bytes, of a single RandomX dataset item. The full dataset returned by
 /// [`RandomXDataset::get_data`] is `RandomXDataset::count()` items of this size.
 pub use crate::bindings::RANDOMX_DATASET_ITEM_SIZE;
-use crate::bindings::{
-    randomx_calculate_hash_first,
-    randomx_calculate_hash_last,
-    randomx_calculate_hash_next,
-    randomx_get_flags,
-};
+use crate::bindings::{randomx_calculate_hash_first, randomx_calculate_hash_last, randomx_calculate_hash_next, randomx_get_flags};
 
 bitflags! {
     /// RandomX Flags are used to configure the library.
@@ -108,9 +89,7 @@ impl RandomXFlag {
     ///
     /// The above flags need to be set manually, if required.
     pub fn get_recommended_flags() -> RandomXFlag {
-        RandomXFlag {
-            bits: unsafe { randomx_get_flags() },
-        }
+        RandomXFlag { bits: unsafe { randomx_get_flags() } }
     }
 }
 
@@ -244,18 +223,14 @@ impl RandomXDataset {
     // Conversions may be lossy on Windows or Linux
     #[allow(clippy::useless_conversion)]
     pub fn new(flags: RandomXFlag, cache: RandomXCache, start: u32) -> Result<RandomXDataset, RandomXError> {
-        let item_count = RandomXDataset::count()
-            .map_err(|e| RandomXError::CreationError(format!("Could not get dataset count: {e:?}")))?;
+        let item_count =
+            RandomXDataset::count().map_err(|e| RandomXError::CreationError(format!("Could not get dataset count: {e:?}")))?;
 
         let test = unsafe { randomx_alloc_dataset(flags.bits) };
         if test.is_null() {
             Err(RandomXError::CreationError("Could not allocate dataset".to_string()))
         } else {
-            let inner = RandomXDatasetInner {
-                dataset_ptr: test,
-                dataset_count: item_count,
-                cache,
-            };
+            let inner = RandomXDatasetInner { dataset_ptr: test, dataset_count: item_count, cache };
             // SAFETY: same reasoning as RandomXCache above.
             let result = RandomXDataset { inner: Arc::new(inner) };
 
@@ -278,9 +253,7 @@ impl RandomXDataset {
                     }
                     let prefix_len = usize::try_from(start)?
                         .checked_mul(RANDOMX_DATASET_ITEM_SIZE)
-                        .ok_or_else(|| {
-                            RandomXError::CreationError(format!("Dataset prefix size overflows: {start}"))
-                        })?;
+                        .ok_or_else(|| RandomXError::CreationError(format!("Dataset prefix size overflows: {start}")))?;
                     // SAFETY: `memory` is the non-null start of the dataset buffer, which the library allocated with
                     // room for `item_count` items of `RANDOMX_DATASET_ITEM_SIZE` bytes. `start < item_count`, so
                     // `prefix_len` bytes lie inside that allocation. `u8` is always valid for any bit pattern and has
@@ -316,7 +289,7 @@ impl RandomXDataset {
                 return Ok(x);
                 #[cfg(not(target_os = "windows"))]
                 return Ok(u32::try_from(x)?);
-            },
+            }
         }
     }
 
@@ -337,9 +310,7 @@ impl RandomXDataset {
         // `dataset_count` is an *item* count, not a byte count; each item is `RANDOMX_DATASET_ITEM_SIZE` bytes.
         let item_count = usize::try_from(self.inner.dataset_count)?;
         let size_in_bytes = item_count.checked_mul(RANDOMX_DATASET_ITEM_SIZE).ok_or_else(|| {
-            RandomXError::Other(format!(
-                "Dataset size overflows usize: {item_count} items of {RANDOMX_DATASET_ITEM_SIZE} bytes each",
-            ))
+            RandomXError::Other(format!("Dataset size overflows usize: {item_count} items of {RANDOMX_DATASET_ITEM_SIZE} bytes each",))
         })?;
         // SAFETY: `memory` is a non-null pointer to the dataset buffer owned by the RandomX library. The library
         // allocated that buffer with room for `randomx_dataset_item_count()` items of `RANDOMX_DATASET_ITEM_SIZE`
@@ -353,11 +324,9 @@ impl RandomXDataset {
         // Allocate fallibly: a plain `to_vec` of ~2 GB would call `handle_alloc_error` and abort the whole process
         // on failure, which is not an acceptable outcome for a library that returns a `Result`.
         let mut result = Vec::new();
-        result.try_reserve_exact(size_in_bytes).map_err(|e| {
-            RandomXError::Other(format!(
-                "Could not allocate {size_in_bytes} bytes for the dataset copy: {e}"
-            ))
-        })?;
+        result
+            .try_reserve_exact(size_in_bytes)
+            .map_err(|e| RandomXError::Other(format!("Could not allocate {size_in_bytes} bytes for the dataset copy: {e}")))?;
         result.extend_from_slice(data);
         Ok(result)
     }
@@ -398,37 +367,18 @@ impl RandomXVM {
     /// `cache` is a cache object, optional if FLAG_FULL_MEM is set.
     ///
     /// `dataset` is a dataset object, optional if FLAG_FULL_MEM is not set.
-    pub fn new(
-        flags: RandomXFlag,
-        cache: Option<RandomXCache>,
-        dataset: Option<RandomXDataset>,
-    ) -> Result<RandomXVM, RandomXError> {
+    pub fn new(flags: RandomXFlag, cache: Option<RandomXCache>, dataset: Option<RandomXDataset>) -> Result<RandomXVM, RandomXError> {
         let is_full_mem = flags.contains(RandomXFlag::FLAG_FULL_MEM);
         match (cache, dataset) {
             (None, None) => Err(RandomXError::CreationError("Failed to allocate VM".to_string())),
-            (None, _) if !is_full_mem => Err(RandomXError::FlagConfigError(
-                "No cache and FLAG_FULL_MEM not set".to_string(),
-            )),
-            (_, None) if is_full_mem => Err(RandomXError::FlagConfigError(
-                "No dataset and FLAG_FULL_MEM set".to_string(),
-            )),
+            (None, _) if !is_full_mem => Err(RandomXError::FlagConfigError("No cache and FLAG_FULL_MEM not set".to_string())),
+            (_, None) if is_full_mem => Err(RandomXError::FlagConfigError("No dataset and FLAG_FULL_MEM set".to_string())),
             (cache, dataset) => {
-                let cache_ptr = cache
-                    .as_ref()
-                    .map(|stash| stash.inner.cache_ptr)
-                    .unwrap_or_else(ptr::null_mut);
-                let dataset_ptr = dataset
-                    .as_ref()
-                    .map(|data| data.inner.dataset_ptr)
-                    .unwrap_or_else(ptr::null_mut);
+                let cache_ptr = cache.as_ref().map(|stash| stash.inner.cache_ptr).unwrap_or_else(ptr::null_mut);
+                let dataset_ptr = dataset.as_ref().map(|data| data.inner.dataset_ptr).unwrap_or_else(ptr::null_mut);
                 let vm = unsafe { randomx_create_vm(flags.bits, cache_ptr, dataset_ptr) };
-                Ok(RandomXVM {
-                    vm,
-                    flags,
-                    linked_cache: cache,
-                    linked_dataset: dataset,
-                })
-            },
+                Ok(RandomXVM { vm, flags, linked_cache: cache, linked_dataset: dataset })
+            }
         }
     }
 
@@ -436,9 +386,7 @@ impl RandomXVM {
     /// RandomXFlag::FLAG_FULL_MEM.
     pub fn reinit_cache(&mut self, cache: RandomXCache) -> Result<(), RandomXError> {
         if self.flags.contains(RandomXFlag::FLAG_FULL_MEM) {
-            Err(RandomXError::FlagConfigError(
-                "Cannot reinit cache with FLAG_FULL_MEM set".to_string(),
-            ))
+            Err(RandomXError::FlagConfigError("Cannot reinit cache with FLAG_FULL_MEM set".to_string()))
         } else {
             unsafe {
                 randomx_vm_set_cache(self.vm, cache.inner.cache_ptr);
@@ -458,9 +406,7 @@ impl RandomXVM {
             self.linked_dataset = Some(dataset);
             Ok(())
         } else {
-            Err(RandomXError::FlagConfigError(
-                "Cannot reinit dataset without FLAG_FULL_MEM set".to_string(),
-            ))
+            Err(RandomXError::FlagConfigError("Cannot reinit dataset without FLAG_FULL_MEM set".to_string()))
         }
     }
 

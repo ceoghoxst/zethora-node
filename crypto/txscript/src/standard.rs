@@ -191,7 +191,9 @@ mod tests {
                     ScriptVec::from_hex("21ba01fc5f4e9d9879599c69a3dafdb835a7255e5f2e934e9322ecd3af190ab0f60eab").unwrap(),
                 ),
                 prefix: Prefix::Testnet,
-                expected_address: Ok("zethoratest:qxaqrlzlf6wes72en3568khahq66wf27tuhfxn5nytkd8tcep2c0vrszx3gqx8d".try_into().unwrap()),
+                expected_address: Ok("zethoratest:qxaqrlzlf6wes72en3568khahq66wf27tuhfxn5nytkd8tcep2c0vrszx3gqx8d"
+                    .try_into()
+                    .unwrap()),
             },
             Test {
                 name: "Testnet non standard script",

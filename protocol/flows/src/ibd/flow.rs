@@ -94,7 +94,9 @@ impl IbdFlow {
                 info!("IBD started with peer {}", self.router);
 
                 match self.ibd(relay_block).await {
-                    Ok(_) => { info!("IBD with peer {} completed successfully", self.router); },
+                    Ok(_) => {
+                        info!("IBD with peer {} completed successfully", self.router);
+                    }
                     Err(e) => {
                         info!("IBD with peer {} completed with error: {}", self.router, e);
                         return Err(e);
@@ -240,7 +242,9 @@ impl IbdFlow {
         }
         match unorphaned_hashes.len() {
             0 => {}
-            n => { info!("IBD post processing: unorphaned {} blocks ...{}", n, unorphaned_hashes.last().unwrap()); },
+            n => {
+                info!("IBD post processing: unorphaned {} blocks ...{}", n, unorphaned_hashes.last().unwrap());
+            }
         }
 
         Ok(())

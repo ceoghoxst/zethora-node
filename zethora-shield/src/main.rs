@@ -1,4 +1,4 @@
-﻿//! zethora-shield: devnet tool for Zethora's private pool (ZTH-SPEC-006).
+//! zethora-shield: devnet tool for Zethora's private pool (ZTH-SPEC-006).
 //!
 //! Run from the zethora-node folder, with the node running with --devnet --utxoindex:
 //!
@@ -340,14 +340,14 @@ async fn shield(n: &Nodes, m: &Miner, amount: u64) {
             std::process::exit(1);
         }
     };
-    let change = entry
-        .amount
-        .checked_sub(amount + FEE)
-        .filter(|c| *c >= MIN_CHANGE)
-        .unwrap_or_else(|| {
-            eprintln!("Error: Largest mature coin is {} ZTH, but you are trying to shield {} ZTH + fee. Shield a smaller amount.", zthr(entry.amount), zthr(amount));
-            std::process::exit(1);
-        });
+    let change = entry.amount.checked_sub(amount + FEE).filter(|c| *c >= MIN_CHANGE).unwrap_or_else(|| {
+        eprintln!(
+            "Error: Largest mature coin is {} ZTH, but you are trying to shield {} ZTH + fee. Shield a smaller amount.",
+            zthr(entry.amount),
+            zthr(amount)
+        );
+        std::process::exit(1);
+    });
     let tx = visible_part(m, outpoint, change);
     println!("Making the private payment (proving key takes a few seconds the first time)...");
     let _ = proving_key();
@@ -393,7 +393,9 @@ async fn send(n: &Nodes, m: &Miner, amount: u64) {
 async fn unshield(n: &Nodes, m: &Miner, amount: u64) {
     println!("\nWARNING: YOU ARE EXITING THE PRIVACY POOL");
     println!("You are about to move funds from your private balance to a transparent address.");
-    println!("If you send this to a Centralized Exchange (CEX), they will require you to link this transaction to your real identity (KYC).");
+    println!(
+        "If you send this to a Centralized Exchange (CEX), they will require you to link this transaction to your real identity (KYC)."
+    );
     println!("Your transaction history will become visible. Only proceed if you intend to cash out.");
     print!("\nType 'yes' to confirm: ");
     std::io::Write::flush(&mut std::io::stdout()).unwrap();
@@ -806,8 +808,6 @@ fn finish_attack(blocked: usize, tried: usize) {
     }
 }
 
-
-
 async fn faucet(n: &Nodes, m: &Miner, dest: Address) {
     let amount = 1_000_000_000; // 1 ZTHR
     println!("Faucet: Preparing to send 1.0 ZTHR to {}...", dest);
@@ -841,12 +841,11 @@ async fn autoshield(n: &Nodes, m: &Miner) {
             in_flight.retain(|_, submitted_at| *submitted_at + IN_FLIGHT_TTL_TICKS > tick);
             in_flight.retain(|outpoint, _| all_coins.iter().any(|(o, _)| o == outpoint));
 
-            let coins: Vec<_> = all_coins
-                .into_iter()
-                .filter(|(outpoint, _)| !in_flight.contains_key(outpoint))
-                .collect();
+            let coins: Vec<_> = all_coins.into_iter().filter(|(outpoint, _)| !in_flight.contains_key(outpoint)).collect();
 
-            if coins.is_empty() { break; }
+            if coins.is_empty() {
+                break;
+            }
 
             let (outpoint, entry) = coins.into_iter().next().unwrap();
             let outpoint_tracked = outpoint.clone();
@@ -859,11 +858,7 @@ async fn autoshield(n: &Nodes, m: &Miner) {
             let amount = entry.amount - FEE - change;
             let tx = visible_part(m, outpoint, change);
             let digest = zethora_private_payment_digest(&tx);
-            let payment = match shielding_payment(
-                PrivateWallet::from_seed(&m.seed).address(),
-                amount,
-                &digest.as_bytes(),
-            ) {
+            let payment = match shielding_payment(PrivateWallet::from_seed(&m.seed).address(), amount, &digest.as_bytes()) {
                 Ok(p) => p,
                 Err(e) => {
                     eprintln!("Auto-shield: failed to build payment ({}), retrying next tick", e);
@@ -884,8 +879,7 @@ async fn autoshield(n: &Nodes, m: &Miner) {
                         // Coin is being spent by another tx (often one of ours
                         // from a previous run). Skip it for TTL — it will be
                         // pruned from visible_coins when the tx confirms.
-                        eprintln!("Auto-shield: skipping coin ({}), will retry after {}s",
-                                  err_str, IN_FLIGHT_TTL_TICKS * 10);
+                        eprintln!("Auto-shield: skipping coin ({}), will retry after {}s", err_str, IN_FLIGHT_TTL_TICKS * 10);
                         in_flight.insert(outpoint_tracked, tick);
                         continue;
                     } else {
