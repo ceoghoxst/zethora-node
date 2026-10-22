@@ -16,7 +16,7 @@
 //! (the chain is still read from node 1, which keeps the whole history).
 //!
 //! Both private wallets are derived from the miner's key file. Shielding pays its fee from a visible coin of the miner.
-//! Sending and unshielding are fully private (ZTH-SPEC-006 Ã‚Â§9): the fee comes out of your private coins, and the
+//! Sending and unshielding are fully private (ZTH-SPEC-006 Section 9): the fee comes out of your private coins, and the
 //! transaction has no visible coin in it at all.
 
 use kaspa_addresses::{Address, Prefix, Version};
@@ -669,7 +669,7 @@ async fn compare() {
     }
 }
 
-/// Step 4 (ZTH-SPEC-006 Ã‚Â§8): how fast this PC makes and checks private payments, and how that compares with the most
+/// Step 4 (ZTH-SPEC-006 Section 8): how fast this PC makes and checks private payments, and how that compares with the most
 /// private payments blocks can carry. Needs no node: it makes its own payments (into a throwaway private address) and
 /// checks them with the same function and key the node uses.
 fn speed() {

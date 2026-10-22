@@ -483,7 +483,7 @@ fn test_bind_addr_from_port_empty() {
     assert_eq!(bind_addr_from_port("   "), "");
 }
 
-// Stratum line buffer tests (issue #1017 â€” cap incomplete lines to prevent memory exhaustion)
+// Stratum line buffer tests (issue #1017 - cap incomplete lines to prevent memory exhaustion)
 #[cfg(test)]
 #[test]
 fn test_append_line_data_accepts_data_under_limit() {

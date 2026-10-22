@@ -476,7 +476,7 @@ impl Single for UtxosChangedSubscription {
                     MutationOutcome::with_mutated(current.clone(), mutations)
                 }
                 (UtxosChangedState::Selected, UtxosChangedMutation::Remove) => {
-                    // State Selected(S) + Mutation Remove(R) => Mutated state Selected(S â€“ R) or mutated new state None or no change
+                    // State Selected(S) + Mutation Remove(R) => Mutated state Selected(S - R) or mutated new state None or no change
                     let removed = data.unregister(scope.addresses, context);
                     match (removed.is_empty(), data.indexes.is_empty()) {
                         (false, false) => {
@@ -504,7 +504,7 @@ impl Single for UtxosChangedSubscription {
                     }
                 }
                 (UtxosChangedState::Selected, UtxosChangedMutation::Add) => {
-                    // State Selected(S) + Mutation Add(A) => Mutated state Selected(A âˆª S)
+                    // State Selected(S) + Mutation Add(A) => Mutated state Selected(A union S)
                     let added = data.register(scope.addresses, context)?;
                     match added.is_empty() {
                         false => {
