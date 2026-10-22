@@ -412,3 +412,14 @@ zethora-shielded::verify_payment, tx_validation_in_isolation::check_private_paym
 - **Update procedure**: `cd /root/zethora-node && git pull && cargo build --release --bin kaspad && install -m 0755 target/release/kaspad /usr/local/bin/zethora-node && systemctl restart zethora-seed`
 - **Logs**: `journalctl -u zethora-seed -f`
 - **Old root data dir** (`~/.rusty-kaspa` under `/root`) is unused and can be deleted later.
+
+2026-10-22 - docs\TESTNET-LAUNCH.md v0.1 drafted; CTO audit: CHANGES REQUIRED.
+Fixes due: (1) G1/seed use devnet port 26611; testnet needs its own port,
+--testnet seed flags and firewall rule; (2) regen steps need a print helper
+that computes the new merkle root and hash before test_genesis_hashes;
+(3) add G10 spends-off check for testnet params. Decisions: O1 approved
+(fresh Bitcoin block hash, ASCII hex, payload <= 300); O2 live evil-peer
+ban test required before strangers connect; O3 only the final-commit test
+result counts; O4 approved: remove exact duplicates only, mark stale lines
+with a dated correction (append-only). Timestamp stays provisional. No
+consensus code changed.
