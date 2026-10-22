@@ -49,18 +49,18 @@ Repo: github.com/ceoghoxst/zethora-node, branch `zethora` (a rusty-kaspa fork). 
    UTXO set; second waiting spend refused (RejectZethoraNullifierInMempool) unless it replaces the first by fee (same visible
    fee input); a block spending a coin evicts waiting spends of it. Orphans are checked when unorphaned. No stored-state change.
 7. Fully private payments (commit "Fully private payments: pay the fee from private coins"): a tx with NO visible input is
-   allowed if its private payment takes value out of the pool (value balance > 0 pays the fee, ZTH-SPEC-006 Â§9).
+   allowed if its private payment takes value out of the pool (value balance > 0 pays the fee, ZTH-SPEC-006 §9).
    Storage mass with zero inputs = outputs' harmonic part (no divide by zero). Wallet `send`/`unshield` are now fully
    private; `attack` has 3 checks (counterfeit, same coin twice at once -> mempool, same coin after it landed -> chain).
    Shielding still pays its fee from a visible coin (it has to: value enters the pool). No stored-state change.
-8. Ban peers relaying forged private payments (SPEC-006 Â§8.3): new TxRuleError::InvalidPrivatePaymentProof only when the
+8. Ban peers relaying forged private payments (SPEC-006 §8.3): new TxRuleError::InvalidPrivatePaymentProof only when the
    proof/signatures fail or a coin tag repeats inside one payment. The tx relay flow checks a peer's private payments in
    groups of 8 (after its ordinary txs), and at the first forged one bans the peer's IP for 24h (address manager;
    --connect/--addpeer peers exempt) and disconnects. No ban for: unreadable bytes (a newer node's format after an
    upgrade), chain-dependent refusals (coin spent, snapshot too recent), network switches (spends off, lock time).
    Only unit-tested: a live test needs a deliberately evil peer.
 9. Hardening (commit "Hardening: cheap private checks first, proof checks outside the virtual lock"): mempool
-   validation now runs (1) cheap private checks (coin tags unspent, snapshot matured; SPEC-006 Â§8.1) under a brief
+   validation now runs (1) cheap private checks (coin tags unspent, snapshot matured; SPEC-006 §8.1) under a brief
    virtual lock, (2) in-isolation checks incl. proof checks with NO virtual lock, (3) the rest under the lock, then the
    private checks again. Address manager never re-learns a banned IP (gossip or DNS seeds; --connect/--addpeer peers
    are still dialed by design). No stored-state change.
@@ -80,15 +80,15 @@ Repo: github.com/ceoghoxst/zethora-node, branch `zethora` (a rusty-kaspa fork). 
    utxo_set get_first_double_spend / get_double_spend_transaction_ids include coin-tag conflicts, so the normal RBF
    rules (higher fee rate wins; Forbidden refuses; Mandatory needs exactly one) cover private coins. Wallet: `bump 0.02`
    sends with a low fee then replaces it (submit_transaction_replacement) with 3x the fee.
-13. Private state fingerprint (SPEC-006 Â§6.4, step 3a of pruning-point sync): every coinbase now seals, after the
-   note root, a 32-byte MuHash over {'N'||nullifier spent on chain} âˆª {'A'||anchor root produced on chain}
+13. Private state fingerprint (SPEC-006 §6.4, step 3a of pruning-point sync): every coinbase now seals, after the
+   note root, a 32-byte MuHash over {'N'||nullifier spent on chain} ∪ {'A'||anchor root produced on chain}
    (processes/zethora_private_state.rs). Per-block unfinalized MuHash in store prefix 94 (zethora_private_states,
    deleted when pruned); ctx.private_state in calculate_utxo_state; VirtualState.private_state for templates.
    Coinbase layout: ... note_root 56..88, private_state 88..120, then script. DEVNET RESET REQUIRED (new block shape;
-   new devnet genesis hash 5563e86aâ€¦, recomputed in Python from the Rust hashing rules and checked against the old
+   new devnet genesis hash 5563e86a…, recomputed in Python from the Rust hashing rules and checked against the old
    values first). max_coinbase_payload_len raised 204 -> 300 on all networks (none launched).
    Next: 3b download+verify the private state at the pruning point (P2P), 3c live test with fast devnet pruning.
-14. Private state download at the pruning point (SPEC-006 Â§6.4, step 3b): a node joining from a pruning point P asks a
+14. Private state download at the pruning point (SPEC-006 §6.4, step 3b): a node joining from a pruning point P asks a
    peer for P's private state (new P2P messages RequestZethoraPrivateState / ZethoraPrivateStateHeader /
    ZethoraPrivateStateChunk / RequestNextZethoraPrivateStateChunk, oneof fields 90-93; server flow
    v10/request_zethora_private_state.rs, client ibd::receive_zethora_private_state called at the start of
@@ -132,7 +132,7 @@ Repo: github.com/ceoghoxst/zethora-node, branch `zethora` (a rusty-kaspa fork). 
    1,000,000 -> 12 private payments per block = 12/s at 1 bps. PC has 10.3x headroom over full blocks; mempool
    checker (3 threads) ~31/s. For step 18: blocks, not CPU, cap private throughput (PROOF_MASS_PER_ACTION 15,000 is
    conservative); switching block/mempool checks to batch checking is the big speed win. Privacy section A DONE.
-17. B5 reward schedule = 100M check (ZTH-SPEC-001 Â§5): consensus rule in zethora_supply::ledger_step: a block that
+17. B5 reward schedule = 100M check (ZTH-SPEC-001 §5): consensus rule in zethora_supply::ledger_step: a block that
    would bring total_issued above CAP_UNITS (100,000,000 ZTHR) is invalid (SupplyError::CapExceeded); never fires on
    an honest chain (backstop). zethora_subsidy: exact full-schedule walk (jumps while floor(R/D) is constant; matches
    a C reference and the node's step-by-step lookup): 50% at 8 y, 75% at 16, 93.75% at 32, 99.6% at 64; reward hits 0
@@ -142,7 +142,7 @@ Repo: github.com/ceoghoxst/zethora-node, branch `zethora` (a rusty-kaspa fork). 
    per-step drops telescope to reward(0), so total extra <= 2,824 x 0.2746 ~ 775 ZTHR < 1,000 reserve. The CapExceeded
    backstop makes an over-paying block invalid (the chain would stall, never overpay). full_emission_schedule walks
    the whole schedule only in release mode. No reset needed.
-18. B6a RandomZ (ZTH-SPEC-000 Â§4.4, SPEC-005 Â§5.1): randomx-rs v1.6.0 (tari, commit 6733ed4) vendored in ./randomz
+18. B6a RandomZ (ZTH-SPEC-000 §4.4, SPEC-005 §5.1): randomx-rs v1.6.0 (tari, commit 6733ed4) vendored in ./randomz
    (workspace dep `randomx-rs = { path = "randomz" }`, upstream tests removed since they check stock hashes). RandomX
    config changed only where RandomX documents it as safe: salt "RandomZ\x01", IROR/IROL 6/4, FADD_R/FSUB_R 15/17,
    FADD_M/FSUB_M 6/4 (configuration.h AND src/asm/configuration.asm for Windows MASM). Same memory/time cost as RandomX.
@@ -216,6 +216,8 @@ Repo: github.com/ceoghoxst/zethora-node, branch `zethora` (a rusty-kaspa fork). 
 
 ## Safety rules for Claude
 - Never promise coins, staking returns or paid hashrate. No token exists yet.
+- Do not claim "we detect farms", "we block farms" or "we prevent industrial mining". No such feature exists; any anti-farm idea is undecided and post-testnet.
+- Pools (decided Oct 22, 2026): documentation only (solo mining, and how a pool could use the stratum bridge). No official DeionRaven pool. Third-party pools welcome after testnet.
 - Don't route around network blocks; if crates.io is blocked in the sandbox, his PC compiles and Claude checks against library sources.
 
 ## Security verification log
@@ -345,7 +347,7 @@ verify_payment (zethora-shielded/src/lib.rs) does three checks:
 
 check_private_payment (tx_validation_in_isolation.rs:149) runs this before
 the ledger sees anything. A transaction that fails any check is rejected and
-its sender is banned (ZTH-SPEC-006 Â§8.3).
+its sender is banned (ZTH-SPEC-006 §8.3).
 
 Result: the value the ledger trusts is provably the same value the proof
 verifies. A single-byte change to the value balance fails both the spend
@@ -380,7 +382,7 @@ verify_payment (zethora-shielded/src/lib.rs) does three checks:
 
 check_private_payment (tx_validation_in_isolation.rs:149) runs this before
 the ledger sees anything. A transaction that fails any check is rejected and
-its sender is banned (ZTH-SPEC-006 Â§8.3).
+its sender is banned (ZTH-SPEC-006 §8.3).
 
 Result: the value the ledger trusts is provably the same value the proof
 verifies. A single-byte change to the value balance fails both the spend
