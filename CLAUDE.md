@@ -423,3 +423,8 @@ ban test required before strangers connect; O3 only the final-commit test
 result counts; O4 approved: remove exact duplicates only, mark stale lines
 with a dated correction (append-only). Timestamp stays provisional. No
 consensus code changed.
+
+2026-10-22 - Roadmap #7 (provisional): test_genesis_hashes PASS on current
+commit (1 passed, 0 failed). Hashes in genesis.rs: mainnet b819b739,
+testnet d52ed6a6 (provisional), devnet 5563e86a; all 0 coins, Zethora
+messages. Must pass again on the final testnet regen commit (TESTNET-LAUNCH G9).
