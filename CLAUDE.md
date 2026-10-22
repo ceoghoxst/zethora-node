@@ -392,3 +392,11 @@ The code is correct as written. No fix needed.
 
 Reference: zethora-supply ledger_step, zethora_private::pool_flows,
 zethora-shielded::verify_payment, tx_validation_in_isolation::check_private_payment.
+### Oct 21, 2026: Live PC <-> Seed Sync Verified
+- **Hetzner Seed (95.216.185.137)**: Running --devnet --utxoindex --disable-upnp --nodnsseed as **root** (open security item, no auto-restart). Rebuilt to commit 3f5bfb7.
+- **Sync Verified**: Seed node is accepting blocks from Deion's PC via relay every 1-2 seconds.
+- **Root Causes Fixed**:
+    1. Seed was running an old build (Oct 17).
+    2. Hardcoded seed IP in params.rs made the seed dial itself.
+    3. No miner was running on the PC.
+- **Outcome**: The disconnect loop is fixed. (Not an IBD deadlock).

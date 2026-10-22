@@ -40,7 +40,6 @@ const MIN_PAYLOAD_LENGTH: usize = LENGTH_OF_BLUE_SCORE
 
 // We define a year as 365.25 days and a month as 365.25 / 12 = 30.4375
 // SECONDS_PER_MONTH = 30.4375 * 24 * 60 * 60
-const SECONDS_PER_MONTH: u64 = 2629800;
 
 #[derive(Clone)]
 pub struct CoinbaseManager {
