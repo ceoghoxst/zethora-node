@@ -424,3 +424,9 @@ regression (zethoradev:, old key, BALANCED), local testnet smoke
 (zethoratest:, DAA 0, BALANCED), --tesnet rejected. CTO APPROVED.
 Not consensus code. Deferred: 2-thread reading under cargo run (check at
 preflight); devnet seed resets every ~15 s (low priority).
+
+2026-10-23 - crypto/addresses: Prefix serde renames kaspa* -> zethora*
+(matching Display/FromStr); doc comment fixed; test
+prefix_serde_name_matches_display (failed before: "unknown variant
+zethora", passes after). Address JSON already used Display; no behavior
+change on any current path. Commit 660b2437. CTO APPROVED.
