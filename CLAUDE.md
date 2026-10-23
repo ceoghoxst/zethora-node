@@ -416,3 +416,11 @@ plan. CTO APPROVED with 3 fixes. Note: the exact-duplicate removal
 CLAUDE.md:365-398 approved by CTO was NOT applied this session (line
 counts changed since the audit; deferred to avoid touching the wrong
 lines). Follow-up needed.
+
+2026-10-23 - zethora-miner: --testnet option (gRPC 26210, key file
+zethora-miner-key-testnet.txt, zethoratest: prefix, exit 3 on prefix
+mismatch); strict args (unknown -> usage, exit 2). Verified: devnet
+regression (zethoradev:, old key, BALANCED), local testnet smoke
+(zethoratest:, DAA 0, BALANCED), --tesnet rejected. CTO APPROVED.
+Not consensus code. Deferred: 2-thread reading under cargo run (check at
+preflight); devnet seed resets every ~15 s (low priority).

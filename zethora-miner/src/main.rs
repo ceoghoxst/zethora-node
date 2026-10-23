@@ -1,16 +1,17 @@
-//! Zethora devnet CPU miner (prototype).
+//! Zethora CPU miner (prototype). Devnet by default; pass --testnet for testnet.
 //!
 //! Connects to a local Zethora node, asks it for a block template, searches for a
 //! valid nonce on all CPU threads with RandomZ (fast mode), and submits the block.
 //! Repeats forever. Needs about 2.5 GB of RAM. The mining key changes every 2^20 DAA
 //! scores (about 12 days); the miner then rebuilds its dataset (about half a minute).
 //!
-//! Usage:  cargo run --release --bin zethora-miner
-//! The node must be running with:  --devnet --enable-unsynced-mining
+//! Usage:
+//!   zethora-miner             devnet (node must run with: --devnet --enable-unsynced-mining)
+//!   zethora-miner --testnet   testnet (node must run with: --testnet --enable-unsynced-mining)
+//!   zethora-miner bench       RandomZ speed test; no node needed, stop the real miner first
 //!
-//! Speed test (no node needed, stop the real miner first):  cargo run --release -p zethora-miner -- bench
-//!
-//! The miner keeps its key in `zethora-miner-key.txt` (devnet test coins only).
+//! Key files: zethora-miner-key.txt (devnet) and zethora-miner-key-testnet.txt (testnet).
+//! Keys are never shared between networks.
 
 use kaspa_addresses::{Address, Prefix, Version};
 use kaspa_consensus_core::{header::Header, network::NetworkType};
@@ -25,22 +26,24 @@ use std::{
     time::{Duration, Instant},
 };
 
-const NODE_URL: &str = "grpc://127.0.0.1:26610";
-const KEY_FILE: &str = "zethora-miner-key.txt";
+const DEVNET_NODE_URL: &str = "grpc://127.0.0.1:26610";
+const TESTNET_NODE_URL: &str = "grpc://127.0.0.1:26210";
+const DEVNET_KEY_FILE: &str = "zethora-miner-key.txt";
+const TESTNET_KEY_FILE: &str = "zethora-miner-key-testnet.txt";
 /// Get a fresh template this often, so we always build on the newest blocks.
 const TEMPLATE_REFRESH: Duration = Duration::from_millis(1000);
 const ZETS_PER_ZTHR: f64 = 10_000_000_000.0;
 
-fn load_or_create_key() -> Keypair {
-    if let Ok(hex) = std::fs::read_to_string(KEY_FILE) {
+fn load_or_create_key(key_file: &str) -> Keypair {
+    if let Ok(hex) = std::fs::read_to_string(key_file) {
         let bytes: Vec<u8> = (0..64).step_by(2).map(|i| u8::from_str_radix(&hex.trim()[i..i + 2], 16).unwrap()).collect();
         let sk = SecretKey::from_slice(&bytes).expect("bad key file");
         return Keypair::from_secret_key(SECP256K1, &sk);
     }
     let kp = Keypair::new(SECP256K1, &mut secp256k1::rand::thread_rng());
     let hex: String = kp.secret_key().secret_bytes().iter().map(|b| format!("{b:02x}")).collect();
-    std::fs::write(KEY_FILE, hex).expect("cannot write key file");
-    println!("Created new devnet mining key in {KEY_FILE}");
+    std::fs::write(key_file, hex).expect("cannot write key file");
+    println!("Created new mining key in {key_file}");
     kp
 }
 
@@ -131,15 +134,40 @@ fn bench() {
 
 #[tokio::main]
 async fn main() {
-    if std::env::args().nth(1).as_deref() == Some("bench") {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let usage = "Usage:\n  zethora-miner             devnet (node: --devnet --enable-unsynced-mining)\n  zethora-miner --testnet   testnet (node: --testnet --enable-unsynced-mining)\n  zethora-miner bench       RandomZ speed test (no node)";
+    let (testnet, is_bench) = match args.as_slice() {
+        [] => (false, false),
+        [a] if a == "--testnet" => (true, false),
+        [a] if a == "bench" => (false, true),
+        _ => {
+            eprintln!("{usage}");
+            std::process::exit(2);
+        }
+    };
+    if is_bench {
         return tokio::task::spawn_blocking(bench).await.expect("speed test");
     }
-    let kp = load_or_create_key();
-    let address = Address::new(Prefix::from(NetworkType::Devnet), Version::PubKey, &kp.x_only_public_key().0.serialize());
-    println!("Zethora devnet miner");
+    let network = if testnet { NetworkType::Testnet } else { NetworkType::Devnet };
+    let node_url = if testnet { TESTNET_NODE_URL } else { DEVNET_NODE_URL };
+    let key_file = if testnet { TESTNET_KEY_FILE } else { DEVNET_KEY_FILE };
+    let network_name = if testnet { "testnet" } else { "devnet" };
+    let kp = load_or_create_key(key_file);
+    let address = Address::new(Prefix::from(network), Version::PubKey, &kp.x_only_public_key().0.serialize());
+    println!("Zethora {network_name} miner");
+    println!("Network:  {network_name}");
+    println!("Key file: {key_file}");
+    println!("Node URL: {node_url}");
     println!("Paying rewards to: {address}");
+    // Defensive check: refuse to mine if the address prefix does not match the network.
+    let addr_str = address.to_string();
+    let expected_prefix = if testnet { "zethoratest:" } else { "zethoradev:" };
+    if !addr_str.starts_with(expected_prefix) {
+        eprintln!("BUG: {network_name} address does not start with {expected_prefix} (got {addr_str}). Exiting to avoid paying to the wrong network.");
+        std::process::exit(3);
+    }
 
-    let client = GrpcClient::connect(NODE_URL.to_string()).await.expect("Cannot reach the node. Is it running with --devnet?");
+    let client = GrpcClient::connect(node_url.to_string()).await.expect("Cannot reach the node. Is it running with the matching network flag (--devnet or --testnet)?");
     let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
     println!("Mining on {threads} threads. Press Ctrl+C to stop.\n");
 
