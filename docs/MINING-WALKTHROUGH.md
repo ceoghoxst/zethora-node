@@ -1,5 +1,7 @@
 # Mining on Zethora Devnet
 
+Devnet is a private test network for the Zethora team. It is not public, coins have no value, and nothing carries over to testnet or mainnet. No token exists.
+
 Once your node is running, you can start mining. The miner connects to your local node to get block templates and submits solved blocks.
 
 ## Prerequisites
@@ -25,6 +27,8 @@ If you see `BALANCED`, the miner has successfully mined a block, and the supply 
 Zethora uses RandomZ, a CPU-friendly proof-of-work algorithm.
 On a modern desktop CPU, you can expect roughly 1,000 to 1,500 hashes per second.
 The devnet difficulty is set so that a normal home computer will find blocks regularly.
+
+Devnet difficulty is set low for testing. This does not describe testnet or mainnet. Devnet coins have no value and do not carry over to testnet or mainnet.
 
 ## Stopping the miner
 

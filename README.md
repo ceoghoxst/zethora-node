@@ -120,7 +120,9 @@ named credit in the specs.
 
 ---
 
-## Building and running
+## Team devnet docs (devnet is a private test network, not for public use)
+
+Devnet is a private test network for the Zethora team. It is not public, coins have no value, and nothing carries over to testnet or mainnet. No token exists.
 
 Setup guide: [docs/WINDOWS-GETTING-STARTED.md](docs/WINDOWS-GETTING-STARTED.md)
 

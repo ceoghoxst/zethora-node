@@ -1,4 +1,6 @@
-# Zethora on Windows - Getting Started
+# Zethora Devnet on Windows - Getting Started
+
+Devnet is a private test network for the Zethora team. It is not public, coins have no value, and nothing carries over to testnet or mainnet. No token exists.
 
 This guide takes a fresh Windows PC to a running Zethora devnet node and miner.
 
@@ -96,6 +98,8 @@ You need to reset the devnet database. Add `--reset-db --yes` to your kaspad com
 ## Alternative: Running with Docker
 
 If you have [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed, you can run a Zethora node without installing Rust, Clang, or CMake.
+
+The binary inside the container is kaspad (the devnet name). The zethora-node.exe name is only used in the release zip.
 
 ### 1. Build the Docker Image
 Open PowerShell in the root of the `zethora-node` repository and run:
