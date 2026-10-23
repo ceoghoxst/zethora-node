@@ -36,3 +36,4 @@ consensus/core/zethora_genesis_values.txt
 
 # Local log files
 *.log
+zethora-miner-key-testnet.txt
