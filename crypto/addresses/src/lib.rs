@@ -67,17 +67,17 @@ pub enum AddressError {
     WASM(String),
 }
 
-/// Address prefix identifying the network type this address belongs to (such as `kaspa`, `kaspatest`, `kaspasim`, `kaspadev`).
+/// Address prefix identifying the network type this address belongs to (such as `zethora`, `zethoratest`, `zethorasim`, `zethoradev`).
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug, Hash, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 #[borsh(use_discriminant = true)]
 pub enum Prefix {
-    #[serde(rename = "kaspa")]
+    #[serde(rename = "zethora")]
     Mainnet,
-    #[serde(rename = "kaspatest")]
+    #[serde(rename = "zethoratest")]
     Testnet,
-    #[serde(rename = "kaspasim")]
+    #[serde(rename = "zethorasim")]
     Simnet,
-    #[serde(rename = "kaspadev")]
+    #[serde(rename = "zethoradev")]
     Devnet,
     #[cfg(test)]
     A,
@@ -485,6 +485,22 @@ impl<'de> Deserialize<'de> for Address {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn prefix_serde_name_matches_display() {
+        use serde::de::value::StrDeserializer;
+        use serde::de::IntoDeserializer;
+        for (p, expected) in [
+            (Prefix::Mainnet, "zethora"),
+            (Prefix::Testnet, "zethoratest"),
+            (Prefix::Simnet, "zethorasim"),
+            (Prefix::Devnet, "zethoradev"),
+        ] {
+            assert_eq!(p.to_string(), expected);
+            let d: StrDeserializer<'_, serde::de::value::Error> = expected.into_deserializer();
+            assert_eq!(<Prefix as serde::Deserialize>::deserialize(d).unwrap(), p);
+        }
+    }
+
     extern crate std;
 
     use crate::*;
