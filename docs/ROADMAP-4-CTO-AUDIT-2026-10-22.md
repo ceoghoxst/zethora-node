@@ -1,0 +1,1 @@
+[IO.File]::WriteAllText("C:\Users\Rac436\zethora-node\docs\ROADMAP-4-CTO-AUDIT-2026-10-22.md", (Get-Clipboard -Raw), [Text.UTF8Encoding]::new($false)); $c = Get-Content "C:\Users\Rac436\zethora-node\docs\ROADMAP-4-CTO-AUDIT-2026-10-22.md" -Raw; "Length: $($c.Length)"; "First 50: " + $c.Substring(0, [Math]::Min(50, $c.Length))
