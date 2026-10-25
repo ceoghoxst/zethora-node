@@ -28,7 +28,7 @@ use kaspa_consensus_core::{
     sign::sign,
     subnets::{SUBNETWORK_ID_COINBASE, SUBNETWORK_ID_NATIVE},
     tx::{ComputeCommit, MutableTransaction, Transaction, TransactionInput, TransactionOutpoint, TransactionOutput, UtxoEntry},
-    zethora_private::{ANCHOR_DEPTH, PRIVATE_PAYMENT_MAGIC, private_payment_bytes},
+    zethora_private::{PRIVATE_PAYMENT_MAGIC, private_payment_bytes},
 };
 use kaspa_grpc_client::GrpcClient;
 use kaspa_rpc_core::{RpcDataVerbosityLevel, api::rpc::RpcApi};
@@ -186,7 +186,7 @@ async fn scan(client: &GrpcClient, m: &Miner) -> Scanner {
 
 async fn try_scan(client: &GrpcClient, m: &Miner) -> Result<Scanner, String> {
     let tip = client.get_sink_blue_score().await.map_err(|e| e.to_string())?;
-    let deep_enough = tip.saturating_sub(ANCHOR_DEPTH + SAFETY_MARGIN);
+    let deep_enough = tip.saturating_sub(DEVNET_PARAMS.anchor_depth + SAFETY_MARGIN);
     let mut scanner = Scanner::new(wallets(m));
     let mut start = DEVNET_PARAMS.genesis.hash;
     let mut snapshot_taken = false;

@@ -88,7 +88,8 @@ pub fn private_state_spent_element(nullifier: &[u8; 32]) -> [u8; 33] {
 /// A coin list snapshot (anchor) as a member of the private state fingerprint (see `private_state_spent_element`),
 /// together with the blue score of the chain block that produced it. The blue score decides when a spend may use the
 /// snapshot (`ANCHOR_DEPTH`), so it is sealed too: a node joining from a pruning point gets every snapshot's age from
-/// its peer and the fingerprint proves the ages are right.
+/// its peer and the fingerprint proves the ages are right. Note: consensus reads Params::anchor_depth;
+/// this constant is the default used to build the network params.
 pub fn private_state_anchor_element(root: &[u8; 32], blue_score: u64) -> [u8; 41] {
     let mut e = [0u8; 41];
     e[0] = b'A';

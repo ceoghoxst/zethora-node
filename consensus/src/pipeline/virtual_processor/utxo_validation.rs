@@ -442,7 +442,7 @@ impl VirtualStateProcessor {
         }
         let Ok(tip_blue_score) = self.headers_store.get_blue_score(selected_parent) else { return false };
         producers.into_iter().any(|p| {
-            p.blue_score.saturating_add(zethora_private::ANCHOR_DEPTH) <= tip_blue_score
+            p.blue_score.saturating_add(self.anchor_depth) <= tip_blue_score
                 && (p.block == ANCHORED_FOR_GOOD
                     || self.reachability_service.try_is_chain_ancestor_of(p.block, selected_parent).unwrap_or(false))
         })
@@ -465,7 +465,7 @@ impl VirtualStateProcessor {
         {
             return Err(TxRuleError::InvalidPrivatePayment(format!(
                 "spend uses an unknown or too recent private coin list snapshot (it must be at least {} blocks deep)",
-                zethora_private::ANCHOR_DEPTH
+                self.anchor_depth
             )));
         }
         Ok(())

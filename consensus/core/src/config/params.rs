@@ -346,6 +346,10 @@ pub struct Params {
     pub max_block_level: BlockLevel,
     pub pruning_proof_m: u64,
 
+    /// Zethora (ZTH-SPEC-006 §6.2): minimum blue score depth of a private coin list
+    /// snapshot before it can be spent. 600 on all real networks. Tests may override.
+    pub anchor_depth: u64,
+
     /// Blockrate-related params
     pub blockrate: BlockrateParams,
 
@@ -488,6 +492,7 @@ impl Params {
             dns_seeders: self.dns_seeders,
             net: self.net,
             genesis: self.genesis.clone(),
+            anchor_depth: self.anchor_depth,
 
             timestamp_deviation_tolerance: overrides.timestamp_deviation_tolerance.unwrap_or(self.timestamp_deviation_tolerance),
 
@@ -585,6 +590,7 @@ pub const MAINNET_PARAMS: Params = Params {
     dns_seeders: &[],
     net: NetworkId::new(NetworkType::Mainnet),
     genesis: GENESIS,
+    anchor_depth: 600,
     timestamp_deviation_tolerance: TIMESTAMP_DEVIATION_TOLERANCE,
     max_difficulty_target: MAX_DIFFICULTY_TARGET,
     max_difficulty_target_f64: MAX_DIFFICULTY_TARGET_AS_F64,
@@ -636,6 +642,7 @@ pub const TESTNET_PARAMS: Params = Params {
     dns_seeders: &[],
     net: NetworkId::with_suffix(NetworkType::Testnet, 10),
     genesis: TESTNET_GENESIS,
+    anchor_depth: 600,
     timestamp_deviation_tolerance: TIMESTAMP_DEVIATION_TOLERANCE,
     max_difficulty_target: MAX_DIFFICULTY_TARGET,
     max_difficulty_target_f64: MAX_DIFFICULTY_TARGET_AS_F64,
@@ -685,6 +692,7 @@ pub const SIMNET_PARAMS: Params = Params {
     dns_seeders: &[],
     net: NetworkId::new(NetworkType::Simnet),
     genesis: SIMNET_GENESIS,
+    anchor_depth: 600,
     timestamp_deviation_tolerance: TIMESTAMP_DEVIATION_TOLERANCE,
     max_difficulty_target: MAX_DIFFICULTY_TARGET,
     max_difficulty_target_f64: MAX_DIFFICULTY_TARGET_AS_F64,
@@ -727,6 +735,7 @@ pub const DEVNET_PARAMS: Params = Params {
     dns_seeders: &[],
     net: NetworkId::new(NetworkType::Devnet),
     genesis: DEVNET_GENESIS,
+    anchor_depth: 600,
     timestamp_deviation_tolerance: TIMESTAMP_DEVIATION_TOLERANCE,
     max_difficulty_target: MAX_DIFFICULTY_TARGET,
     max_difficulty_target_f64: MAX_DIFFICULTY_TARGET_AS_F64,
@@ -768,6 +777,20 @@ pub const DEVNET_PARAMS: Params = Params {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn all_real_networks_use_anchor_depth_600() {
+        assert_eq!(MAINNET_PARAMS.anchor_depth, 600);
+        assert_eq!(TESTNET_PARAMS.anchor_depth, 600);
+        assert_eq!(SIMNET_PARAMS.anchor_depth, 600);
+        assert_eq!(DEVNET_PARAMS.anchor_depth, 600);
+    }
+
+    #[test]
+    fn override_params_cannot_change_anchor_depth() {
+        let err = serde_json::from_str::<OverrideParams>(r#"{"anchor_depth":10}"#).unwrap_err();
+        assert!(err.to_string().contains("unknown field `anchor_depth`"), "{err}");
+    }
 
     #[test]
     fn override_params_rejects_unknown_top_level_fields() {
@@ -831,7 +854,7 @@ mod tests {
         assert!(p.difficulty_window_duration_in_block_units() < pruning, "difficulty window must fit above the pruning point");
         assert!(p.past_median_time_window_size as u64 * p.past_median_time_sample_rate < pruning);
         assert!(p.min_difficulty_window_size <= p.difficulty_window_size);
-        assert!(pruning > crate::zethora_private::ANCHOR_DEPTH, "private coin snapshots must mature above the pruning point too");
+        assert!(pruning > p.anchor_depth, "private coin snapshots must mature above the pruning point too");
         assert_eq!(p.target_time_per_block, DEVNET_PARAMS.target_time_per_block, "same block rate as the normal devnet");
         assert_eq!(p.genesis.hash, DEVNET_PARAMS.genesis.hash);
     }

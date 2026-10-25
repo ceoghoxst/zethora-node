@@ -130,6 +130,7 @@ pub struct VirtualStateProcessor {
     pub(super) max_block_parents: u8,
     pub(super) mergeset_size_limit: u64,
     pub(super) finality_depth: u64,
+    pub(super) anchor_depth: u64,
     pub(super) mempool_mass_cofactors: kaspa_consensus_core::mass::MassCofactors,
     pub(super) block_version: u16,
 
@@ -278,6 +279,7 @@ impl VirtualStateProcessor {
             smt_metadata_store: storage.smt_metadata_store.clone(),
             _mining_rules: mining_rules,
             finality_depth: params.finality_depth(),
+            anchor_depth: params.anchor_depth,
         }
     }
 
