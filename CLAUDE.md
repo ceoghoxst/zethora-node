@@ -19,6 +19,10 @@ Repo: github.com/ceoghoxst/zethora-node, branch `zethora` (a rusty-kaspa fork). 
 - Always say which window each command goes in (node window, miner window, third window), one command per box.
 - PC: Ryzen 5 2600, 16 GB, Windows 11. Devnet runs at about 1 block per second with his one miner.
 
+2026-10-24 - Two PCs: Ryzen 5 2600 (12 threads, C:\Users\deion) = reference
+for performance numbers and launch gates; 2-core PC (C:\Users\Rac436) =
+valid for correctness tests only. Every performance number must name the PC.
+
 ## Run commands (devnet)
 - Node: `cargo run --release --bin kaspad -- --devnet --utxoindex --enable-unsynced-mining` (add `--reset-db --yes` only when a patch changes stored state)
 - Miner: `cargo run --release -p zethora-miner` (prints a Supply check line per block: must say BALANCED)
