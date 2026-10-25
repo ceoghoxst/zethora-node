@@ -10,6 +10,16 @@ This zip contains two programs and supporting files.
   LICENSE.txt               ISC License (Zethora inherits it from Kaspa)
   THIRD-PARTY-NOTICES.txt   licenses for bundled components
 
+SYSTEM REQUIREMENTS
+
+- 64-bit Windows 10 or 11.
+- Memory: the miner needs about 2.5 GB free, on top of Windows and the
+  node. With less, Windows swaps to disk and mining nearly stops.
+  8 GB total is the practical minimum; 16 GB recommended.
+- Speed grows with CPU cores and cache. Measured:
+    Ryzen 5 2600, 16 GB:            to be measured with this build
+    Athlon Silver 3050U, 5.9 GB:    1-2 H/s (not enough free memory)
+
 VERIFY THE DOWNLOAD
 
 In PowerShell, run:
