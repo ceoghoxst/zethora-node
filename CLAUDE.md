@@ -443,3 +443,10 @@ failed pre-G11 and passes; kaspa-consensus lib 108/108; devnet shield,
 send, attack 3/3 BALANCED; testnet 116 blocks BALANCED; zethora-shield
 refuses on testnet (exit 2). Commit 02a0b383. Audit packet re-frozen.
 CTO APPROVED.
+
+2026-10-25 - STANDING RULE (test discipline): any test that claims a
+security property must have (1) a positive control (the honest case is
+accepted), (2) exact assertions (== not <=), and (3) a
+fail-when-protection-removed proof shown in the packet. Reason: the
+sibling double-spend e2e passed while proving nothing (coin never on
+chain; <= 1 passed with 0).
