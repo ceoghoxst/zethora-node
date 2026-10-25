@@ -430,3 +430,12 @@ preflight); devnet seed resets every ~15 s (low priority).
 prefix_serde_name_matches_display (failed before: "unknown variant
 zethora", passes after). Address JSON already used Display; no behavior
 change on any current path. Commit 660b2437. CTO APPROVED.
+
+2026-10-24 - G11: testnet/mainnet refuse ALL private payments (shield,
+send, unshield) before decode (tx_validation_in_isolation.rs:168-170).
+Closes the one-way shielding trap. Side effect: no proof-based peer bans
+on testnet/mainnet (refusal costs no proof work). Verified: new test
+failed pre-G11 and passes; kaspa-consensus lib 108/108; devnet shield,
+send, attack 3/3 BALANCED; testnet 116 blocks BALANCED; zethora-shield
+refuses on testnet (exit 2). Commit 02a0b383. Audit packet re-frozen.
+CTO APPROVED.
