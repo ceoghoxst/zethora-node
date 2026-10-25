@@ -192,14 +192,16 @@ The turnstile arithmetic itself is a pure function, unit-tested (`turnstile_is_s
 
 ### §7.3 — The emergency switch
 
-Private spends are gated behind a per-network flag (`private_spends_enabled`), set at the consensus-parameter level:
+Private payments are gated behind a per-network flag (`private_spends_enabled`), set from the network type when consensus services are built (consensus/src/consensus/services.rs).
 
-- **`spends_enabled = false` (level a).** Private sends are rejected at isolation time. Shielding still works (one-way INTO the pool). Testnet and mainnet run this setting until an external audit of the Orchard integration is complete.
-- **`spends_enabled = true`.** Private sends are allowed. Isolation checks pass, and contextual rules (§6.2, §6.3) enforce correctness. Devnet and simnet run this setting.
+- **`spends_enabled = false` (level a).** No private payment of any kind is accepted at isolation time. That covers shielding (adding coins to the pool), private sends, and unshielding. The refusal fires before the codec decode and before the Orchard proof check. Testnet and mainnet run this setting until an external audit of the Orchard integration is complete.
+- **`spends_enabled = true`.** Private payments are allowed. Isolation checks pass, and contextual rules (§6.2, §6.3) enforce correctness. Devnet and simnet run this setting.
 
-Shielding works regardless of the switch, because adding coins to the pool is bounded in failure mode — the coin either enters correctly or the tx is rejected. Withdrawing requires the full spend machinery, whose failure mode includes money creation, so it is gated.
+Level (a) is a full block, not a partial one. An earlier version of the code allowed shielding on testnet/mainnet while blocking spends, which created a one-way trap: a user who shielded on testnet had no way to withdraw. Level (a) closes that trap by refusing all private payments.
 
-**TBD:** the code comment "level (a)" implies additional planned levels. Their semantics and gating rules are not specified.
+**Ban behavior.** G11 removes proof-based banning for private payments on testnet/mainnet: every private payment is refused before decode, so none reaches the proof check. This is acceptable because the refusal costs no proof work, which removes the DoS reason for the ban. The repeated-tag ban (also checked after decode) stops running on testnet for the same reason. Devnet/simnet banning is unchanged.
+
+Level (a) is fully specified now. Levels (b) and (c) are not implemented; if ever added, they will be specified then.
 
 ### §7.4 — Pool versions
 
@@ -281,7 +283,8 @@ Test: `fully_private_payment_needs_no_visible_coin` in `tx_validation_in_isolati
 | `parallel_blocks_spending_same_nullifier_are_counted_once` (ignored) | `pipeline/tests/zethora_parallel_nullifier.rs` | §6.3 (needs 601-block setup) |
 | `fully_private_payment_needs_no_visible_coin` | `tx_validation_in_isolation.rs` | §9 |
 | `valid_shielding_payment_is_accepted_and_bound_to_its_transaction` | `tx_validation_in_isolation.rs` | §4 |
-| `shielding_is_accepted_with_spends_on_or_off` | `tx_validation_in_isolation.rs` | §7.3 |
+| `shielding_is_accepted_when_spends_on` | `tx_validation_in_isolation.rs` | §7.3 (devnet/simnet path) |
+| `private_payments_are_refused_when_spends_off` | `tx_validation_in_isolation.rs` | §7.3 (testnet/mainnet path; fails on pre-G11 code) |
 | `reorg_disconnects_anchor_producer_from_selected_chain` | `pipeline/tests/zethora_anchor_reorg.rs` | §6.2 (reorg transition) |
 
 ## Appendix C — Open questions for review
@@ -290,7 +293,7 @@ Specific questions an external reviewer should examine. These are the "here is w
 
 1. **Parallel nullifier end-to-end.** Layers 3 and 4 of §6.3 are believed correct from code inspection. The end-to-end integration test requires 601 blocks of anchor-maturity setup and is not automated.
 2. **Anchor reorg behavior.** The core reorg transition is partially covered by a regression test (`consensus/src/pipeline/tests/zethora_anchor_reorg.rs`): `try_is_chain_ancestor_of` returns `true` before a reorg disconnects the producer, and `false` after. The full end-to-end path (real anchor + spend + reorg) is still deferred — it needs 601-block anchor-maturity setup (see item 1).
-3. **Emergency switch levels.** Only level (a) is implemented; (b)/(c) are implied but not defined.
+3. **Emergency switch levels.** ~~Only level (a) is implemented; (b)/(c) are implied but not defined.~~ **Closed 2026-10-23.** Level (a) is fully specified in §7.3: testnet and mainnet refuse every private payment (shielding, sends, unshield) at isolation time, before decode and proof. Devnet and simnet accept all. Levels (b) and (c) are not implemented; if ever added, they will be specified then.
 4. **Payload wire format byte layout.** Implemented in `codec.rs`; the spec defers to code.
 5. **Pruning-point download resumability.** If a node is missing its private state (for example, the private-state download from a pruning point did not finish), it stops with a clear panic message telling the operator to restart with --reset-db. It does not continue with partial state. Automatic retry of an interrupted download is not implemented. A malicious peer could repeatedly interrupt the download to deny service to a joining node.
 6. **Fingerprint MuHash element collision.** Spent-element is 33 bytes (1-byte tag + 32 nullifier); anchor-element is 41 bytes (1-byte tag + 32 root + 8 blue score). Reviewer should verify these cannot collide.
@@ -303,4 +306,6 @@ Specific questions an external reviewer should examine. These are the "here is w
 | Version | Date | Changes |
 |---|---|---|
 | 0.1 | 2026-10-19 | Initial consolidation from code citations. Sections §4, §5, §6.1–§6.4, §7.1–§7.4, §8.1, §8.3, §9 specified. §8.2 and parts of §4 marked TBD. |
+| 0.2 | 2026-10-19 | Appendix C item 2: anchor reorg transition covered by consensus/src/pipeline/tests/zethora_anchor_reorg.rs. Version bumped. |
+| 0.3 | 2026-10-23 | §7.3 level (a) fully specified: testnet and mainnet refuse ALL private payments (shielding, private sends, unshielding), not only spends. Refusal fires at isolation time, before decode and proof. Tests split into `shielding_is_accepted_when_spends_on` and `private_payments_are_refused_when_spends_off`; the second is shown failing on pre-G11 code. Appendix C item 3 closed. Appendix B row split. |
 | 0.2 | 2026-10-19 | Appendix C item 2: anchor reorg transition covered by consensus/src/pipeline/tests/zethora_anchor_reorg.rs. Version bumped. |

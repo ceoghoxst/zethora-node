@@ -143,7 +143,7 @@ fn private_payment_verifying_key() -> &'static zethora_shielded::orchard::circui
 /// payment whose signatures and proof check out, bound to this exact transaction.
 ///
 /// Emergency switch (§7.3), level (a): when `spends_enabled` is false (testnet and mainnet until an outside audit),
-/// coins may only move INTO the private pool. When it is true (devnet, simnet), spends are allowed here and their
+/// NO private payment is accepted (no shielding, no spend, no unshield). The refusal fires before decode and proof, so no proof work is spent on testnet. When it is true (devnet, simnet), spends are allowed here and their
 /// chain rules are checked in UTXO context: every coin tag unspent (§6.3) and the anchor a matured snapshot of the
 /// chain's own coin list (§6.2), which is what keeps a spend from pointing at a made-up coin list.
 fn check_private_payment(tx: &Transaction, spends_enabled: bool) -> TxResult<()> {
@@ -161,18 +161,18 @@ fn check_private_payment(tx: &Transaction, spends_enabled: bool) -> TxResult<()>
     if !tx.subnetwork_id.is_native() {
         return Err(invalid("private payments must use the native subnetwork".to_string()));
     }
+    // G11 (§7.3 level (a)): on testnet and mainnet, refuse every private payment
+    // before decode and proof. Plain refusal, not a proof error, so no peer is
+    // banned for it. This closes the one-way trap where a user could shield but
+    // never withdraw.
+    if !spends_enabled {
+        return Err(invalid("private payments are disabled on this network (ZTH-SPEC-006 §7.3)".to_string()));
+    }
     let (bundle, _pool) = zethora_shielded::codec::decode(encoded).map_err(|e| invalid(e.to_string()))?;
     // No spent-coin tag may appear twice inside one payment (ZTH-SPEC-006 §6.3)
     let mut seen = std::collections::HashSet::new();
     if !bundle.actions().iter().all(|a| seen.insert(a.nullifier().to_bytes())) {
         return Err(forged("the same private coin tag appears twice in one payment".to_string()));
-    }
-    // Network switches stay plain refusals (no ban); they are cheap and checked before the expensive proof
-    if !spends_enabled && bundle.flags().spends_enabled() {
-        return Err(invalid("spending private coins is switched off on this network (ZTH-SPEC-006 §7.3)".to_string()));
-    }
-    if !spends_enabled && *bundle.value_balance() > 0 {
-        return Err(invalid("value cannot leave the private pool while spending is switched off".to_string()));
     }
     let digest = kaspa_consensus_core::hashing::tx::zethora_private_payment_digest(tx);
     zethora_shielded::verify_payment(&bundle, private_payment_verifying_key(), &digest.as_bytes())
@@ -601,28 +601,40 @@ mod zethora_private_payment_tests {
     #[test]
     fn valid_shielding_payment_is_accepted_and_bound_to_its_transaction() {
         let tx = shielding_tx(500_000);
-        assert_eq!(check_private_payment(&tx, false), Ok(()));
+        assert_eq!(check_private_payment(&tx, true), Ok(()));
 
         // Change the visible part (send more to the output): the private payment no longer matches
         let mut moved = tx.clone();
         moved.outputs[0].value += 1;
-        assert!(matches!(check_private_payment(&moved, false), Err(TxRuleError::InvalidPrivatePaymentProof(_))));
+        assert!(matches!(check_private_payment(&moved, true), Err(TxRuleError::InvalidPrivatePaymentProof(_))));
 
         // Changing only signature scripts does not affect it (they are signed separately)
         let mut resigned = tx.clone();
         resigned.inputs[0].signature_script = vec![1, 2, 3];
-        assert_eq!(check_private_payment(&resigned, false), Ok(()));
+        assert_eq!(check_private_payment(&resigned, true), Ok(()));
     }
 
     #[test]
-    fn shielding_is_accepted_with_spends_on_or_off() {
-        // Devnet and simnet switch private spends on; adding coins to the pool works the same either way
+    fn shielding_is_accepted_when_spends_on() {
+        // Devnet and simnet: adding coins to the pool works; the proof binding
+        // check still runs.
         let tx = shielding_tx(500_000);
         assert_eq!(check_private_payment(&tx, true), Ok(()));
-        assert_eq!(check_private_payment(&tx, false), Ok(()));
         let mut moved = tx.clone();
         moved.outputs[0].value += 1;
         assert!(matches!(check_private_payment(&moved, true), Err(TxRuleError::InvalidPrivatePaymentProof(_))));
+    }
+
+    #[test]
+    fn private_payments_are_refused_when_spends_off() {
+        // Testnet and mainnet: every private payment is refused at isolation time,
+        // before decode and proof. Plain refusal, not a proof error, so no peer is
+        // banned for it. Both paths below are covered: shielding (which used to
+        // pass) and fully private (which already refused at value_balance > 0).
+        let shield = shielding_tx(500_000);
+        assert!(matches!(check_private_payment(&shield, false), Err(TxRuleError::InvalidPrivatePayment(_))));
+        let spend = fully_private_tx(1_000);
+        assert!(matches!(check_private_payment(&spend, false), Err(TxRuleError::InvalidPrivatePayment(_))));
     }
 
     /// A fully private payment (ZTH-SPEC-006 §9): no visible input or output; `fee` zets leave the private pool

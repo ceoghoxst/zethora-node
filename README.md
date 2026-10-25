@@ -74,13 +74,11 @@ is compile-time, set by network type in
 consensus/src/consensus/services.rs:147-151. It is enabled only on devnet
 and simnet. To change it for testnet or mainnet, operators must install new
 node software that chooses to run the updated rules; operators who do not
-upgrade continue on the old rules and fork. When the switch is off, any
-transaction whose payload attempts to spend from the private pool is rejected
-with TxRuleError::InvalidPrivatePayment (see
-consensus/src/processes/transaction_validator/tx_validation_in_isolation.rs:171-175).
-Coins can still move INTO the pool (shielding). They cannot move OUT. This
-behavior is emergency switch level (a) as described in ZTH-SPEC-006 Section
-7.3.
+upgrade continue on the old rules and fork. When the switch is off, any transaction that carries a private payment is
+rejected with TxRuleError::InvalidPrivatePayment (see check_private_payment in
+consensus/src/processes/transaction_validator/tx_validation_in_isolation.rs).
+This includes shielding (adding coins to the pool), private sends, and unshielding.
+This behavior is emergency switch level (a) as described in ZTH-SPEC-006 Section 7.3.
 
 ---
 
