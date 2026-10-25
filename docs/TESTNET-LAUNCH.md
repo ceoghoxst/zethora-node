@@ -90,6 +90,21 @@ G10. Testnet keeps private spends OFF at launch.
     CLAUDE.md:45-46 ("spends ON for devnet/simnet only, OFF for
     testnet/mainnet until an outside audit").
 
+G11. Testnet and mainnet refuse ALL private payments until audit.
+    Refusal fires at isolation time, before decode and proof. No
+    shielding, no spend, no unshield. Side effect: no proof-based peer
+    bans on testnet/mainnet (refusal costs no proof work). Devnet and
+    simnet unchanged. Source: tx_validation_in_isolation.rs:168-170;
+    ZTH-SPEC-006 Section 7.3.
+
+G12. Release v0.1.0-testnet.1 ships a cargo about-generated
+    THIRD-PARTY-NOTICES.txt covering the entire dependency tree.
+    Preflight zip is exempt (throwaway build, not distributed).
+
+G13. Before v0.1.0-testnet.1: a verified copy-paste balance command
+    (JSON-RPC getUtxosByAddresses on the testnet port) in the README,
+    or a wallet tool ships. Gate G3 cannot pass without one of these.
+
 If any gate is false, do not regenerate. A regeneration that lands before
 the gates pass must be redone, and every hash in CLAUDE.md:186 and in any
 announcement draft goes stale.
