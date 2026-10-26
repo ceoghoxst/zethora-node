@@ -76,6 +76,10 @@ kaspa-txscript-errors.workspace = true
 # Enable the small-chunk feature only in test builds so integration tests can
 # exercise the SMT chunk / flow-control path without requiring thousands of lanes.
 kaspa-p2p-flows = { workspace = true, features = ["test-smt-small-chunks"] }
+# G5 live ban test: a raw P2P peer (common::evil_peer) that drives a real node over gRPC.
+kaspa-p2p-lib = { workspace = true }
+tonic = { workspace = true }
+tokio-stream = { workspace = true }
 
 [features]
 heap = ["dhat"]

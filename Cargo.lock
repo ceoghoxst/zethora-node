@@ -4503,6 +4503,7 @@ dependencies = [
  "kaspa-muhash",
  "kaspa-notify",
  "kaspa-p2p-flows",
+ "kaspa-p2p-lib",
  "kaspa-pow",
  "kaspa-rpc-core",
  "kaspa-rpc-service",
@@ -4528,6 +4529,8 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-stream",
+ "tonic",
  "workflow-perf-monitor",
 ]
 
