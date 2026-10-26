@@ -278,7 +278,9 @@ async fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     // G11: zethora-shield is a devnet-only tool; refuse --testnet before any connect.
     if args.iter().any(|a| a == "--testnet") {
-        eprintln!("zethora-shield is a devnet tool. Private payments (including shielding) are disabled on testnet and mainnet until an external review of the privacy layer. Run it against a devnet node.");
+        eprintln!(
+            "zethora-shield is a devnet tool. Private payments (including shielding) are disabled on testnet and mainnet until an external review of the privacy layer. Run it against a devnet node."
+        );
         std::process::exit(2);
     }
     // `node2 <command>`: send the command's transactions to the second node (pruning-point sync test, step 3c)
@@ -319,7 +321,7 @@ async fn main() {
         Some("viewkey") => {
             let private_wallet = PrivateWallet::from_seed(&m.seed);
             let fvk = private_wallet.full_viewing_key();
-            println!("Your Private View Key: {}", format!("{:02x?}", fvk.to_bytes()));
+            println!("Your Private View Key: {:02x?}", fvk.to_bytes());
             println!("Give this to an exchange to verify your private deposits. It CANNOT spend your funds.");
         }
         Some("faucet") => {
@@ -853,7 +855,7 @@ async fn autoshield(n: &Nodes, m: &Miner) {
             }
 
             let (outpoint, entry) = coins.into_iter().next().unwrap();
-            let outpoint_tracked = outpoint.clone();
+            let outpoint_tracked = outpoint;
 
             let change = MIN_CHANGE.max(1);
             if entry.amount <= FEE + change {

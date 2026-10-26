@@ -1,7 +1,6 @@
 use kaspa_consensus_core::{
     BlockHashMap, BlockHashSet,
     coinbase::*,
-    config::params::ForkedParam,
     errors::coinbase::{CoinbaseError, CoinbaseResult},
     subnets,
     tx::{ScriptPublicKey, ScriptVec, Transaction, TransactionOutput},
@@ -45,14 +44,6 @@ const MIN_PAYLOAD_LENGTH: usize = LENGTH_OF_BLUE_SCORE
 pub struct CoinbaseManager {
     coinbase_payload_script_public_key_max_len: u8,
     max_coinbase_payload_len: usize,
-    deflationary_phase_daa_score: u64,
-    pre_deflationary_phase_base_subsidy: u64,
-    bps_history: ForkedParam<u64>,
-
-    /// The crescendo activation DAA score where BPS increased from 1 to 10.
-    /// This score is required here long-term (and not only for the actual forking), in
-    /// order to correctly determine the subsidy month from the live DAA score of the network   
-    crescendo_activation_daa_score: u64,
 
     /// Zethora: smooth-decay subsidy, ZTH-SPEC-001 Section 5
     zethora_subsidy: Arc<ZethoraSubsidy>,
@@ -77,28 +68,8 @@ impl<'a> PayloadParser<'a> {
 }
 
 impl CoinbaseManager {
-    pub fn new(
-        coinbase_payload_script_public_key_max_len: u8,
-        max_coinbase_payload_len: usize,
-        deflationary_phase_daa_score: u64,
-        pre_deflationary_phase_base_subsidy: u64,
-        bps_history: ForkedParam<u64>,
-    ) -> Self {
-        Self {
-            coinbase_payload_script_public_key_max_len,
-            max_coinbase_payload_len,
-            deflationary_phase_daa_score,
-            pre_deflationary_phase_base_subsidy,
-            bps_history,
-            crescendo_activation_daa_score: bps_history.activation().daa_score(),
-            zethora_subsidy: Arc::new(ZethoraSubsidy::new()),
-        }
-    }
-
-    #[cfg(test)]
-    #[inline]
-    pub fn bps(&self) -> ForkedParam<u64> {
-        self.bps_history
+    pub fn new(coinbase_payload_script_public_key_max_len: u8, max_coinbase_payload_len: usize) -> Self {
+        Self { coinbase_payload_script_public_key_max_len, max_coinbase_payload_len, zethora_subsidy: Arc::new(ZethoraSubsidy::new()) }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -390,12 +361,6 @@ mod tests {
     }
 
     fn create_manager(params: &Params) -> CoinbaseManager {
-        CoinbaseManager::new(
-            params.coinbase_payload_script_public_key_max_len,
-            params.max_coinbase_payload_len,
-            params.deflationary_phase_daa_score,
-            params.pre_deflationary_phase_base_subsidy,
-            params.bps_history(),
-        )
+        CoinbaseManager::new(params.coinbase_payload_script_public_key_max_len, params.max_coinbase_payload_len)
     }
 }

@@ -398,7 +398,7 @@ impl Drop for UtxosChangedSubscription {
             reason = "`fetch_update` returned `Ok(previous)`, which implies that `previous >= 1`."
         )]
         let subscriptions =
-            match UTXOS_CHANGED_SUBSCRIPTIONS.try_update(Ordering::SeqCst, Ordering::SeqCst, |count| count.checked_sub(1)) {
+            match UTXOS_CHANGED_SUBSCRIPTIONS.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| count.checked_sub(1)) {
                 Ok(previous) => previous - 1,
                 Err(current) => current,
             };

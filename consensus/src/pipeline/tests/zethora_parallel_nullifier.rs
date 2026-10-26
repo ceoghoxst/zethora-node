@@ -6,16 +6,25 @@
 //   * a real coin is shielded ON CHAIN and its coin list snapshot matures (anchor_depth = 10 in these tests),
 //   * positive control: one spend in one block is accepted exactly once and the private pool drops 50,000 -> 49,000,
 //   * siblings: two different spends of that coin in parallel blocks A and B, merged by C, in both arrival orders:
-//     exactly one is accepted, the coin tag is recorded once, and the pool is 49,000 (48,000 = counted twice).
+//     exactly one is accepted, the coin tag is recorded once, and the pool is 49,000 (48,000 = counted twice),
+//   * determinism: the SAME blocks (whole chain from genesis, A, B, C) fed to two fresh nodes in arrival orders AB and
+//     BA give the same winner (same tx id, same merged block) and the same full state (coin tags, roots, coinbase,
+//     UTXO commitment, virtual UTXO set). Why: C's selected parent is max(blue work, hash) of its parents
+//     (ghostdag/protocol.rs find_selected_parent, ordering.rs SortableBlock) and the merge loop accepts the selected
+//     parent's transactions first, so the winner is a function of the blocks alone, never of arrival order.
 
 use crate::config::ConfigBuilder;
 use crate::consensus::test_consensus::TestConsensus;
 use crate::constants::TX_VERSION_TOCCATA;
 use crate::model::services::reachability::ReachabilityService;
+use crate::model::stores::ghostdag::GhostdagStoreReader;
+use crate::model::stores::headers::HeaderStoreReader;
+use crate::model::stores::virtual_state::VirtualStateStoreReader;
 use crate::params::DEVNET_PARAMS;
 use kaspa_consensus_core::Hash;
 use kaspa_consensus_core::api::ConsensusApi;
 use kaspa_consensus_core::api::args::TransactionValidationArgs;
+use kaspa_consensus_core::block::Block;
 use kaspa_consensus_core::blockstatus::BlockStatus;
 use kaspa_consensus_core::coinbase::MinerData;
 use kaspa_consensus_core::constants::TX_VERSION;
@@ -27,6 +36,7 @@ use kaspa_consensus_core::tx::{
 use kaspa_consensus_core::zethora_private::{PRIVATE_PAYMENT_MAGIC, nullifiers, private_payment_bytes};
 use kaspa_txscript::opcodes::codes::OpTrue;
 use std::collections::HashSet;
+use std::sync::Mutex;
 use std::thread::JoinHandle;
 use zethora_shielded::orchard::Address;
 use zethora_shielded::scan::{OwnedCoin, Scanner};
@@ -139,6 +149,8 @@ struct Node {
     tip: Hash,
     next_word: u64,
     coinbase_maturity: u64,
+    /// Every block this node built and inserted, in insertion order (replayed into other nodes by the determinism test)
+    inserted: Mutex<Vec<Block>>,
 }
 
 impl Node {
@@ -151,7 +163,15 @@ impl Node {
         let tc = TestConsensus::new(&config);
         let handles = tc.init();
         let miner = MinerData::new(ScriptPublicKey::from_vec(0, vec![OpTrue]), vec![]);
-        Self { tc, handles, miner, tip: config.genesis.hash, next_word: 0, coinbase_maturity: config.params.coinbase_maturity() }
+        Self {
+            tc,
+            handles,
+            miner,
+            tip: config.genesis.hash,
+            next_word: 0,
+            coinbase_maturity: config.params.coinbase_maturity(),
+            inserted: Mutex::new(Vec::new()),
+        }
     }
 
     fn fresh_hash(&mut self) -> Hash {
@@ -162,8 +182,19 @@ impl Node {
     /// Builds a block with these parents and transactions (the builder refuses txs invalid on top of `parents`)
     /// and inserts it through validate_and_insert_block, waiting for the virtual state.
     async fn insert(&self, hash: Hash, parents: Vec<Hash>, txs: Vec<Transaction>) -> BlockStatus {
-        let block = self.tc.build_utxo_valid_block_with_parents(hash, parents, self.miner.clone(), txs);
-        self.tc.validate_and_insert_block(block.to_immutable()).virtual_state_task.await.unwrap()
+        let block = self.build(hash, parents, txs);
+        self.inserted.lock().unwrap().push(block.clone());
+        self.insert_block(block).await
+    }
+
+    /// Builds a block with these parents and transactions on top of what this node has, without inserting it.
+    fn build(&self, hash: Hash, parents: Vec<Hash>, txs: Vec<Transaction>) -> Block {
+        self.tc.build_utxo_valid_block_with_parents(hash, parents, self.miner.clone(), txs).to_immutable()
+    }
+
+    /// Inserts an already built block (possibly built by another node) through validate_and_insert_block.
+    async fn insert_block(&self, block: Block) -> BlockStatus {
+        self.tc.validate_and_insert_block(block).virtual_state_task.await.unwrap()
     }
 
     /// Mines one block on the tip; it must become the new UTXO-valid tip.
@@ -350,4 +381,133 @@ async fn sibling_spends_of_one_coin_accept_exactly_one_arrival_ab() {
 #[tokio::test]
 async fn sibling_spends_of_one_coin_accept_exactly_one_arrival_ba() {
     siblings_spending_one_coin(Arrival::BA).await;
+}
+
+/// Everything one node ends up with after processing C: the winner and the full resulting state.
+#[derive(Debug, PartialEq)]
+struct FinalState {
+    /// (accepted spend, merged block it was accepted from), over C's whole acceptance data
+    winner: Vec<(TransactionId, Hash)>,
+    /// Every coin tag in the double-spend store with its accepting blocks
+    nullifier_store: Vec<([u8; 32], Vec<Hash>)>,
+    /// C's whole coinbase payload (supply ledger, private pool, note root 56..88, fingerprint 88..120, miner script)
+    c_coinbase_payload: Vec<u8>,
+    c_utxo_commitment: Hash,
+    /// Computed by this node for the virtual on top of C (not read from any block)
+    virtual_note_root: [u8; 32],
+    virtual_private_state: [u8; 32],
+    virtual_utxo_commitment: Hash,
+    virtual_utxos: Vec<(kaspa_consensus_core::tx::TransactionOutpoint, kaspa_consensus_core::tx::UtxoEntry)>,
+}
+
+fn final_state(node: &Node, c: Hash, spends: [TransactionId; 2]) -> FinalState {
+    let winner = node
+        .tc
+        .get_block_acceptance_data(c)
+        .map(|data| {
+            data.iter()
+                .flat_map(|m| {
+                    m.accepted_transactions
+                        .iter()
+                        .filter(|e| spends.contains(&e.transaction_id))
+                        .map(move |e| (e.transaction_id, m.block_hash))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let nullifier_store = node.tc.zethora_nullifiers_store().iter_all().map(|r| r.unwrap()).collect();
+    let (virtual_note_root, virtual_private_state, virtual_utxo_commitment) = {
+        let stores = node.tc.virtual_stores();
+        let read = stores.read();
+        let state = read.state.get().unwrap();
+        (state.note_root, state.private_state, state.multiset.clone().finalize())
+    };
+    FinalState {
+        winner,
+        nullifier_store,
+        c_coinbase_payload: node.coinbase_payload(c),
+        c_utxo_commitment: node.tc.headers_store().get_header(c).unwrap().utxo_commitment,
+        virtual_note_root,
+        virtual_private_state,
+        virtual_utxo_commitment,
+        virtual_utxos: node.tc.get_virtual_utxos(None, usize::MAX, false),
+    }
+}
+
+/// Replays the builder's blocks (the whole chain from genesis), then the siblings in `siblings` order, then C, into a
+/// fresh node. Every block is the identical object the builder made: same hash, same header, same transactions.
+async fn replay(chain: &[Block], siblings: [&Block; 2], c: &Block) -> (Node, BlockStatus) {
+    let node = Node::new();
+    for block in chain {
+        assert_eq!(node.insert_block(block.clone()).await, BlockStatus::StatusUTXOValid);
+    }
+    for sibling in siblings {
+        node.insert_block(sibling.clone()).await;
+    }
+    let status = node.insert_block(c.clone()).await;
+    (node, status)
+}
+
+#[tokio::test]
+async fn identical_sibling_blocks_give_identical_state_in_both_arrival_orders() {
+    // Build everything ONCE in a builder node: funded chain, the two spends, A and B on the same tip, then C on [A, B]
+    let mut f = shield_one_coin_on_chain().await;
+    let nf = f.coin.nullifier;
+    let (spend_a, spend_b) = (f.spend(30_000), f.spend(25_000));
+    assert_ne!(spend_a.id(), spend_b.id());
+    let spends = [spend_a.id(), spend_b.id()];
+    let parent = f.node.tip;
+    let chain: Vec<Block> = f.node.inserted.lock().unwrap().clone();
+    assert_eq!(chain.last().unwrap().hash(), parent);
+    let (a, b, c) = (f.node.fresh_hash(), f.node.fresh_hash(), f.node.fresh_hash());
+    let block_a = f.node.build(a, vec![parent], vec![spend_a.clone()]);
+    let block_b = f.node.build(b, vec![parent], vec![spend_b.clone()]);
+    f.node.insert_block(block_a.clone()).await;
+    f.node.insert_block(block_b.clone()).await;
+    let block_c = f.node.build(c, vec![a, b], vec![]);
+    f.node.shutdown();
+
+    // Two fresh nodes, identical blocks, opposite sibling arrival orders
+    let (node_ab, status_ab) = replay(&chain, [&block_a, &block_b], &block_c).await;
+    let (node_ba, status_ba) = replay(&chain, [&block_b, &block_a], &block_c).await;
+    let (state_ab, state_ba) = (final_state(&node_ab, c, spends), final_state(&node_ba, c, spends));
+
+    // Same winner: the same transaction, accepted from the same merged block
+    assert_eq!(state_ab.winner, state_ba.winner, "the two arrival orders accepted different spends");
+    assert_eq!(status_ab, status_ba);
+    // Same full state
+    assert_eq!(state_ab.nullifier_store, state_ba.nullifier_store);
+    assert_eq!(state_ab.c_coinbase_payload[56..88], state_ba.c_coinbase_payload[56..88], "note root");
+    assert_eq!(state_ab.c_coinbase_payload[88..120], state_ba.c_coinbase_payload[88..120], "private state fingerprint");
+    assert_eq!(state_ab.c_coinbase_payload, state_ba.c_coinbase_payload);
+    assert_eq!(state_ab.c_utxo_commitment, state_ba.c_utxo_commitment);
+    assert_eq!(state_ab.virtual_note_root, state_ba.virtual_note_root);
+    assert_eq!(state_ab.virtual_private_state, state_ba.virtual_private_state);
+    assert_eq!(state_ab.virtual_utxo_commitment, state_ba.virtual_utxo_commitment);
+    assert_eq!(state_ab.virtual_utxos.len(), state_ba.virtual_utxos.len());
+    for (i, (x, y)) in state_ab.virtual_utxos.iter().zip(state_ba.virtual_utxos.iter()).enumerate() {
+        assert_eq!(x, y, "virtual UTXO #{i} differs");
+    }
+    assert_eq!(state_ab, state_ba);
+
+    // And the shared outcome is the correct one, in each node: C is valid, exactly one spend is accepted, from the
+    // sibling GHOSTDAG makes C's selected parent (equal blue work, so the larger hash), the coin tag is recorded once
+    // (accepted by C), and the private pool is debited once
+    for (node, status, state) in [(&node_ab, status_ab, &state_ab), (&node_ba, status_ba, &state_ba)] {
+        assert_eq!(status, BlockStatus::StatusUTXOValid);
+        assert_eq!(node.tc.get_sink(), c);
+        let ghostdag = node.tc.ghostdag_store();
+        assert_eq!(ghostdag.get_blue_work(a).unwrap(), ghostdag.get_blue_work(b).unwrap());
+        let selected_parent = a.max(b);
+        assert_eq!(ghostdag.get_selected_parent(c).unwrap(), selected_parent);
+        let expected_winner = if selected_parent == a { spend_a.id() } else { spend_b.id() };
+        assert_eq!(state.winner, vec![(expected_winner, selected_parent)]);
+        assert_eq!(node.tc.zethora_nullifiers_store().accepting_blocks(&nf), vec![c]);
+        assert_eq!(shielded_balance(&state.c_coinbase_payload), 49_000);
+        // The virtual merges only C, which has no transactions: its coin list is the one C sealed
+        assert_eq!(state.virtual_note_root, note_root(&state.c_coinbase_payload));
+    }
+
+    node_ab.shutdown();
+    node_ba.shutdown();
 }

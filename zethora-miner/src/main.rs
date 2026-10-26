@@ -163,11 +163,15 @@ async fn main() {
     let addr_str = address.to_string();
     let expected_prefix = if testnet { "zethoratest:" } else { "zethoradev:" };
     if !addr_str.starts_with(expected_prefix) {
-        eprintln!("BUG: {network_name} address does not start with {expected_prefix} (got {addr_str}). Exiting to avoid paying to the wrong network.");
+        eprintln!(
+            "BUG: {network_name} address does not start with {expected_prefix} (got {addr_str}). Exiting to avoid paying to the wrong network."
+        );
         std::process::exit(3);
     }
 
-    let client = GrpcClient::connect(node_url.to_string()).await.expect("Cannot reach the node. Is it running with the matching network flag (--devnet or --testnet)?");
+    let client = GrpcClient::connect(node_url.to_string())
+        .await
+        .expect("Cannot reach the node. Is it running with the matching network flag (--devnet or --testnet)?");
     let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
     println!("Mining on {threads} threads. Press Ctrl+C to stop.\n");
 
@@ -206,19 +210,19 @@ async fn main() {
         }
 
         // Check if the background prebuild finished
-        if let Some(task) = &prebuild_task {
-            if task.is_finished() {
-                let task = prebuild_task.take().unwrap();
-                match task.await {
-                    Ok((built_epoch, Some(built_dataset))) => {
-                        println!("Background dataset for epoch {built_epoch} is ready.");
-                        next_dataset = Some((built_epoch, built_dataset));
-                    }
-                    Ok((built_epoch, None)) => {
-                        println!("Prebuild for epoch {built_epoch} failed (low memory). Will build synchronously later.");
-                    }
-                    Err(e) => println!("Background dataset task failed: {e}"),
+        if let Some(task) = &prebuild_task
+            && task.is_finished()
+        {
+            let task = prebuild_task.take().unwrap();
+            match task.await {
+                Ok((built_epoch, Some(built_dataset))) => {
+                    println!("Background dataset for epoch {built_epoch} is ready.");
+                    next_dataset = Some((built_epoch, built_dataset));
                 }
+                Ok((built_epoch, None)) => {
+                    println!("Prebuild for epoch {built_epoch} failed (low memory). Will build synchronously later.");
+                }
+                Err(e) => println!("Background dataset task failed: {e}"),
             }
         }
 

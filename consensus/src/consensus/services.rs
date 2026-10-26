@@ -121,13 +121,8 @@ impl ConsensusServices {
             reachability_service.clone(),
         );
 
-        let coinbase_manager = CoinbaseManager::new(
-            params.coinbase_payload_script_public_key_max_len,
-            params.max_coinbase_payload_len,
-            params.deflationary_phase_daa_score,
-            params.pre_deflationary_phase_base_subsidy,
-            params.bps_history(),
-        );
+        let coinbase_manager =
+            CoinbaseManager::new(params.coinbase_payload_script_public_key_max_len, params.max_coinbase_payload_len);
 
         let mass_calculator =
             MassCalculator::new(params.mass_per_tx_byte, params.mass_per_script_pub_key_byte, params.storage_mass_parameter);

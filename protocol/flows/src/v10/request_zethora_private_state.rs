@@ -73,6 +73,7 @@ impl RequestZethoraPrivateStateFlow {
             ))
             .await?;
 
+        #[allow(clippy::arithmetic_side_effects, reason = "ARITH-SAFETY(LENGTH)")]
         let total = state.spent.len() + state.anchors.len();
         let mut items_sent = 0usize;
         let mut chunks_sent = 0usize;
@@ -85,6 +86,10 @@ impl RequestZethoraPrivateStateFlow {
             anchors: chunk.iter().flat_map(|(root, blue_score)| root.iter().copied().chain(blue_score.to_le_bytes())).collect(),
         });
         for message in spent_chunks.chain(anchor_chunks) {
+            #[allow(
+                clippy::arithmetic_side_effects,
+                reason = "ARITH-SAFETY(LENGTH): byte lengths divided by the nonzero item sizes 32 and 40."
+            )]
             let items = message.spent.len() / 32 + message.anchors.len() / 40;
             self.router.enqueue(make_message!(Payload::ZethoraPrivateStateChunk, message)).await?;
             #[allow(clippy::arithmetic_side_effects, reason = "ARITH-SAFETY(COUNTER)")]
