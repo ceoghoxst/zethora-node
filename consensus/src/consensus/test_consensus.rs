@@ -335,6 +335,11 @@ impl TestConsensus {
     pub fn ghostdag_manager(&self) -> &DbGhostdagManager {
         &self.consensus.services.ghostdag_manager
     }
+
+    /// Zethora: the double-spend guard's store (coin tag -> accepting chain blocks), for tests (ZTH-SPEC-006 §6.3).
+    pub fn zethora_nullifiers_store(&self) -> &Arc<crate::model::stores::zethora_nullifiers::DbZethoraNullifiersStore> {
+        &self.consensus.storage.zethora_nullifiers_store
+    }
 }
 
 impl std::ops::Deref for TestConsensus {
