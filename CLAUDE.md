@@ -467,3 +467,9 @@ filter (utxo_validation.rs:522) removed -> both sibling tests fail
 Claude Code cloud session on branch test/sibling-e2e, squash-merged.
 CTO APPROVED. Turnstile per-transaction fix (F1) still open; required
 before private payments are enabled.
+
+2026-10-25 - STANDING RULE (step zero): every session starts with
+`git fetch` and `git log origin/zethora -10` before touching any file.
+Work may land from other sessions (DeepSeek, Claude Code cloud) in
+between. Reason: a merged test (9cda50b) was overwritten locally by a
+session that didn't know it existed.
