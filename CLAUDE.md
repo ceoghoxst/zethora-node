@@ -483,3 +483,14 @@ any privacy wallet (Zcash Zakura approach, wallet-level) against quantum
 linkability; (2) hashed-pubkey addresses before mainnet (miner pays to
 PubKey addresses today; cf. Kaspa KIP-22); (3) add post-quantum
 linkability to ZTH-SPEC-006 Appendix C.
+
+2026-10-26 - STANDING RULE (agent commits): every commit produced by an
+AI agent (DeepSeek, Claude Code cloud, any other) gets CTO review before
+it is merged to zethora, same as any other change. Precedent: 9cda50b
+(cloud-built test, reviewed on its branch, then squash-merged).
+2026-10-26 - Positioning (VP ruling): lead with fair launch / no
+premine, 100M cap, home CPU mining, Zcash Orchard privacy that stays OFF
+until an outside reviewer signs off. Say what we do, never "nobody else
+does this". Do-not-claim: "digital wealth" (rejected); use
+"self-custodied digital property". Test for any public sentence: does it
+still work if ZTHR is worth zero? If not, don't publish it.
