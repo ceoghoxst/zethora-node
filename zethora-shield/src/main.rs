@@ -278,7 +278,9 @@ async fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     // G11: zethora-shield is a devnet-only tool; refuse --testnet before any connect.
     if args.iter().any(|a| a == "--testnet") {
-        eprintln!("zethora-shield is a devnet tool. Private payments (including shielding) are disabled on testnet and mainnet until an external review of the privacy layer. Run it against a devnet node.");
+        eprintln!(
+            "zethora-shield is a devnet tool. Private payments (including shielding) are disabled on testnet and mainnet until an external review of the privacy layer. Run it against a devnet node."
+        );
         std::process::exit(2);
     }
     // `node2 <command>`: send the command's transactions to the second node (pruning-point sync test, step 3c)

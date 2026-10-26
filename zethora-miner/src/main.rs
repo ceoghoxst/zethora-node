@@ -163,11 +163,15 @@ async fn main() {
     let addr_str = address.to_string();
     let expected_prefix = if testnet { "zethoratest:" } else { "zethoradev:" };
     if !addr_str.starts_with(expected_prefix) {
-        eprintln!("BUG: {network_name} address does not start with {expected_prefix} (got {addr_str}). Exiting to avoid paying to the wrong network.");
+        eprintln!(
+            "BUG: {network_name} address does not start with {expected_prefix} (got {addr_str}). Exiting to avoid paying to the wrong network."
+        );
         std::process::exit(3);
     }
 
-    let client = GrpcClient::connect(node_url.to_string()).await.expect("Cannot reach the node. Is it running with the matching network flag (--devnet or --testnet)?");
+    let client = GrpcClient::connect(node_url.to_string())
+        .await
+        .expect("Cannot reach the node. Is it running with the matching network flag (--devnet or --testnet)?");
     let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
     println!("Mining on {threads} threads. Press Ctrl+C to stop.\n");
 

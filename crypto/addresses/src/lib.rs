@@ -487,8 +487,8 @@ impl<'de> Deserialize<'de> for Address {
 mod tests {
     #[test]
     fn prefix_serde_name_matches_display() {
-        use serde::de::value::StrDeserializer;
         use serde::de::IntoDeserializer;
+        use serde::de::value::StrDeserializer;
         for (p, expected) in [
             (Prefix::Mainnet, "zethora"),
             (Prefix::Testnet, "zethoratest"),
