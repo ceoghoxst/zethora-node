@@ -28,6 +28,8 @@ jobs:
     name: Test Suite
     # runs-on: ${{ matrix.os }}
     runs-on: ubuntu-latest
+    # Fail a hung run instead of letting it sit until GitHub's 6-hour limit (a full run takes ~70 minutes)
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       # matrix:
