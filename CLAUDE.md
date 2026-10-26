@@ -494,3 +494,18 @@ until an outside reviewer signs off. Say what we do, never "nobody else
 does this". Do-not-claim: "digital wealth" (rejected); use
 "self-custodied digital property". Test for any public sentence: does it
 still work if ZTHR is worth zero? If not, don't publish it.
+
+2026-10-26 - CI GREEN (Tests run #15 on 269eeb3, all 5 jobs), merged via
+PR #1. Changes: WASM32 jobs removed (no WASM target); cargo fmt; clippy
+-D warnings clean on 1.93.0 (unused Kaspa CoinbaseManager reward fields
+removed - dead code per the Oct 13 log; Params fields untouched); 5
+goref_* tests #[ignore]d (Kaspa Go DAG vectors use Kaspa-PoW block
+levels, incompatible with RandomZ; future item: Zethora-generated
+replacement dataset); Test Suite timeout 120 min. New test
+identical_sibling_blocks_give_identical_state_in_both_arrival_orders
+(Carlos/Zealynx request): same blocks, opposite arrival orders, same
+winner and identical state; negative control (arrival-dependent merge
+order) caught the split. consensus lib 112/112.
+2026-10-26 - Correction (append-only): the "Known test failures" entry
+for daemon_integration_tests (32-byte coinbase) is STALE; those tests
+mine through RPC and pass. The full workspace test suite passes in CI.
