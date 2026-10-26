@@ -473,3 +473,13 @@ before private payments are enabled.
 Work may land from other sessions (DeepSeek, Claude Code cloud) in
 between. Reason: a merged test (9cda50b) was overwritten locally by a
 session that didn't know it existed.
+
+2026-10-26 - STANDING RULE (AI agents): never run an AI agent (DeepSeek,
+Claude Code) on untrusted files or pull requests; no secrets (miner keys,
+server passwords, SSH keys) anywhere an agent can read; agents work on
+branches only, never push to zethora directly.
+2026-10-26 - Future items (logged): (1) one-time incoming viewing keys in
+any privacy wallet (Zcash Zakura approach, wallet-level) against quantum
+linkability; (2) hashed-pubkey addresses before mainnet (miner pays to
+PubKey addresses today; cf. Kaspa KIP-22); (3) add post-quantum
+linkability to ZTH-SPEC-006 Appendix C.
