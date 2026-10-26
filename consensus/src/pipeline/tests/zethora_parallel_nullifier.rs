@@ -10,8 +10,8 @@
 
 use crate::config::ConfigBuilder;
 use crate::consensus::test_consensus::TestConsensus;
-use crate::model::services::reachability::ReachabilityService;
 use crate::constants::TX_VERSION_TOCCATA;
+use crate::model::services::reachability::ReachabilityService;
 use crate::params::DEVNET_PARAMS;
 use kaspa_consensus_core::Hash;
 use kaspa_consensus_core::api::ConsensusApi;
@@ -195,7 +195,7 @@ impl Node {
     fn mempool_checked(&self, tx: Transaction) -> Transaction {
         let mut mtx = MutableTransaction::from_tx(tx);
         self.tc.validate_mempool_transaction(&mut mtx, &TransactionValidationArgs::default()).unwrap();
-        mtx.tx
+        (*mtx.tx).clone()
     }
 
     fn shutdown(self) {
