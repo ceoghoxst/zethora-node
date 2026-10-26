@@ -450,3 +450,20 @@ accepted), (2) exact assertions (== not <=), and (3) a
 fail-when-protection-removed proof shown in the packet. Reason: the
 sibling double-spend e2e passed while proving nothing (coin never on
 chain; <= 1 passed with 0).
+
+2026-10-25 - anchor_depth is a locked Params field (600 on mainnet,
+testnet, simnet, devnet); not in OverrideParams, so override files cannot
+change it (tests all_real_networks_use_anchor_depth_600,
+override_params_cannot_change_anchor_depth). Commit dbfea66. CTO APPROVED.
+
+2026-10-25 - Sibling double-spend e2e REBUILT (replaces the invalid
+#[ignore] test). Coin shielded ON CHAIN (scanner root == sealed coinbase
+root), anchor_depth 10 via test params. Positive control: one spend
+accepted once, nullifier store lists one block, pool 50,000 -> 49,000.
+Siblings A/B (proven non-ancestors), C merges {A,B}: exactly one spend
+accepted, pool 49,000, both arrival orders. Negative control: merge-loop
+filter (utxo_validation.rs:522) removed -> both sibling tests fail
+2 != 1; restored -> kaspa-consensus lib 111/111. Written and run by a
+Claude Code cloud session on branch test/sibling-e2e, squash-merged.
+CTO APPROVED. Turnstile per-transaction fix (F1) still open; required
+before private payments are enabled.
