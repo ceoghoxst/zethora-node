@@ -321,7 +321,7 @@ async fn main() {
         Some("viewkey") => {
             let private_wallet = PrivateWallet::from_seed(&m.seed);
             let fvk = private_wallet.full_viewing_key();
-            println!("Your Private View Key: {}", format!("{:02x?}", fvk.to_bytes()));
+            println!("Your Private View Key: {:02x?}", fvk.to_bytes());
             println!("Give this to an exchange to verify your private deposits. It CANNOT spend your funds.");
         }
         Some("faucet") => {
@@ -855,7 +855,7 @@ async fn autoshield(n: &Nodes, m: &Miner) {
             }
 
             let (outpoint, entry) = coins.into_iter().next().unwrap();
-            let outpoint_tracked = outpoint.clone();
+            let outpoint_tracked = outpoint;
 
             let change = MIN_CHANGE.max(1);
             if entry.amount <= FEE + change {

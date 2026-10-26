@@ -42,14 +42,21 @@ pub fn private_state_of<'a>(
     state
 }
 
+/// A coin tag store record: the tag (nullifier) and the chain blocks that accepted it.
+pub type NullifierRecord = ([u8; 32], Vec<Hash>);
+/// A snapshot store record: the coin list root (anchor) and the chain blocks that produced it.
+pub type AnchorRecord = ([u8; 32], Vec<AnchorProducer>);
+/// The private state as of a pruning point: the spent tags, and each snapshot root with its producer's blue score.
+pub type PrivateStateAsOf = (Vec<[u8; 32]>, Vec<([u8; 32], u64)>);
+
 /// Picks, out of every record in the coin tag and snapshot stores, the private state as of a pruning point: the tags
 /// spent and the snapshots produced on its chain. `on_chain(block)` says whether a block is a chain ancestor of (or is)
 /// the pruning point. Records already rewritten as "for good" belong to every chain through the pruning point.
 pub fn private_state_as_of<E>(
-    nullifier_records: impl IntoIterator<Item = Result<([u8; 32], Vec<Hash>), E>>,
-    anchor_records: impl IntoIterator<Item = Result<([u8; 32], Vec<AnchorProducer>), E>>,
+    nullifier_records: impl IntoIterator<Item = Result<NullifierRecord, E>>,
+    anchor_records: impl IntoIterator<Item = Result<AnchorRecord, E>>,
     mut on_chain: impl FnMut(Hash) -> Result<bool, E>,
-) -> Result<(Vec<[u8; 32]>, Vec<([u8; 32], u64)>), E> {
+) -> Result<PrivateStateAsOf, E> {
     // "For good" markers are checked first: they answer on their own, without asking about any block
     let mut spent = Vec::new();
     for record in nullifier_records {
@@ -162,13 +169,13 @@ mod tests {
     #[test]
     fn picks_only_what_is_on_the_pruning_points_chain() {
         let (on, off, good) = (Hash::from_u64_word(1), Hash::from_u64_word(2), SPENT_FOR_GOOD);
-        let tags: Vec<Result<([u8; 32], Vec<Hash>), String>> = vec![
+        let tags: Vec<Result<NullifierRecord, String>> = vec![
             Ok(([1; 32], vec![on])),        // spent on the chain: counts
             Ok(([2; 32], vec![off])),       // spent only on a side chain: does not
             Ok(([3; 32], vec![off, good])), // spent for good: counts
             Ok(([4; 32], vec![])),          // no record left: does not
         ];
-        let snaps: Vec<Result<([u8; 32], Vec<AnchorProducer>), String>> = vec![
+        let snaps: Vec<Result<AnchorRecord, String>> = vec![
             Ok(([7; 32], vec![AnchorProducer { block: off, blue_score: 5 }, AnchorProducer { block: on, blue_score: 6 }])),
             Ok(([8; 32], vec![AnchorProducer { block: off, blue_score: 9 }])),
             Ok(([9; 32], vec![AnchorProducer { block: ANCHORED_FOR_GOOD, blue_score: 2 }])),
@@ -178,10 +185,10 @@ mod tests {
         assert_eq!(anchors, vec![([7; 32], 6), ([9; 32], 2)], "the on-chain producer's blue score is the one sent");
 
         // A block with no reachability data is an error, never a guess, unless a "for good" marker already answers
-        let tags: Vec<Result<([u8; 32], Vec<Hash>), String>> = vec![Ok(([1; 32], vec![off]))];
+        let tags: Vec<Result<NullifierRecord, String>> = vec![Ok(([1; 32], vec![off]))];
         assert!(private_state_as_of(tags, vec![], |_| Err("missing".to_string())).is_err());
-        let tags: Vec<Result<([u8; 32], Vec<Hash>), String>> = vec![Ok(([1; 32], vec![off, good]))];
-        let snaps: Vec<Result<([u8; 32], Vec<AnchorProducer>), String>> = vec![Ok((
+        let tags: Vec<Result<NullifierRecord, String>> = vec![Ok(([1; 32], vec![off, good]))];
+        let snaps: Vec<Result<AnchorRecord, String>> = vec![Ok((
             [7; 32],
             vec![AnchorProducer { block: off, blue_score: 5 }, AnchorProducer { block: ANCHORED_FOR_GOOD, blue_score: 4 }],
         ))];

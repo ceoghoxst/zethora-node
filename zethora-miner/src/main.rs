@@ -210,19 +210,19 @@ async fn main() {
         }
 
         // Check if the background prebuild finished
-        if let Some(task) = &prebuild_task {
-            if task.is_finished() {
-                let task = prebuild_task.take().unwrap();
-                match task.await {
-                    Ok((built_epoch, Some(built_dataset))) => {
-                        println!("Background dataset for epoch {built_epoch} is ready.");
-                        next_dataset = Some((built_epoch, built_dataset));
-                    }
-                    Ok((built_epoch, None)) => {
-                        println!("Prebuild for epoch {built_epoch} failed (low memory). Will build synchronously later.");
-                    }
-                    Err(e) => println!("Background dataset task failed: {e}"),
+        if let Some(task) = &prebuild_task
+            && task.is_finished()
+        {
+            let task = prebuild_task.take().unwrap();
+            match task.await {
+                Ok((built_epoch, Some(built_dataset))) => {
+                    println!("Background dataset for epoch {built_epoch} is ready.");
+                    next_dataset = Some((built_epoch, built_dataset));
                 }
+                Ok((built_epoch, None)) => {
+                    println!("Prebuild for epoch {built_epoch} failed (low memory). Will build synchronously later.");
+                }
+                Err(e) => println!("Background dataset task failed: {e}"),
             }
         }
 

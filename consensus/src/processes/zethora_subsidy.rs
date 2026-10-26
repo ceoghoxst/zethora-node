@@ -196,7 +196,7 @@ mod tests {
             assert!(r / D - next / D <= 1 + r / (D * D));
             r = next;
         }
-        assert!(1 + EMISSION_START / (D * D) <= 8);
+        const { assert!(EMISSION_START / (D * D) < 8) }; // i.e. 1 + EMISSION_START / D^2 <= 8
     }
 
     /// Walks the schedule exactly, many steps at a time: while floor(Remaining / D) stays q, every step takes q.
@@ -243,7 +243,7 @@ mod tests {
         assert_eq!(end, EMISSION_END_SCORE);
         assert!(left < D, "the reward is 0 from here on");
         assert_eq!(EMISSION_START - left, TOTAL_EMISSION);
-        assert!(TOTAL_EMISSION + SUPPLY_RESERVE <= CAP_UNITS);
+        const { assert!(TOTAL_EMISSION + SUPPLY_RESERVE <= CAP_UNITS) };
         // The node's step-by-step lookup agrees 8 years in too (a quarter billion steps)
         assert_eq!(z.remaining_at(8 * YEAR), at[1]);
         println!(

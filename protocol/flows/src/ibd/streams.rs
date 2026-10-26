@@ -377,6 +377,12 @@ pub const ZETHORA_PRIVATE_STATE_CHUNK_SIZE: usize = 4096;
 /// Zethora: after every this many private state chunks, the receiver asks for more (as with the SMT state).
 pub const ZETHORA_PRIVATE_STATE_FLOW_CONTROL_WINDOW: usize = 10;
 
+/// Zethora: how many private state items (spent coin tags and snapshots) have arrived so far.
+#[allow(clippy::arithmetic_side_effects, reason = "ARITH-SAFETY(LENGTH)")]
+fn items_received(spent: &[[u8; 32]], anchors: &[([u8; 32], u64)]) -> usize {
+    spent.len() + anchors.len()
+}
+
 /// Zethora: receives the private state at the pruning point (ZTH-SPEC-006 §6.4) after a `RequestZethoraPrivateState`
 /// was sent: a header with the private coin list and the counts, then chunks of spent coin tags and coin list
 /// snapshots. Only checks the shape here; consensus checks the contents against the pruning point's fingerprint.
@@ -413,7 +419,7 @@ pub async fn receive_zethora_private_state(
     let mut anchors: Vec<([u8; 32], u64)> = Vec::with_capacity(anchor_count.min(1 << 16));
     let mut chunks_received = 0usize;
 
-    while spent.len() + anchors.len() < total {
+    while items_received(&spent, &anchors) < total {
         let chunk = match timeout(DEFAULT_TIMEOUT, incoming_route.recv()).await {
             Ok(Some(msg)) => match msg.payload {
                 Some(Payload::ZethoraPrivateStateChunk(chunk)) => chunk,
@@ -436,11 +442,14 @@ pub async fn receive_zethora_private_state(
         if !rest.is_empty() {
             return Err(ProtocolError::Other("Zethora private state: snapshots are not 40 bytes each"));
         }
+        #[allow(clippy::arithmetic_side_effects, reason = "ARITH-SAFETY(LENGTH)")]
         let items = tags.len() + snapshots.len();
         if items == 0 || items > ZETHORA_PRIVATE_STATE_CHUNK_SIZE {
             return Err(ProtocolError::Other("Zethora private state: chunk is empty or too large"));
         }
-        if spent.len() + tags.len() > spent_count || anchors.len() + snapshots.len() > anchor_count {
+        #[allow(clippy::arithmetic_side_effects, reason = "ARITH-SAFETY(LENGTH)")]
+        let (spent_after, anchors_after) = (spent.len() + tags.len(), anchors.len() + snapshots.len());
+        if spent_after > spent_count || anchors_after > anchor_count {
             return Err(ProtocolError::Other("Zethora private state: more items than announced"));
         }
         spent.extend(tags.iter().copied());
@@ -455,7 +464,7 @@ pub async fn receive_zethora_private_state(
             chunks_received += 1;
         }
         // Mirror the sender: ask for more after every window, unless everything has arrived
-        if spent.len() + anchors.len() < total && chunks_received.is_multiple_of(ZETHORA_PRIVATE_STATE_FLOW_CONTROL_WINDOW) {
+        if items_received(&spent, &anchors) < total && chunks_received.is_multiple_of(ZETHORA_PRIVATE_STATE_FLOW_CONTROL_WINDOW) {
             router
                 .enqueue(make_message!(Payload::RequestNextZethoraPrivateStateChunk, RequestNextZethoraPrivateStateChunkMessage {}))
                 .await?;

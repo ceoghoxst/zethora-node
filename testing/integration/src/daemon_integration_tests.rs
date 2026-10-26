@@ -333,7 +333,7 @@ async fn daemon_utxos_propagation_test() {
     // Zethora: compute expected rewards and add an independent anchor
     let z = ZethoraSubsidy::new();
     assert_eq!(z.subsidy(0), 2_745_536_136, "Anchor mismatch");
-    let expected_total_reward: u64 = (0..initial_blocks as u64).map(|daa| z.subsidy(daa)).sum();
+    let expected_total_reward: u64 = (0..initial_blocks).map(|daa| z.subsidy(daa)).sum();
 
     // Check the balance of the miner address
     let miner_balance = rpc_client2.get_balance_by_address(miner_address.clone()).await.unwrap();

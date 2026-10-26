@@ -31,13 +31,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // IPv4-mapped IPv6 address (16 bytes)
     let ip_v6 = vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 127, 0, 0, 1];
 
-    let mut version = VersionMessage::default();
-    version.protocol_version = 11; // Hardcoded again
-    version.network = "zethora-devnet".to_string();
-    version.user_agent = "/evil-peer:0.1.0/".to_string();
-    version.timestamp = 0;
-    version.address = Some(NetAddress { timestamp: 0, ip: ip_v6, port: 26611 });
-    version.id = vec![1u8; 16];
+    let version = VersionMessage {
+        protocol_version: 11, // Hardcoded again
+        network: "zethora-devnet".to_string(),
+        user_agent: "/evil-peer:0.1.0/".to_string(),
+        timestamp: 0,
+        address: Some(NetAddress { timestamp: 0, ip: ip_v6, port: 26611 }),
+        id: vec![1u8; 16],
+        ..Default::default()
+    };
 
     println!("Sending Version...");
     write_msg(&mut stream, KaspadMessage { payload: Some(Payload::Version(version)), request_id: 0, response_id: 0 }).await?;
