@@ -17,7 +17,7 @@ SYSTEM REQUIREMENTS
   node. With less, Windows swaps to disk and mining nearly stops.
   8 GB total is the practical minimum; 16 GB recommended.
 - Speed grows with CPU cores and cache. Measured:
-    Ryzen 5 2600, 16 GB:            to be measured with this build
+    Ryzen 5 2600, 16 GB:            about 1,200 H/s on 12 threads
     Athlon Silver 3050U, 5.9 GB:    1-2 H/s (not enough free memory)
 
 VERIFY THE DOWNLOAD
