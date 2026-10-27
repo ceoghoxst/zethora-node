@@ -509,3 +509,14 @@ order) caught the split. consensus lib 112/112.
 2026-10-26 - Correction (append-only): the "Known test failures" entry
 for daemon_integration_tests (32-byte coinbase) is STALE; those tests
 mine through RPC and pass. The full workspace test suite passes in CI.
+
+2026-10-27 - GATE G5 PASSED (PR #2, commit 5bfd5ae): live RandomZ DoS
+ban test over real P2P (testing/integration/src/zethora_g5_ban_test.rs,
+common/evil_peer.rs). Real devnet node; evil peer from 127.0.0.2 sends
+bogus pruning proofs (impossible RandomZ epoch). Positive control: not
+banned after 1 and 2 (node logs 1/3, 2/3). Banned after the 3rd,
+reconnect refused ("peer is banned"). Honest control: 127.0.0.3
+handshakes; honest node syncs a mined block. Negative control: ban call
+in ibd/flow.rs commented out -> test fails on "must be banned". Test-only
+change; CI green (runs #20, #21). Built by a Claude Code cloud session,
+CTO reviewed before merge.
