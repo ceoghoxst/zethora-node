@@ -1,7 +1,7 @@
 Zethora testnet - Windows package
 =================================
 
-This zip contains two programs and supporting files.
+This zip contains two programs, two launch scripts and supporting files.
 
   zethora-node.exe          the Zethora node
   zethora-miner.exe         the CPU miner
@@ -10,6 +10,8 @@ This zip contains two programs and supporting files.
   LICENSE.txt               ISC License (Zethora inherits it from Kaspa)
   THIRD-PARTY-NOTICES.txt   licenses for bundled components
   THIRD-PARTY-CRATES.txt    licenses of every Rust library compiled in
+  Start-Zethora.cmd         double-click to start node + miner
+  Stop-Zethora.cmd          double-click to stop them
 
 SYSTEM REQUIREMENTS
 
@@ -38,6 +40,13 @@ The binaries are unsigned. Windows will show "Windows protected your
 PC" the first time you run zethora-node.exe or zethora-miner.exe.
 Click "More info" and then "Run anyway". The SHA256 check above is how
 you know the binary is the one we published.
+
+EASIEST WAY TO START
+
+Double-click Start-Zethora.cmd. It starts the node and the miner in
+their own windows and shows your balance every minute. Double-click
+Stop-Zethora.cmd to stop. Both are plain text: open them in Notepad
+to read exactly what they do.
 
 GETTING STARTED
 

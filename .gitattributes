@@ -1,1 +1,2 @@
 seed/*.sh text eol=lf
+*.cmd text eol=crlf

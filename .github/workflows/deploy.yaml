@@ -48,8 +48,10 @@ jobs:
           cp build-assets/LICENSE.txt bin/
           cp build-assets/THIRD-PARTY-NOTICES.txt bin/
           cp build-assets/THIRD-PARTY-CRATES.txt bin/
+          cp build-assets/Start-Zethora.cmd bin/
+          cp build-assets/Stop-Zethora.cmd bin/
           cd bin
-          sha256sum zethora-node.exe zethora-miner.exe README.txt LICENSE.txt THIRD-PARTY-NOTICES.txt THIRD-PARTY-CRATES.txt > SHA256SUMS.txt
+          sha256sum zethora-node.exe zethora-miner.exe README.txt LICENSE.txt THIRD-PARTY-NOTICES.txt THIRD-PARTY-CRATES.txt Start-Zethora.cmd Stop-Zethora.cmd > SHA256SUMS.txt
           cd ..
           archive="zethora-windows-x64-${{ github.ref_name }}.zip"
           (cd bin && 7z a -tzip "../${archive}" *)

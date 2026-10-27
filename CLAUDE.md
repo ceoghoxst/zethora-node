@@ -535,3 +535,6 @@ MuHash modular inverse; replacing consensus math is riskier). Notices
 point to the public source as LGPL requires. CTO decision; lawyer to
 confirm before mainnet. Regenerate the file whenever Cargo.lock changes:
 cargo about generate --workspace about.hbs -o build-assets\THIRD-PARTY-CRATES.txt
+
+## Standing rule: trust comes before growth
+Nothing ships that a stranger can't verify, and nothing in the user experience may look hidden, pressured, or misleading. If a feature grows faster but costs trust, it waits. (Launchers are readable .cmd scripts for this reason; a GUI ships only with code signing.)
