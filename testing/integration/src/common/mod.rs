@@ -8,6 +8,8 @@ pub mod args;
 pub mod client;
 pub mod client_notify;
 pub mod daemon;
+#[cfg(test)]
+pub mod evil_peer;
 pub mod fee;
 pub mod json;
 pub mod listener;
