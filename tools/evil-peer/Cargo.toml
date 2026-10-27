@@ -2,6 +2,7 @@
 name = "evil-peer"
 version = "0.1.0"
 edition = "2021"
+license = "ISC"
 
 [dependencies]
 kaspa-p2p-lib = { path = "../../protocol/p2p" }

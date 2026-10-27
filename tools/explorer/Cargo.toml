@@ -2,6 +2,7 @@
 name = "zethora-explorer"
 version = "0.1.0"
 edition = "2021"
+license = "ISC"
 
 [dependencies]
 kaspa-grpc-client = { path = "../../rpc/grpc/client" }

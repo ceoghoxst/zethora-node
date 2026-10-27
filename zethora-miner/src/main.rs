@@ -135,23 +135,36 @@ fn bench() {
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let usage = "Usage:\n  zethora-miner             devnet (node: --devnet --enable-unsynced-mining)\n  zethora-miner --testnet   testnet (node: --testnet --enable-unsynced-mining)\n  zethora-miner bench       RandomZ speed test (no node)";
-    let (testnet, is_bench) = match args.as_slice() {
-        [] => (false, false),
-        [a] if a == "--testnet" => (true, false),
-        [a] if a == "bench" => (false, true),
+    let usage = "Usage:\n  zethora-miner             devnet (node: --devnet --enable-unsynced-mining)\n  zethora-miner --testnet   testnet (node: --testnet --enable-unsynced-mining)\n  zethora-miner bench       RandomZ speed test (no node)\n  zethora-miner balance     devnet balance of your mining address (node needs --utxoindex)\n  zethora-miner --testnet balance   testnet balance (node needs --testnet --utxoindex)";
+    #[derive(PartialEq)]
+    enum Mode {
+        Mine,
+        Bench,
+        Balance,
+    }
+    let (testnet, mode) = match args.as_slice() {
+        [] => (false, Mode::Mine),
+        [a] if a == "--testnet" => (true, Mode::Mine),
+        [a] if a == "bench" => (false, Mode::Bench),
+        [a] if a == "balance" => (false, Mode::Balance),
+        [a, b] if a == "--testnet" && b == "balance" => (true, Mode::Balance),
         _ => {
             eprintln!("{usage}");
             std::process::exit(2);
         }
     };
-    if is_bench {
+    if mode == Mode::Bench {
         return tokio::task::spawn_blocking(bench).await.expect("speed test");
     }
     let network = if testnet { NetworkType::Testnet } else { NetworkType::Devnet };
     let node_url = if testnet { TESTNET_NODE_URL } else { DEVNET_NODE_URL };
     let key_file = if testnet { TESTNET_KEY_FILE } else { DEVNET_KEY_FILE };
     let network_name = if testnet { "testnet" } else { "devnet" };
+    // G13: never create a key just to show a balance
+    if mode == Mode::Balance && !std::path::Path::new(key_file).exists() {
+        eprintln!("No mining key yet ({key_file} not found in this folder). Start mining first, then check the balance.");
+        std::process::exit(4);
+    }
     let kp = load_or_create_key(key_file);
     let address = Address::new(Prefix::from(network), Version::PubKey, &kp.x_only_public_key().0.serialize());
     println!("Zethora {network_name} miner");
@@ -172,6 +185,21 @@ async fn main() {
     let client = GrpcClient::connect(node_url.to_string())
         .await
         .expect("Cannot reach the node. Is it running with the matching network flag (--devnet or --testnet)?");
+    // G13: show the balance of the mining address and exit
+    if mode == Mode::Balance {
+        match client.get_balance_by_address(address.clone()).await {
+            Ok(zets) => {
+                println!("Balance: {:.10} ZTHR ({zets} zets)", zets as f64 / ZETS_PER_ZTHR);
+                println!("(New mining rewards show up after the next block and can be spent only after they mature.)");
+            }
+            Err(e) => {
+                eprintln!("Could not read the balance: {e}");
+                eprintln!("Start the node with --utxoindex (it keeps the address index that balances need).");
+                std::process::exit(4);
+            }
+        }
+        return;
+    }
     let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
     println!("Mining on {threads} threads. Press Ctrl+C to stop.\n");
 

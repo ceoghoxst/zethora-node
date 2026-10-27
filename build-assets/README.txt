@@ -9,6 +9,7 @@ This zip contains two programs and supporting files.
   SHA256SUMS.txt            checksums for verification
   LICENSE.txt               ISC License (Zethora inherits it from Kaspa)
   THIRD-PARTY-NOTICES.txt   licenses for bundled components
+  THIRD-PARTY-CRATES.txt    licenses of every Rust library compiled in
 
 SYSTEM REQUIREMENTS
 
@@ -49,15 +50,23 @@ SEE YOUR BALANCE
 The miner prints an address starting with zethoratest: when it
 starts. That address holds everything you mine. The miner window
 also shows a running total of what it has mined this session.
-Balance viewing will be documented when testnet opens.
+
+To see the balance of that address, keep the node running (it must
+be started with --utxoindex) and, in a second PowerShell window in
+this folder, run:
+
+  .\zethora-miner.exe --testnet balance
+
+New rewards show up after the next block and can be spent only after
+they mature.
 
 WHAT THIS PACKAGE DOES NOT DO
 
 - Does not mine on mainnet. Mainnet is not launched.
 - Does not enable private transactions. All private payments are
   disabled on testnet and mainnet until an external review is complete.
-- Does not contain a wallet. Balance viewing will be documented when
-  testnet opens.
+- Does not contain a wallet for sending coins. The miner can show your
+  balance (see SEE YOUR BALANCE above).
 - Does not promise coins, returns, or income. There is no token.
 
 Maintained by DeionRaven (Deion Smith). DeionRaven Labs is a project

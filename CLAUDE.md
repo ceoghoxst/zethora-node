@@ -520,3 +520,18 @@ handshakes; honest node syncs a mined block. Negative control: ban call
 in ibd/flow.rs commented out -> test fails on "must be banned". Test-only
 change; CI green (runs #20, #21). Built by a Claude Code cloud session,
 CTO reviewed before merge.
+
+2026-10-27 - GATE G13 DONE: zethora-miner `balance` / `--testnet balance`
+(GetBalanceByAddress on the node; needs --utxoindex; never creates a key;
+exit 4 with a clear message on missing key or no index). Verified on
+devnet: printed zethoradev: address and 21361.19 ZTHR; bad arg ->
+usage, exit 2. Release README explains it. Testnet run checked at the
+v0.1.0-testnet.1 Ryzen check.
+2026-10-27 - GATE G12 DONE: cargo-about (about.toml + about.hbs, target
+x86_64-pc-windows-msvc) generates build-assets/THIRD-PARTY-CRATES.txt
+(750 crate entries); release zip + SHA256SUMS include it. LGPL-3.0
+accepted for malachite-base/-nz (inherited via kaspa-math, used for the
+MuHash modular inverse; replacing consensus math is riskier). Notices
+point to the public source as LGPL requires. CTO decision; lawyer to
+confirm before mainnet. Regenerate the file whenever Cargo.lock changes:
+cargo about generate --workspace about.hbs -o build-assets\THIRD-PARTY-CRATES.txt
