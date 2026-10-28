@@ -4,7 +4,7 @@ Plain English, kept up to date. If something here is out of date, open an
 issue. We publish this because trust comes before growth: you should know
 what is unfinished before you spend any time on Zethora.
 
-Last updated: 2026-10-27
+Last updated: 2026-10-28
 
 ## What works today (testnet, not launched yet)
 
@@ -25,10 +25,12 @@ Last updated: 2026-10-27
 
 ## Open items before private payments can be turned on
 
-1. **Per-transaction turnstile (F1).** Today the private-pool safety check
-   adds up a whole block at once. A single bad transaction could make a
-   block invalid and stall the chain. The fix checks each transaction on
-   its own. In progress.
+1. **Per-transaction turnstile (F1): done.** The private-pool safety check
+   now runs per transaction, so one bad payment is skipped instead of
+   stalling the chain. Merged 2026-10-28 with tests.
+   **Hardening (F2): in progress.** Fixes from our first internal red-team
+   round (6 AI attackers, AI-assisted, not an audit): no exploit was found;
+   the round produced tests and hardening items (docs/THREAT-MODEL.md).
 2. **Independent cryptography review.** Nobody outside the project has
    reviewed the private-pool code yet. We are looking for a zero-knowledge
    cryptographer to do it.
