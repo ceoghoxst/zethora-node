@@ -5,7 +5,7 @@ use futures_util::future::try_join_all;
 use kaspa_addresses::{Address, Prefix, Version};
 use kaspa_consensus::params::SIMNET_GENESIS;
 use kaspa_consensus_core::{
-    constants::MAX_SOMPI,
+    constants::CAP_UNITS,
     header::Header,
     subnets::{SUBNETWORK_ID_COINBASE, SubnetworkId},
     tx::Transaction,
@@ -523,7 +523,8 @@ async fn sanity_test() {
                 tst!(op, {
                     let response = rpc_client.get_coin_supply_call(None, GetCoinSupplyRequest {}).await.unwrap();
                     assert_eq!(response.circulating_sompi, 0);
-                    assert_eq!(response.max_sompi, MAX_SOMPI);
+                    // Zethora: the hard cap, 100,000,000 ZTHR in zets (not Kaspa's MAX_SOMPI)
+                    assert_eq!(response.max_sompi, CAP_UNITS);
                 })
             }
 
