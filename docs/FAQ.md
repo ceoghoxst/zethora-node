@@ -6,6 +6,14 @@ Short answers for people who are not technical.
 Money you can mine at home with a normal computer. No premine: every coin
 comes from mining.
 
+**Can I buy ZTHR? Is there a presale?**
+No. Nothing is for sale: no presale, no airdrop, no ICO. Every coin is
+created by mining. Testnet coins cannot be sold or traded.
+
+**When does testnet launch?**
+When it is ready. We do not publish dates in advance. It opens after
+non-technical testers can set it up on their own.
+
 **What is testnet?**
 A practice network. Everything works like the real thing, but the coins are
 worth zero. It exists so we can find problems before real value is involved.

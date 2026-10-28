@@ -46,8 +46,16 @@ Last updated: 2026-10-27
 - Some edge cases around block reorganizations in the private pool are
   only partly covered by tests (documented in docs/ZTH-SPEC-006.md).
 
+## No token sale
+
+No token is for sale. There is no presale, no airdrop and no ICO. Every
+coin will be created by mining. Testnet coins cannot be sold or traded.
+
 ## Things we will never claim
 
 - That testnet coins are worth anything. They are worth zero.
 - Guaranteed income, "passive income", or any price.
 - That Zethora is audited, until an audit is actually published.
+- Launch dates before they are ready. We do not publish hard dates.
+
+DeionRaven Labs is a project name, not a registered company.
