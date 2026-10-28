@@ -37,6 +37,13 @@ Testnet: experimental privacy ON after T3 is merged and reviewed, labeled
 unreviewed; G11 changed for testnet only, with a test that mainnet still refuses.
 Mainnet: privacy ON only after T4 independent ZK review.
 
-## Before mainnet
-Everything above DONE or explicitly ACCEPTED, then an outside security audit
-of this list.
+## Before mainnet (CEO decision 2026-10-28: bootstrapped, no paid audit)
+- Mainnet launches with private payments OFF, stated plainly as "not audited".
+  The public side is Kaspa's engine plus our supply ledger, covered by tests
+  and red-team rounds.
+- Private payments turn on for mainnet only after an independent review of
+  the private-pool integration code (the "glue": ledger, turnstile,
+  nullifiers, anchors, Orchard-in-merge-order). Sought from volunteers who
+  like the project (Zcash community, reviewers), funded later by grants or
+  donations if they come. No paid full audit is planned.
+- Every item above DONE or explicitly ACCEPTED before mainnet.
