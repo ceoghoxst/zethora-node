@@ -341,6 +341,10 @@ impl TestConsensus {
         &self.consensus.storage.zethora_nullifiers_store
     }
 
+    pub fn zethora_anchors_store(&self) -> &Arc<crate::model::stores::zethora_anchors::DbZethoraAnchorsStore> {
+        &self.consensus.storage.zethora_anchors_store
+    }
+
     pub fn utxo_diffs_store(&self) -> &Arc<crate::model::stores::utxo_diffs::DbUtxoDiffsStore> {
         &self.consensus.storage.utxo_diffs_store
     }
