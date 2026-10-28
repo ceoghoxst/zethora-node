@@ -488,6 +488,20 @@ impl VirtualStateProcessor {
         Ok(())
     }
 
+    /// Zethora: the turnstile at mempool admission (ZTH-SPEC-006 §7.1), the same rule the block template applies: a
+    /// private payment may not take more out of the private pool than `pool_left`, the pool's public balance after the
+    /// virtual's mergeset. Value it brings in is not counted. Such a payment could never be accepted on top of the
+    /// current chain, so keeping it would only waste mempool space and template slots. Chain-dependent: never a ban.
+    pub(crate) fn check_private_payment_fits_pool(&self, tx: &Transaction, pool_left: u64) -> TxResult<()> {
+        match zethora_private::pool_flows(&tx.payload) {
+            Ok(Some((_, value_out))) if value_out > pool_left => Err(TxRuleError::InvalidPrivatePayment(format!(
+                "would take {value_out} zets out of the private pool, which holds {pool_left}"
+            ))),
+            // An unreadable value balance is refused by the in-isolation checks
+            _ => Ok(()),
+        }
+    }
+
     /// Zethora: the fee pool state recorded in a block's coinbase (ZTH-SPEC-008).
     /// The pool flows along the selected chain: each chain block reads its selected parent's state.
     pub(crate) fn pool_state_of(&self, block: Hash) -> PoolState {

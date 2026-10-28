@@ -43,7 +43,13 @@ const EXACT_FIT: u64 = SHIELDED - SPEND_FEE;
 
 /// A counterfeit fully private payment taking `value_out` zets out of the private pool (all of it as the network fee).
 /// Valid in every way except that the coin it spends was never shielded on chain. Registers its anchor in `nodes`.
+/// Checked through the mempool path of `nodes[0]`, so the pool must hold at least `value_out` when it is made.
 fn counterfeit(value_out: u64, seed: u8, nodes: &[&Node]) -> Transaction {
+    nodes[0].mempool_checked(counterfeit_unchecked(value_out, seed, nodes))
+}
+
+/// `counterfeit` without the mempool check.
+fn counterfeit_unchecked(value_out: u64, seed: u8, nodes: &[&Node]) -> Transaction {
     let forger = PrivateWallet::from_seed(&[seed; 32]);
     let address = forger.address();
     let mut scanner = Scanner::new(vec![forger]);
@@ -60,7 +66,7 @@ fn counterfeit(value_out: u64, seed: u8, nodes: &[&Node]) -> Transaction {
     for node in nodes {
         node.tc.zethora_insert_anchor_for_good(&anchor, 0);
     }
-    nodes[0].mempool_checked(tx)
+    tx
 }
 
 /// An ordinary visible transaction spending the shielding transaction's change.
@@ -323,18 +329,19 @@ async fn overdraw_siblings_give_identical_state_in_both_arrival_orders() {
 async fn chain_block_whose_own_payment_overdraws_is_disqualified() {
     let mut f = shield_one_coin_on_chain().await;
     let honest = f.spend(30_000);
+    // Made (and mempool-checked) while the pool still holds 50,000: once it holds less, the mempool refuses `over` (F2)
+    let over = counterfeit(EXACT_FIT + 1, 66, &[&f.node]);
+    let fit = counterfeit(EXACT_FIT, 67, &[&f.node]);
     f.node.mine(vec![honest.clone()]).await;
     let tip = f.node.mine(vec![]).await;
     assert_eq!(shielded_balance(&f.node.coinbase_payload(tip)), EXACT_FIT);
 
     // One zet more than the pool holds: the block may not join the chain (like any block with an invalid transaction)
-    let over = counterfeit(EXACT_FIT + 1, 66, &[&f.node]);
     let bad = f.node.fresh_hash();
     assert_eq!(f.node.insert(bad, vec![tip], vec![over.clone()]).await, BlockStatus::StatusDisqualifiedFromChain);
     assert_eq!(f.node.tc.get_sink(), tip);
 
     // Positive control: exactly what the pool holds is fine, and the pool ends at exactly zero
-    let fit = counterfeit(EXACT_FIT, 67, &[&f.node]);
     let good = f.node.fresh_hash();
     assert_eq!(f.node.insert(good, vec![tip], vec![fit.clone()]).await, BlockStatus::StatusUTXOValid);
     assert_eq!(f.node.tc.get_sink(), good);
@@ -397,6 +404,67 @@ async fn block_template_leaves_out_a_payment_the_pool_cannot_cover() {
     assert_eq!(f.node.accepted_count(accepting, honest.id()), 1);
     assert_eq!(f.node.accepted_count(accepting, fit.id()), 1);
     assert_eq!(shielded_balance(&f.node.coinbase_payload(accepting)), 0);
+
+    f.node.shutdown();
+}
+
+/// The mempool's answer for one transaction, through the single and the batch admission paths (they must agree).
+fn mempool_result(node: &Node, tx: &Transaction) -> Result<(), kaspa_consensus_core::errors::tx::TxRuleError> {
+    use kaspa_consensus_core::api::args::{TransactionValidationArgs, TransactionValidationBatchArgs};
+    use kaspa_consensus_core::tx::MutableTransaction;
+    let single =
+        node.tc.validate_mempool_transaction(&mut MutableTransaction::from_tx(tx.clone()), &TransactionValidationArgs::default());
+    let mut batch = vec![MutableTransaction::from_tx(tx.clone())];
+    let batch = node.tc.validate_mempool_transactions_in_parallel(&mut batch, &TransactionValidationBatchArgs::default());
+    assert_eq!(batch, vec![single.clone()], "single and batch admission disagree");
+    single
+}
+
+#[tokio::test]
+async fn mempool_refuses_a_payment_the_pool_cannot_cover() {
+    use kaspa_consensus_core::errors::tx::TxRuleError;
+    let mut f = shield_one_coin_on_chain().await;
+    assert_eq!(shielded_balance(&f.node.coinbase_payload(f.node.tip)), SHIELDED);
+
+    // One zet more than the pool holds: refused at admission, with the template's rule
+    let over = counterfeit_unchecked(SHIELDED + 1, 66, &[&f.node]);
+    let refused = Err(TxRuleError::InvalidPrivatePayment(format!(
+        "would take {} zets out of the private pool, which holds {SHIELDED}",
+        SHIELDED + 1
+    )));
+    assert_eq!(mempool_result(&f.node, &over), refused);
+
+    // ... before the proof check: the same payment with a broken proof gets the same (cheap) refusal, not a proof error
+    let mut broken = over.clone();
+    let proof_at = PRIVATE_PAYMENT_MAGIC.len()
+        + kaspa_consensus_core::zethora_private::layout::trailer_offset(
+            kaspa_consensus_core::zethora_private::action_count(&broken.payload[4..]).unwrap(),
+        )
+        .unwrap()
+        + kaspa_consensus_core::zethora_private::layout::PROOF_OFFSET
+        + 100;
+    broken.payload[proof_at] ^= 1;
+    broken.finalize();
+    assert_eq!(mempool_result(&f.node, &broken), refused);
+
+    // Positive controls: exactly what the pool holds is admitted, and so is an honest spend
+    let fit = counterfeit_unchecked(SHIELDED, 67, &[&f.node]);
+    assert_eq!(mempool_result(&f.node, &fit), Ok(()));
+    let honest = f.spend(30_000);
+    assert_eq!(mempool_result(&f.node, &honest), Ok(()));
+
+    // The pool shrinks on chain: what fit before no longer does (the mempool reads the current virtual balance)
+    f.node.mine(vec![honest]).await;
+    f.node.mine(vec![]).await;
+    assert_eq!(shielded_balance(&f.node.coinbase_payload(f.node.tip)), EXACT_FIT);
+    assert_eq!(
+        mempool_result(&f.node, &fit),
+        Err(TxRuleError::InvalidPrivatePayment(format!(
+            "would take {SHIELDED} zets out of the private pool, which holds {EXACT_FIT}"
+        )))
+    );
+    let fit_now = counterfeit_unchecked(EXACT_FIT, 68, &[&f.node]);
+    assert_eq!(mempool_result(&f.node, &fit_now), Ok(()));
 
     f.node.shutdown();
 }
