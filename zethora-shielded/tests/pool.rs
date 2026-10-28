@@ -192,12 +192,12 @@ fn same_order_same_tree_different_order_different_tree() {
 
 // ---- Byte format (codec) -------------------------------------------------------------------------
 
-/// Where fields sit in an encoded payment with `n` actions.
+/// Where fields sit in an encoded payment with `n` actions (the shared layout).
 fn value_balance_offset(n: usize) -> usize {
-    1 + 2 + n * codec::ACTION_SIZE + 1
+    zethora_payment_layout::trailer_offset(n).unwrap() + zethora_payment_layout::VALUE_BALANCE_OFFSET
 }
 fn proof_len_offset(n: usize) -> usize {
-    value_balance_offset(n) + 8 + 32
+    zethora_payment_layout::trailer_offset(n).unwrap() + zethora_payment_layout::PROOF_LENGTH_OFFSET
 }
 
 #[test]

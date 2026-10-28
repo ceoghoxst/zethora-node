@@ -3714,6 +3714,7 @@ dependencies = [
  "workflow-log",
  "workflow-serializer",
  "workflow-wasm",
+ "zethora-payment-layout",
 ]
 
 [[package]]
@@ -9912,6 +9913,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "zethora-payment-layout"
+version = "2.1.0"
+
+[[package]]
 name = "zethora-shield"
 version = "2.1.0"
 dependencies = [
@@ -9931,12 +9936,14 @@ version = "2.1.0"
 dependencies = [
  "blake2b_simd",
  "incrementalmerkletree",
+ "kaspa-consensus-core",
  "nonempty",
  "orchard",
  "rand 0.10.1",
  "shardtree",
  "subtle",
  "zcash_note_encryption",
+ "zethora-payment-layout",
 ]
 
 [[package]]
