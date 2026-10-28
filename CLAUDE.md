@@ -547,3 +547,21 @@ Every threat-model item that can be fixed or tested in code (docs/THREAT-MODEL.m
 
 ## Decision 2026-10-27: experimental privacy on testnet (option B)
 CEO decision: after F1 is merged and CTO-reviewed, private payments are enabled on TESTNET ONLY, labeled "experimental, unreviewed, testnet coins are worth zero". Mainnet stays locked (G11 unchanged for mainnet) until an independent ZK cryptography review is complete. Purpose: find Orchard integration bugs early. Testnet cannot find silent soundness bugs (e.g. Zcash 2018 counterfeiting); the turnstile caps damage to the pool and the review remains mandatory. Before enabling: G11 change for testnet only with tests proving mainnet still refuses; update STATUS.md, FAQ.md, website and app wording the same day.
+
+2026-10-28 - F1 per-transaction turnstile (branch f1-per-tx-turnstile,
+PR open, NOT merged, PENDING CTO REVIEW). Merge loop keeps a running
+private pool balance from the selected parent's sealed balance; each
+merged block's valid txs are walked in block order with
+zethora_supply::turnstile_accepts; a tx that would go below zero is
+dropped before ANY effect (UTXO diff + muhash, coin tags, fingerprint,
+note tree, fees, pool flows, acceptance data, seq-commit). Chain
+block's own txs get the same running check (else disqualified, like the
+own-tx coin tag rule). Template refuses pool_out above what is left
+(ignores same-block pool_in). Per-block ledger_step turnstile kept as
+backstop. No stored-state change, no devnet reset. Tests:
+pipeline/tests/zethora_turnstile.rs (6) + 2 zethora_supply unit tests;
+counterfeit = spend of a local-only coin whose anchor the test registers
+as matured (TestConsensus::zethora_insert_anchor_for_good). Each new
+test shown failing with its check removed (PR description). Written by
+a Claude Code cloud session; needs CTO review before merge (standing
+rule). Private payments stay OFF on testnet/mainnet (G11 unchanged).

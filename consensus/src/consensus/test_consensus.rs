@@ -340,6 +340,19 @@ impl TestConsensus {
     pub fn zethora_nullifiers_store(&self) -> &Arc<crate::model::stores::zethora_nullifiers::DbZethoraNullifiersStore> {
         &self.consensus.storage.zethora_nullifiers_store
     }
+
+    pub fn utxo_diffs_store(&self) -> &Arc<crate::model::stores::utxo_diffs::DbUtxoDiffsStore> {
+        &self.consensus.storage.utxo_diffs_store
+    }
+
+    /// Zethora test hook: records `root` as a private coin list snapshot (anchor) produced for good at `blue_score`,
+    /// the way pruned or downloaded snapshots are stored. Lets tests simulate a broken anchor or proof rule, e.g. to
+    /// get a payment that takes more out of the private pool than it holds (the turnstile's backstop case).
+    pub fn zethora_insert_anchor_for_good(&self, root: &[u8; 32], blue_score: u64) {
+        let mut batch = rocksdb::WriteBatch::default();
+        self.consensus.storage.zethora_anchors_store.add_for_good_batch(&mut batch, root, blue_score).unwrap();
+        self.consensus.db.write(batch).unwrap();
+    }
 }
 
 impl std::ops::Deref for TestConsensus {

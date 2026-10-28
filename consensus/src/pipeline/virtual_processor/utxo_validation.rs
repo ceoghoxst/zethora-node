@@ -21,6 +21,7 @@ use crate::{
             errors::{TxResult, TxRuleError},
             tx_validation_in_utxo_context::TxValidationFlags,
         },
+        zethora_supply,
     },
 };
 use kaspa_consensus_core::{
@@ -38,7 +39,7 @@ use kaspa_consensus_core::{
         utxo_view::{UtxoView, UtxoViewComposition},
     },
 };
-use kaspa_core::{info, trace};
+use kaspa_core::{info, trace, warn};
 use kaspa_hashes::Hash;
 use kaspa_muhash::MuHash;
 use kaspa_utils::refs::Refs;
@@ -47,7 +48,7 @@ use crate::model::services::reachability::ReachabilityService;
 use crate::model::services::seq_commit_accessor::SeqCommitAccessor;
 use kaspa_consensus_core::zethora_private;
 use rayon::prelude::*;
-use smallvec::{SmallVec, smallvec};
+use smallvec::SmallVec;
 use std::collections::HashSet;
 use std::{iter::once, ops::Deref};
 
@@ -96,6 +97,10 @@ pub(super) struct UtxoProcessingContext<'a> {
     /// Zethora: the private state fingerprint (ZTH-SPEC-006 §6.4) after this mergeset: every coin tag spent and every
     /// coin list snapshot produced on the chain so far. Unfinalized, so the next chain block can add to it.
     pub private_state: MuHash,
+    /// Zethora: the private pool's public balance (the turnstile, ZTH-SPEC-006 §7.1) after the transactions this mergeset
+    /// accepted so far. Starts at the selected parent's sealed balance; a transaction that would take it below zero is
+    /// not accepted at all.
+    pub shielded_balance: u64,
 }
 
 impl<'a> UtxoProcessingContext<'a> {
@@ -114,6 +119,7 @@ impl<'a> UtxoProcessingContext<'a> {
             nullifiers: HashSet::new(),
             nullifier_list: Vec::new(),
             private_state: MuHash::new(),
+            shielded_balance: 0,
         }
     }
 
@@ -142,6 +148,9 @@ impl VirtualStateProcessor {
                 "Zethora: private state fingerprint missing for {selected_parent} ({e}). (If this node joined from a pruning point, its private state download did not finish.) Restart with --reset-db"
             )
         });
+
+        // Zethora: the private pool's balance before this mergeset, as the selected parent sealed it (ZTH-SPEC-006 §7.1)
+        ctx.shielded_balance = self.pool_state_of(selected_parent).shielded_balance;
 
         let selected_parent_transactions = self.block_transactions_store.get(ctx.selected_parent()).unwrap();
         let validated_coinbase = ValidatedTransaction::new_coinbase(&selected_parent_transactions[0]);
@@ -181,6 +190,7 @@ impl VirtualStateProcessor {
                 validation_flags,
                 ctx.selected_parent(),
                 &ctx.nullifiers,
+                &mut ctx.shielded_balance,
             );
 
             ctx.multiset_hash.combine(&inner_multiset);
@@ -338,12 +348,19 @@ impl VirtualStateProcessor {
             TxValidationFlags::Full,
             ctx.selected_parent(),
         );
-        // Zethora: the block's own transactions may not spend private coin tags its mergeset already spent (§6.3)
-        let reused = validated_transactions
+        // Zethora: the block's own transactions may not spend private coin tags its mergeset already spent (§6.3), and,
+        // one at a time in block order, may not take the private pool below the balance its mergeset leaves (the
+        // turnstile, §7.1), exactly as the next chain block replays them
+        let mut validated_transactions = validated_transactions;
+        validated_transactions.sort_unstable_by_key(|(_, idx)| *idx);
+        let mut shielded_balance = ctx.shielded_balance;
+        let valid = validated_transactions
             .iter()
-            .filter(|(vtx, _)| zethora_private::nullifiers(&vtx.tx.payload).iter().any(|nf| ctx.nullifiers.contains(nf)))
+            .filter(|(vtx, _)| {
+                !zethora_private::nullifiers(&vtx.tx.payload).iter().any(|nf| ctx.nullifiers.contains(nf))
+                    && zethora_supply::turnstile_accepts(&mut shielded_balance, &vtx.tx.payload)
+            })
             .count();
-        let valid = validated_transactions.len() - reused;
         if valid < txs.len() - 1 {
             // Some non-coinbase transactions are invalid
             return Err(InvalidTransactionsInUtxoContext(txs.len() - 1 - valid, txs.len() - 1));
@@ -500,8 +517,15 @@ impl VirtualStateProcessor {
         })
     }
 
-    /// Same as validate_transactions_in_parallel except during the iteration this will also
-    /// calculate the muhash in parallel for valid transactions
+    /// Same as validate_transactions_in_parallel except this will also calculate the muhash in parallel for the
+    /// accepted transactions.
+    ///
+    /// Zethora: also applies the private pool turnstile (ZTH-SPEC-006 §7.1) to the valid transactions one at a time, in
+    /// block order, starting from `shielded_balance` (the balance after the earlier blocks of the mergeset). A transaction
+    /// that would take the pool below zero is not accepted: it is left out of the result, so none of its effects (UTXO
+    /// diff, muhash, coin tags, coin list, fees, pool flows, acceptance data, seq-commit) ever happen. `shielded_balance`
+    /// is left at the balance after the accepted ones.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn validate_transactions_with_muhash_in_parallel<'a, V: UtxoView + Sync>(
         &self,
         txs: &'a Vec<Transaction>,
@@ -511,28 +535,33 @@ impl VirtualStateProcessor {
         flags: TxValidationFlags,
         selected_parent: Hash,
         pending_nullifiers: &HashSet<[u8; 32]>,
+        shielded_balance: &mut u64,
     ) -> (SmallVec<[(ValidatedTransaction<'a>, u32); 2]>, MuHash) {
         self.thread_pool.install(|| {
-            txs
+            let mut validated: Vec<(ValidatedTransaction<'a>, u32)> = txs
                 .par_iter() // We can do this in parallel without complications since block body validation already ensured
                             // that all txs within each block are independent
                 .enumerate()
                 .skip(1) // Skip the coinbase tx.
                 // Zethora: a private coin tag already spent earlier in this mergeset makes the transaction not accepted
                 .filter(|(_, tx)| !zethora_private::nullifiers(&tx.payload).iter().any(|nf| pending_nullifiers.contains(nf)))
-                .filter_map(|(i, tx)| self.validate_transaction_in_utxo_context(tx, &utxo_view, pov_daa_score, block_daa_score, flags, selected_parent).ok().map(|vtx| {
-                    let mh = MuHash::from_transaction(&vtx, pov_daa_score);
-                    (smallvec![(vtx, i as u32)], mh)
+                .filter_map(|(i, tx)| self.validate_transaction_in_utxo_context(tx, &utxo_view, pov_daa_score, block_daa_score, flags, selected_parent).ok().map(|vtx| (vtx, i as u32)))
+                .collect();
+            // Zethora: the turnstile depends on order, so it runs sequentially in block order, before any effect
+            validated.sort_unstable_by_key(|(_, idx)| *idx);
+            validated.retain(|(vtx, _)| {
+                let accepted = zethora_supply::turnstile_accepts(shielded_balance, &vtx.tx.payload);
+                if !accepted {
+                    // Can't happen with sound private payments: worth a warning, it points at a counterfeit
+                    warn!("Zethora: transaction {} not accepted: it would take more out of the private pool than it holds", vtx.id());
                 }
-                ))
-                .reduce(
-                    || (smallvec![], MuHash::new()),
-                    |mut a, mut b| {
-                        a.0.append(&mut b.0);
-                        a.1.combine(&b.1);
-                        a
-                    },
-                )
+                accepted
+            });
+            let multiset = validated.par_iter().map(|(vtx, _)| MuHash::from_transaction(vtx, pov_daa_score)).reduce(MuHash::new, |mut a, b| {
+                a.combine(&b);
+                a
+            });
+            (SmallVec::from_vec(validated), multiset)
         })
     }
 
@@ -845,6 +874,7 @@ impl VirtualStateProcessor {
 #[cfg(test)]
 mod tests {
     use itertools::Itertools;
+    use smallvec::smallvec;
 
     use super::*;
 

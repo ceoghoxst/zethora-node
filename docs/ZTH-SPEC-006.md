@@ -188,7 +188,15 @@ Every block, the consensus computes four quantities from its accepted transactio
 
 The turnstile arithmetic itself is a pure function, unit-tested (`turnstile_is_sequential_and_rejects_second_debit`).
 
-**Known open question:** the interaction between a mid-mergeset-rejected private transaction and the pool accounting is believed correct from code inspection (`block_pool_out` accumulates only from `validated_transactions`), but not covered by an integration test.
+**Per-transaction turnstile (F1, 2026-10-28).** The turnstile is also applied to every transaction, one at a time, in consensus merge order (`consensus/src/processes/zethora_supply.rs:76` `turnstile_accepts`):
+
+- The merge loop keeps a running balance that starts at the selected parent's sealed `shielded_balance` (`consensus/src/pipeline/virtual_processor/utxo_validation.rs:153`).
+- For each merged block in merge order, and for its valid transactions in block order: `new = remaining + pool_in - pool_out`. If `new < 0` (or it overflows), the transaction is **not accepted**. It is dropped before any effect is applied: UTXO diff and UTXO commitment, coin tags, private state fingerprint, coin list appends, fees and coinbase payout, pool flows, acceptance data, seq-commit. Otherwise it is accepted and `remaining = new` (`utxo_validation.rs:529-560`).
+- A chain block's **own** transactions must all pass the same running check, starting from the balance its mergeset leaves, or the block is disqualified from the chain. This mirrors the own-transaction coin tag rule (`utxo_validation.rs:361`). So when a selected parent is replayed, none of its transactions is ever skipped.
+- The block template refuses a transaction whose `pool_out` is more than the pool has left for the block. Same-block `pool_in` is not counted, so the template passes the running check in any order (`consensus/src/pipeline/virtual_processor/processor.rs:1475-1493`). An honest spend never needs a coin shielded in the same block, because the coin's snapshot must mature first.
+- The per-block `ledger_step` turnstile stays as a backstop. With the running check in place it cannot fire: the sum of accepted flows never goes below zero.
+
+Before F1, one overdrawing payment made the merging block fail `ledger_step`. Every later chain block must merge that block, so the chain stalled. An honest payment cannot overdraw (Orchard's value balance and the anchor rule prevent it). The per-transaction check is the backstop for a counterfeit, i.e. a broken proof or anchor rule.
 
 ### §7.3 — The emergency switch
 
@@ -263,6 +271,8 @@ Test: `fully_private_payment_needs_no_visible_coin` in `tx_validation_in_isolati
 | Payload parsing | `consensus/core/src/zethora_private.rs` |
 | Isolation checks + ban distinction | `consensus/src/processes/transaction_validator/tx_validation_in_isolation.rs::check_private_payment` |
 | Turnstile arithmetic | `consensus/src/processes/zethora_supply.rs::ledger_step`, `check_balanced` |
+| Per-transaction turnstile | `consensus/src/processes/zethora_supply.rs::turnstile_accepts`, `utxo_validation.rs::validate_transactions_with_muhash_in_parallel` |
+| Template turnstile | `consensus/src/pipeline/virtual_processor/processor.rs::build_block_template`, `virtual_shielded_balance` |
 | Supply cap | `consensus/src/processes/zethora_supply.rs::CAP_UNITS` |
 | Emergency switch | `consensus/src/processes/transaction_validator/mod.rs::private_spends_enabled` |
 | Fingerprint commitments | `consensus/core/src/coinbase.rs::CoinbaseData` |
@@ -278,6 +288,13 @@ Test: `fully_private_payment_needs_no_visible_coin` in `tx_validation_in_isolati
 | Test | Location | Covers |
 |---|---|---|
 | `turnstile_is_sequential_and_rejects_second_debit` | `zethora_supply.rs` | §7.2 |
+| `turnstile_accepts_one_transaction_at_a_time`, `turnstile_order_decides_which_payment_is_accepted` | `zethora_supply.rs` | §7.2 (per transaction) |
+| `overdrawing_payment_is_skipped_and_the_merging_block_stays_valid` | `pipeline/tests/zethora_turnstile.rs` | §7.2 (F1) |
+| `skipped_payment_leaves_exactly_the_state_of_the_block_without_it` | `pipeline/tests/zethora_turnstile.rs` | §7.2 (F1, all effects excluded) |
+| `overdraw_siblings_give_identical_state_in_both_arrival_orders` | `pipeline/tests/zethora_turnstile.rs` | §7.2 (F1, determinism) |
+| `chain_block_whose_own_payment_overdraws_is_disqualified` | `pipeline/tests/zethora_turnstile.rs` | §7.2 (F1, own transactions) |
+| `block_template_leaves_out_a_payment_the_pool_cannot_cover` | `pipeline/tests/zethora_turnstile.rs` | §7.2 (F1, template) |
+| `counterfeit_alone_passes_every_other_check` | `pipeline/tests/zethora_turnstile.rs` | positive control for the F1 tests |
 | `spent_element_is_deterministic_and_distinct` | `zethora_supply.rs` | §6.4 |
 | `nullifier_in_pending_set_is_rejected_by_private_double_spend` | `pipeline/tests/zethora_parallel_nullifier.rs` | §6.3 |
 | `parallel_blocks_spending_same_nullifier_are_counted_once` (ignored) | `pipeline/tests/zethora_parallel_nullifier.rs` | §6.3 (needs 601-block setup) |
@@ -297,7 +314,7 @@ Specific questions an external reviewer should examine. These are the "here is w
 4. **Payload wire format byte layout.** Implemented in `codec.rs`; the spec defers to code.
 5. **Pruning-point download resumability.** If a node is missing its private state (for example, the private-state download from a pruning point did not finish), it stops with a clear panic message telling the operator to restart with --reset-db. It does not continue with partial state. Automatic retry of an interrupted download is not implemented. A malicious peer could repeatedly interrupt the download to deny service to a joining node.
 6. **Fingerprint MuHash element collision.** Spent-element is 33 bytes (1-byte tag + 32 nullifier); anchor-element is 41 bytes (1-byte tag + 32 root + 8 blue score). Reviewer should verify these cannot collide.
-7. **Turnstile mid-mergeset rejection interaction.** §7.2 open question.
+7. **Turnstile mid-mergeset rejection interaction.** ~~§7.2 open question.~~ **Addressed 2026-10-28 (F1, pending CTO review).** The turnstile is now checked per transaction in merge order, and a skipped transaction has none of its effects (§7.2). Covered by `pipeline/tests/zethora_turnstile.rs`. Reviewer should check that the merge order the running balance follows is the consensus order on every node.
 8. **`ANCHOR_DEPTH` at 1 BPS vs. future higher rates.** Currently hardcoded 600; TODO in code to scale.
 9. **§8.2.** Cited but not recovered from citations. Likely proof-check batching.
 
@@ -308,4 +325,5 @@ Specific questions an external reviewer should examine. These are the "here is w
 | 0.1 | 2026-10-19 | Initial consolidation from code citations. Sections §4, §5, §6.1–§6.4, §7.1–§7.4, §8.1, §8.3, §9 specified. §8.2 and parts of §4 marked TBD. |
 | 0.2 | 2026-10-19 | Appendix C item 2: anchor reorg transition covered by consensus/src/pipeline/tests/zethora_anchor_reorg.rs. Version bumped. |
 | 0.3 | 2026-10-23 | §7.3 level (a) fully specified: testnet and mainnet refuse ALL private payments (shielding, private sends, unshielding), not only spends. Refusal fires at isolation time, before decode and proof. Tests split into `shielding_is_accepted_when_spends_on` and `private_payments_are_refused_when_spends_off`; the second is shown failing on pre-G11 code. Appendix C item 3 closed. Appendix B row split. |
+| 0.4 | 2026-10-28 | §7.2: per-transaction turnstile in merge order (F1). A transaction that would overdraw the pool is not accepted and has none of its effects. The chain block's own transactions and the block template follow the same rule. Appendix A, B rows added. Appendix C item 7 addressed. |
 | 0.2 | 2026-10-19 | Appendix C item 2: anchor reorg transition covered by consensus/src/pipeline/tests/zethora_anchor_reorg.rs. Version bumped. |
