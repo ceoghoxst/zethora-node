@@ -16,9 +16,10 @@
 //! private pool's public balance (the turnstile) can never go below zero.
 //!
 //! The hard cap (ZTH-SPEC-001 §5): no block may bring the total ever issued above 100,000,000 ZTHR
-//! (`CAP_UNITS`). The reward schedule itself stops ~1,000 ZTHR short of it (see `zethora_subsidy`), so this
-//! rule never fires on an honest chain; it is the backstop that keeps the cap even if a future bug or an
-//! unforeseen block pattern paid too much: such a block is invalid.
+//! (`CAP_UNITS`). The reward schedule itself stops ~1,000 ZTHR short of it (see `zethora_subsidy`), and the coinbase
+//! clamps every merged block's subsidy to what is left under the cap (`CoinbaseManager::expected_coinbase_transaction`,
+//! CEO decision 2026-10-28), so issued reaches the cap at most exactly and an honest block can never trip this rule.
+//! It stays as the backstop that keeps the cap even if a future bug paid too much: such a block is invalid.
 
 use crate::processes::zethora_subsidy::CAP_UNITS;
 use kaspa_consensus_core::coinbase::PoolState;
