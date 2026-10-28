@@ -68,6 +68,25 @@ pub fn turnstile(balance: u64, value_in: u64, value_out: u64) -> Result<u64, Sup
     u64::try_from(available - value_out as u128).map_err(|_| SupplyError::CounterOverflow("private pool"))
 }
 
+/// The turnstile for one transaction (ZTH-SPEC-006 §7.1), applied in consensus merge order. `remaining` is the private
+/// pool's public balance after the transactions accepted before this one. If the transaction's private payment would
+/// take the pool below zero (or overflow it), returns false and leaves `remaining` unchanged: the transaction is then
+/// not accepted, so none of its effects happen. Otherwise applies its pool flows to `remaining` and returns true.
+/// Ordinary transactions always pass. A payload whose value balance can't be read never passes (validation refuses it).
+pub fn turnstile_accepts(remaining: &mut u64, payload: &[u8]) -> bool {
+    match kaspa_consensus_core::zethora_private::pool_flows(payload) {
+        Ok(None) => true,
+        Ok(Some((value_in, value_out))) => match turnstile(*remaining, value_in, value_out) {
+            Ok(next) => {
+                *remaining = next;
+                true
+            }
+            Err(_) => false,
+        },
+        Err(()) => false,
+    }
+}
+
 /// Everything one chain block changes in the ledger, apart from the fee pool step.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct BlockFlows {
@@ -203,6 +222,69 @@ mod tests {
         // Taking out more than went in is rejected even if the visible side "adds up"
         let flows = BlockFlows { visible_change: 400_001, shielded_out: 400_001, ..Default::default() };
         assert!(matches!(ledger_step(inside, inside, flows), Err(SupplyError::ShieldedPoolNegative { .. })));
+    }
+
+    /// A private payment payload with this value balance (positive: leaves the pool; negative: enters it)
+    fn payment(value_balance: i64) -> Vec<u8> {
+        let mut p = kaspa_consensus_core::zethora_private::PRIVATE_PAYMENT_MAGIC.to_vec();
+        p.extend([1u8, 1, 0]); // pool version, one action
+        p.extend(vec![0u8; kaspa_consensus_core::zethora_private::ACTION_SIZE]);
+        p.push(0); // flags
+        p.extend(value_balance.to_le_bytes());
+        p
+    }
+
+    #[test]
+    fn turnstile_accepts_one_transaction_at_a_time() {
+        // Positive control: payments that fit are accepted and move the balance by exactly their value balance
+        let mut remaining = 50_000;
+        assert!(turnstile_accepts(&mut remaining, &payment(1_000)));
+        assert_eq!(remaining, 49_000);
+        assert!(turnstile_accepts(&mut remaining, &payment(-500)));
+        assert_eq!(remaining, 49_500);
+        // Taking out exactly what is left is fine
+        assert!(turnstile_accepts(&mut remaining, &payment(49_500)));
+        assert_eq!(remaining, 0);
+        // One zet more than the pool holds is refused and leaves the balance untouched
+        let mut remaining = 49_000;
+        assert!(!turnstile_accepts(&mut remaining, &payment(49_001)));
+        assert_eq!(remaining, 49_000);
+        // ... and the next payment that fits is still accepted from the untouched balance
+        assert!(turnstile_accepts(&mut remaining, &payment(49_000)));
+        assert_eq!(remaining, 0);
+        // Ordinary transactions always pass and never move the balance
+        assert!(turnstile_accepts(&mut remaining, b"hello"));
+        assert!(turnstile_accepts(&mut remaining, &[]));
+        assert_eq!(remaining, 0);
+        // An unreadable value balance never passes
+        let mut remaining = 10;
+        assert!(!turnstile_accepts(&mut remaining, b"ZSHP"));
+        assert_eq!(remaining, 10);
+        // Overflow is refused, not wrapped
+        let mut remaining = u64::MAX;
+        assert!(!turnstile_accepts(&mut remaining, &payment(-1)));
+        assert_eq!(remaining, u64::MAX);
+    }
+
+    #[test]
+    fn turnstile_order_decides_which_payment_is_accepted() {
+        // 50,000 in the pool; two payments each fit alone (1,000 and 49,500) but not together: the first in merge
+        // order is accepted, the second is not, and the balance never goes below zero
+        let (honest, other) = (payment(1_000), payment(49_500));
+        let mut remaining = 50_000;
+        let accepted: Vec<bool> = [&honest, &other].iter().map(|p| turnstile_accepts(&mut remaining, p)).collect();
+        assert_eq!(accepted, vec![true, false]);
+        assert_eq!(remaining, 49_000);
+        let mut remaining = 50_000;
+        let accepted: Vec<bool> = [&other, &honest].iter().map(|p| turnstile_accepts(&mut remaining, p)).collect();
+        assert_eq!(accepted, vec![true, false]);
+        assert_eq!(remaining, 500);
+        // Value brought in earlier in merge order can be taken out later
+        let mut remaining = 0;
+        assert!(!turnstile_accepts(&mut remaining, &payment(700)));
+        assert!(turnstile_accepts(&mut remaining, &payment(-700)));
+        assert!(turnstile_accepts(&mut remaining, &payment(700)));
+        assert_eq!(remaining, 0);
     }
 
     #[test]

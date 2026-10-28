@@ -1468,12 +1468,27 @@ impl VirtualStateProcessor {
         let mut invalid_transactions = HashMap::new();
         // Zethora: private coin tags already used by the virtual's mergeset or by earlier template txs (§6.3)
         let mut template_nullifiers: std::collections::HashSet<[u8; 32]> = virtual_state.mergeset_nullifiers.iter().copied().collect();
+        // Zethora: what the private pool holds after the virtual's mergeset (the turnstile, §7.1). The template's
+        // transactions together may not take out more than that. Value they bring in is not counted, so the block passes
+        // the per-transaction turnstile in any order (an honest spend never needs a coin shielded in the same block: the
+        // coin's snapshot must mature first)
+        let mut template_pool_left = self.virtual_shielded_balance(&virtual_state);
         let mut tag_check = |tx: &Transaction, res: TxResult<u64>| -> TxResult<u64> {
             let fee = res?;
             let nfs = kaspa_consensus_core::zethora_private::nullifiers(&tx.payload);
             if nfs.iter().any(|nf| template_nullifiers.contains(nf)) {
                 return Err(TxRuleError::InvalidPrivatePayment("private coin tag already used".to_string()));
             }
+            let value_out = match kaspa_consensus_core::zethora_private::pool_flows(&tx.payload) {
+                Ok(flows) => flows.map_or(0, |(_, value_out)| value_out),
+                Err(()) => return Err(TxRuleError::InvalidPrivatePayment("unreadable value balance".to_string())),
+            };
+            if value_out > template_pool_left {
+                return Err(TxRuleError::InvalidPrivatePayment(format!(
+                    "would take {value_out} zets out of the private pool, which has {template_pool_left} left for this block"
+                )));
+            }
+            template_pool_left -= value_out;
             template_nullifiers.extend(nfs);
             Ok(fee)
         };
@@ -1530,6 +1545,17 @@ impl VirtualStateProcessor {
 
         // Build the template
         self.build_block_template_from_virtual_state(virtual_state, miner_data, txs, calculated_fees)
+    }
+
+    /// Zethora: the private pool's public balance after the virtual's mergeset (ZTH-SPEC-006 §7.1): the balance the
+    /// virtual's selected parent sealed plus the pool flows of every transaction the mergeset accepted. The merge loop
+    /// accepts transactions one at a time without ever going below zero, so the sum never does either.
+    pub(crate) fn virtual_shielded_balance(&self, virtual_state: &VirtualState) -> u64 {
+        let rewards = virtual_state.mergeset_rewards.values();
+        let (value_in, value_out) =
+            rewards.fold((0u64, 0u64), |(i, o), r| (i.saturating_add(r.pool_in), o.saturating_add(r.pool_out)));
+        let parent = self.pool_state_of(virtual_state.ghostdag_data.selected_parent).shielded_balance;
+        crate::processes::zethora_supply::turnstile(parent, value_in, value_out).unwrap_or(0)
     }
 
     pub(crate) fn validate_block_template_transactions(
