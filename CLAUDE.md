@@ -566,3 +566,30 @@ as matured (TestConsensus::zethora_insert_anchor_for_good). Each new
 test shown failing with its check removed (PR description). Written by
 a Claude Code cloud session; needs CTO review before merge (standing
 rule). Private payments stay OFF on testnet/mainnet (G11 unchanged).
+
+2026-10-28 - F2 pre-testnet hardening (branch f2-hardening, PR open, NOT
+merged, PENDING CTO REVIEW). One commit per item. (1) New crate
+zethora-payment-layout (zethora-shielded/layout) = the only place the
+private payment byte offsets live; consensus readers and the codec both
+use it; test zethora-shielded/tests/payment_layout.rs (real 1/2/16-action
+payments, 248 s debug). (2) Cap clamp: coinbase pays each merged block
+min(subsidy, CAP_UNITS - issued), blues then reds; CapExceeded kept as
+backstop; effective from public testnet genesis (T11 clarification).
+(3) Mempool refuses a private payment whose pool_out > virtual pool
+balance (before the proof check; never a ban). (4) IBD trace: trusted
+bodies get full isolation checks (proof); P's private state checked
+against its fingerprint/root; blocks above P get full context checks +
+F1 turnstile. No code change. (5) Missing note tree / fingerprint:
+reachable only via DB corruption or a bug; panic -> process exit; plain
+restart loops, --reset-db recovers. Automatic resync from the pruning
+point = DESIGN DECISION PENDING (not built). (6)(7)(8) new e2e tests:
+anchor reorg, pruning-point state import (tampered copies refused before
+any write), mint attacks. Finding: after a reorg, the virtual re-accepts
+an old-branch private spend once its snapshot matures on the new chain
+(same as Kaspa for any tx). (9) stale 10-bps comments fixed + params
+test. (10) cargo audit passes: 6 crates bumped in Cargo.lock;
+tracing-subscriber 0.2.25 ignored in .cargo/audit.toml (not in kaspad).
+(11) Explorer/RPC show no coinbase-ledger numbers; FOLLOW-UP: RPC
+GetCoinSupply.max_sompi still returns Kaspa's MAX_SOMPI (2.9e18) not
+CAP_UNITS (1e18). Every new test shown failing with its protection
+removed (PR). Written by a Claude Code cloud session.
