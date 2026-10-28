@@ -7,5 +7,6 @@ taskkill /f /im zethora-miner.exe >nul 2>&1
 timeout /t 3 /nobreak >nul
 echo Stopping the node...
 taskkill /f /im zethora-node.exe >nul 2>&1
+taskkill /f /fi "WINDOWTITLE eq Zethora - status*" >nul 2>&1
 echo Done. Your key file and rewards are kept.
 pause
