@@ -539,6 +539,15 @@ cargo about generate --workspace about.hbs -o build-assets\THIRD-PARTY-CRATES.tx
 ## Standing rule: trust comes before growth
 Nothing ships that a stranger can't verify, and nothing in the user experience may look hidden, pressured, or misleading. If a feature grows faster but costs trust, it waits. (Launchers are readable .cmd scripts for this reason; a GUI ships only with code signing.)
 
+## Standing rule: no surprise chain splits (threat model T11)
+Any change to consensus rules ships with a fixed activation height (or DAA score) announced before the release, so old and new nodes agree until that point. Never ship a consensus change that activates immediately on a live network. Test old-vs-new behaviour around the activation point before release.
+
+## Standing rule: pre-testnet hardening
+Every threat-model item that can be fixed or tested in code (docs/THREAT-MODEL.md) is done before public testnet opens, not deferred to mainnet. Exceptions only: items that need an outside party (ZK review, audit) or a live network to prove.
+
+## Decision 2026-10-27: experimental privacy on testnet (option B)
+CEO decision: after F1 is merged and CTO-reviewed, private payments are enabled on TESTNET ONLY, labeled "experimental, unreviewed, testnet coins are worth zero". Mainnet stays locked (G11 unchanged for mainnet) until an independent ZK cryptography review is complete. Purpose: find Orchard integration bugs early. Testnet cannot find silent soundness bugs (e.g. Zcash 2018 counterfeiting); the turnstile caps damage to the pool and the review remains mandatory. Before enabling: G11 change for testnet only with tests proving mainnet still refuses; update STATUS.md, FAQ.md, website and app wording the same day.
+
 2026-10-28 - F1 per-transaction turnstile (branch f1-per-tx-turnstile,
 PR open, NOT merged, PENDING CTO REVIEW). Merge loop keeps a running
 private pool balance from the selected parent's sealed balance; each

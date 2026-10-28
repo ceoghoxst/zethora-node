@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zethora</title>
+<meta name="description" content="Zethora: a fair-launch cryptocurrency you can mine at home on a normal PC. No premine. Testnet coming soon.">
+<style>
+:root{--bg:#121218;--panel:#1e1e28;--fg:#ebebf0;--dim:#9696a5;--accent:#8c6eff;--green:#46d278}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 "Segoe UI",system-ui,-apple-system,sans-serif}
+main{max-width:860px;margin:0 auto;padding:48px 16px 64px}
+h1{font-size:56px;letter-spacing:2px;margin:0;color:var(--accent);font-weight:800}
+.tag{color:var(--dim);margin:4px 0 32px;font-size:18px}
+.hero{font-size:24px;line-height:1.4;margin:0 0 28px;max-width:640px}
+.btn{display:inline-block;padding:14px 28px;border-radius:6px;font-weight:700;text-decoration:none;margin:0 10px 10px 0}
+.btn.off{background:#2c2c38;color:var(--dim);cursor:not-allowed}
+.btn.ghost{border:1px solid var(--accent);color:var(--fg)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin:40px 0}
+.card{background:var(--panel);padding:20px;border-radius:8px}
+.card h3{margin:0 0 6px;font-size:17px}
+.card p{margin:0;color:var(--dim);font-size:15px}
+.ok{color:var(--green);font-weight:700}
+h2{margin:44px 0 12px;font-size:22px}
+ul{padding-left:20px;color:var(--dim)} li{margin:4px 0}
+a{color:var(--accent)}
+footer{color:var(--dim);font-size:13px;margin-top:56px;border-top:1px solid #2c2c38;padding-top:16px}
+@media(max-width:520px){h1{font-size:42px}.hero{font-size:20px}}
+</style>
+</head>
+<body>
+<main>
+  <h1>ZETHORA</h1>
+  <div class="tag">ZTHR &middot; money you can mine at home &middot; privacy after review</div>
+  <p class="hero">A fair-launch cryptocurrency that runs on a normal PC. No premine. No presale. Every coin comes from mining.</p>
+  <span class="btn off" title="Available when testnet opens">Download &middot; testnet coming soon</span>
+  <a class="btn ghost" href="https://github.com/ceoghoxst/zethora-node">Source code</a>
+
+  <div class="grid">
+    <div class="card"><h3>Mine at home</h3><p>RandomZ is built for ordinary CPUs. One window, one button: START MINING.</p></div>
+    <div class="card"><h3>Supply you can check</h3><p>After every block the miner proves the total supply is exactly right: <span class="ok">BALANCED</span>.</p></div>
+    <div class="card"><h3>Nothing hidden</h3><p>The miner app is a plain text script. Open it in Notepad and read what it does.</p></div>
+    <div class="card"><h3>Fair launch</h3><p>100M cap, halving every 8 years, no premine. The team mines like everyone else.</p></div>
+  </div>
+
+  <h2>Verify your download</h2>
+  <p style="color:var(--dim)">Only download from the GitHub releases page linked here. Every release lists a SHA256 checksum for each file. Before running anything, open PowerShell in the folder and run <code>Get-FileHash zethora-node.exe</code> and <code>Get-FileHash zethora-miner.exe</code>. The hashes must match <b>SHA256SUMS.txt</b> and the hashes posted here at launch. If they don't match, delete the files and report it.</p>
+
+  <h2>Honest status</h2>
+  <ul>
+    <li>Public testnet: not open yet. It opens after non-technical testers can set it up alone.</li>
+    <li>Private payments: in the code, switched <b>off</b> until an independent cryptography review.</li>
+    <li>Not audited yet. Binaries are not code-signed yet.</li>
+    <li>Testnet coins are worth zero. Nothing is for sale.</li>
+  </ul>
+  <p><a href="https://github.com/ceoghoxst/zethora-node/blob/zethora/docs/STATUS.md">Full status and known risks</a> &middot;
+     <a href="https://github.com/ceoghoxst/zethora-node/blob/zethora/docs/FAQ.md">FAQ</a> &middot;
+     <a href="https://github.com/ceoghoxst/zethora-node/blob/zethora/press/README.md">Press kit</a></p>
+
+  <footer>Built by Deion Smith, with AI; every change tested. DeionRaven Labs is a project name, not a registered company. No investment advice, no price, no promised income. &middot; <a href="https://x.com/ZethoraNetwork">@ZethoraNetwork</a></footer>
+</main>
+</body>
+</html>

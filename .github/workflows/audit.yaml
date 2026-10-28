@@ -1,0 +1,23 @@
+name: Security audit
+
+# Scans Cargo.lock against the RustSec advisory database for crates with
+# known vulnerabilities (threat model T15). Runs on every push, weekly,
+# and on demand. A failure means: triage the advisory, do not ignore it.
+on:
+  push:
+    branches: [zethora]
+    paths: ['**/Cargo.toml', 'Cargo.lock', '.github/workflows/audit.yaml']
+  schedule:
+    - cron: '17 9 * * 1'
+  workflow_dispatch:
+
+jobs:
+  cargo-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Scan dependencies
+        run: cargo audit

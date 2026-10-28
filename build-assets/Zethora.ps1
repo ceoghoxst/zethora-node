@@ -21,6 +21,7 @@ $script:node = $null; $script:miner = $null; $script:bal = $null
 $script:minerPos = 0; $script:startedAt = $null; $script:lastBal = [datetime]::MinValue
 $script:unbalanced = $false
 $script:balDue = [datetime]::MinValue
+$script:restarts = 0
 
 # ---------- look ----------
 $bg = [Drawing.Color]::FromArgb(18,18,24); $panel = [Drawing.Color]::FromArgb(30,30,40)
@@ -75,7 +76,20 @@ $log.Font = New-Object Drawing.Font('Consolas',9); $log.BorderStyle = 'None'
 $log.Location = New-Object Drawing.Point(24,248); $log.Size = New-Object Drawing.Size(656,220)
 $form.Controls.Add($log)
 
-New-Label 'Keep zethora-miner-key-testnet.txt in this folder: it holds your rewards. Never share it.' 24 478 656 40 9 $false $dim | Out-Null
+New-Label 'Your key file holds your rewards. Back it up (USB or a second drive). Never share it.' 24 482 470 40 9 $false $dim | Out-Null
+$keyBtn = New-Object Windows.Forms.Button; $keyBtn.Text = 'BACK UP MY KEY'
+$keyBtn.Location = New-Object Drawing.Point(510,476); $keyBtn.Size = New-Object Drawing.Size(170,32)
+$keyBtn.FlatStyle = 'Flat'; $keyBtn.ForeColor = $fg; $keyBtn.BackColor = $panel
+$form.Controls.Add($keyBtn)
+$keyBtn.Add_Click({
+  $k = Join-Path $here 'zethora-miner-key-testnet.txt'
+  if (Test-Path $k) {
+    [Windows.Forms.MessageBox]::Show("File Explorer will open with your key file selected.`n`nCopy it to a USB stick or another safe place. Anyone with this file can take your coins. If you lose it, your coins are gone.",'Back up your key') | Out-Null
+    Start-Process explorer.exe "/select,`"$k`""
+  } else {
+    [Windows.Forms.MessageBox]::Show('No key file yet. It is created the first time you start mining.','Back up your key') | Out-Null
+  }
+})
 
 function Add-Log($s) {
   $log.AppendText("$s`r`n")
@@ -101,6 +115,8 @@ function Start-Miner {
   Add-Log 'Starting miner...'
   $script:miner = Start-Process -FilePath $minerExe -ArgumentList '--testnet' `
       -WorkingDirectory $here -WindowStyle Hidden -RedirectStandardOutput $minerLog -RedirectStandardError "$minerLog.err" -PassThru
+  # Below-normal priority: full speed when the PC is idle, but your other apps always come first.
+  try { $script:miner.PriorityClass = 'BelowNormal' } catch {}
   $script:minerPos = 0
 }
 
@@ -125,16 +141,27 @@ function Read-New($path,[ref]$pos) {
   } catch { return @() }
 }
 
-$btn.Add_Click({ if ($script:node) { Stop-All } else { Start-All } })
+$btn.Add_Click({ if ($script:node) { Stop-All } else { $script:restarts = 0; Start-All } })
 
 $timer = New-Object Windows.Forms.Timer; $timer.Interval = 1000
 $timer.Add_Tick({
   if (-not $script:node) { return }
-  if ($script:node.HasExited) { Add-Log 'The node stopped unexpectedly. See node.log.'; Stop-All; return }
+  if ($script:node.HasExited) {
+    $script:restarts++
+    if ($script:restarts -gt 3) { Add-Log 'The node keeps stopping. See node.log and send it to us.'; Stop-All; return }
+    Add-Log "The node stopped unexpectedly. Restarting it ($($script:restarts) of 3)..."
+    foreach ($p in @($script:miner,$script:bal)) { if ($p -and -not $p.HasExited) { try { Stop-Process -Id $p.Id -Force } catch {} } }
+    $script:bal = $null; Copy-Item $nodeLog (Join-Path $here 'node-crash.log') -Force -ErrorAction SilentlyContinue; Start-All; return
+  }
   $age = ((Get-Date) - $script:startedAt).TotalSeconds
   if (-not $script:miner -and $age -ge 20) { Start-Miner }
   if ($script:miner) {
-    if ($script:miner.HasExited) { Add-Log 'The miner stopped unexpectedly. See miner.log.'; Stop-All; return }
+    if ($script:miner.HasExited) {
+      $script:restarts++
+      if ($script:restarts -gt 3) { Add-Log 'The miner keeps stopping. See miner.log and send it to us.'; Stop-All; return }
+      Add-Log "The miner stopped unexpectedly. Restarting it ($($script:restarts) of 3)..."
+      Copy-Item $minerLog (Join-Path $here 'miner-crash.log') -Force -ErrorAction SilentlyContinue; Start-Miner; return
+    }
     $pos = $script:minerPos; $lines = Read-New $minerLog ([ref]$pos); $script:minerPos = $pos
     foreach ($l in $lines) {
       Add-Log $l
