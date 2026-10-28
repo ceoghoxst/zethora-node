@@ -76,7 +76,20 @@ $log.Font = New-Object Drawing.Font('Consolas',9); $log.BorderStyle = 'None'
 $log.Location = New-Object Drawing.Point(24,248); $log.Size = New-Object Drawing.Size(656,220)
 $form.Controls.Add($log)
 
-New-Label 'Keep zethora-miner-key-testnet.txt in this folder: it holds your rewards. Never share it.' 24 478 656 40 9 $false $dim | Out-Null
+New-Label 'Your key file holds your rewards. Back it up (USB or a second drive). Never share it.' 24 482 470 40 9 $false $dim | Out-Null
+$keyBtn = New-Object Windows.Forms.Button; $keyBtn.Text = 'BACK UP MY KEY'
+$keyBtn.Location = New-Object Drawing.Point(510,476); $keyBtn.Size = New-Object Drawing.Size(170,32)
+$keyBtn.FlatStyle = 'Flat'; $keyBtn.ForeColor = $fg; $keyBtn.BackColor = $panel
+$form.Controls.Add($keyBtn)
+$keyBtn.Add_Click({
+  $k = Join-Path $here 'zethora-miner-key-testnet.txt'
+  if (Test-Path $k) {
+    [Windows.Forms.MessageBox]::Show("File Explorer will open with your key file selected.`n`nCopy it to a USB stick or another safe place. Anyone with this file can take your coins. If you lose it, your coins are gone.",'Back up your key') | Out-Null
+    Start-Process explorer.exe "/select,`"$k`""
+  } else {
+    [Windows.Forms.MessageBox]::Show('No key file yet. It is created the first time you start mining.','Back up your key') | Out-Null
+  }
+})
 
 function Add-Log($s) {
   $log.AppendText("$s`r`n")
