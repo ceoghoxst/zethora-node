@@ -541,6 +541,7 @@ Nothing ships that a stranger can't verify, and nothing in the user experience m
 
 ## Standing rule: no surprise chain splits (threat model T11)
 Any change to consensus rules ships with a fixed activation height (or DAA score) announced before the release, so old and new nodes agree until that point. Never ship a consensus change that activates immediately on a live network. Test old-vs-new behaviour around the activation point before release.
+Clarification (CTO, 2026-10-28): T11 applies once a public network is live. Before the public testnet launches there is no live network to split, so consensus changes (F1, F2, the testnet privacy switch) take effect from the public testnet genesis. PR #3 decision: F1 accepted as is (option a).
 
 ## Standing rule: pre-testnet hardening
 Every threat-model item that can be fixed or tested in code (docs/THREAT-MODEL.md) is done before public testnet opens, not deferred to mainnet. Exceptions only: items that need an outside party (ZK review, audit) or a live network to prove.
