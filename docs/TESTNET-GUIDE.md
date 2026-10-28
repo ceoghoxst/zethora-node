@@ -1,109 +1,108 @@
-# Zethora Testnet - Getting Started
+# Zethora testnet: setup guide (Windows)
 
-This guide helps you run a Zethora node and miner on a Windows PC.
+No experience needed. Every click is written out. Takes about 10 minutes.
 
-**Please read this first:**
-* Zethora is on a test network (testnet).
-* **Testnet coins have no value.** They are not worth money and cannot be sold.
-* Private payments are switched off. You cannot shield, send privately, or unshield on testnet.
+**Before you start:** testnet coins are worth zero. This is a practice
+network for testing.
 
-You do not need to know how to code. You only download a file and paste a few commands.
-
-## What you need
-* A Windows 10 or 11 PC.
-* At least 8 GB of memory (16 GB recommended). The miner uses about 2.5 GB.
-* An internet connection.
+**You need:** a Windows 10 or 11 PC with 8 GB of memory or more.
 
 ---
 
-## Step 1: Download and unzip
+## Step 1: Download
 
-1. In your web browser, go to: https://github.com/ceoghoxst/zethora-node/releases
-2. Find the newest testnet release and download the file ending in `.zip`.
-3. Right-click the downloaded file and choose **Extract All...**, then click **Extract**.
-4. Open the new folder. You should see `zethora-node.exe` and `zethora-miner.exe`.
+1. Open your web browser (Edge, Chrome, or any other).
+2. Go to: **github.com/ceoghoxst/zethora-node/releases**
+3. Find the newest release at the top of the page.
+4. Scroll down to the section called **Assets** in that release.
+   (If you only see a few items, click **Assets** to open the list.)
+5. Click the file whose name starts with **zethora-windows-x64** and ends
+   with **.zip**.
+   - Do **not** click "Source code". That is not the program.
+6. Wait for the download to finish. Your browser shows it at the top
+   right or bottom of the window.
 
----
+## Step 2: Unzip (important)
 
-## Step 2: Check the files (recommended)
+A .zip file is a packed folder. Windows can show what is inside without
+unpacking it, but the programs **will not work** until you unpack it.
 
-1. Inside the extracted folder, click the address bar at the very top of the window (where the folder path is).
-2. Type `powershell` and press **Enter**. A blue PowerShell window opens in this folder.
-3. Paste this command and press **Enter**:
+1. Open **File Explorer**: the yellow folder icon on the taskbar, or press
+   the **Windows key + E** together.
+2. Click **Downloads** on the left side.
+3. Find the file **zethora-windows-x64-...zip** (newest at the top).
+4. **Right-click** it and choose **Extract All...**
+   (On some Windows 11 PCs: right-click, then **Show more options**, then
+   **Extract All...**)
+5. A window opens. Leave everything as it is and click **Extract**.
+6. A new folder opens with the same name as the zip, without ".zip".
+   This is your Zethora folder. You should see files like
+   **Zethora.cmd**, **zethora-node.exe** and **zethora-miner.exe**.
 
-```powershell
-Get-FileHash .\zethora-node.exe, .\zethora-miner.exe -Algorithm SHA256
-```
+Tip: you can move this folder anywhere you like, for example to your
+Desktop. Keep all the files together.
 
-4. It prints two long fingerprints. In the folder, open `SHA256SUMS.txt` with Notepad.
-5. Each fingerprint must match the line for the same file name (upper/lower case does not matter). If one does not match, stop and do not run the programs.
+## Step 3: Start mining
 
----
+1. In your Zethora folder, double-click **Zethora** (the file named
+   Zethora.cmd). If you see file extensions hidden, it shows as just
+   "Zethora" with a gear-like icon.
+2. Windows may show a blue box **"Windows protected your PC"**. This
+   happens with new programs from small projects that are not signed yet.
+   Click **More info**, then **Run anyway**.
+   - Want to be sure the files are ours? See "Check the download" below.
+3. The Zethora window opens. Click the purple **START MINING** button.
+4. Wait. The first start takes about 1 to 2 minutes:
+   - Status shows **Starting**, then **Preparing**, then **Mining**.
+   - Speed shows your hash rate (it climbs over the first few minutes).
+5. When you find a block, **Blocks found** goes up and the
+   **Supply check** line turns green: **BALANCED**.
+6. **Balance** updates a few seconds after each block you find.
 
-## Step 3: Start the node
+If the Supply check ever turns red, click **STOP MINING** and send us a
+screenshot.
 
-Keep using the same PowerShell window from Step 2.
+## Step 4: Back up your key
 
-The first time you run it, Windows may show a blue **"Windows protected your PC"** screen: click **More info**, then **Run anyway**. If Windows asks about the firewall, click **Allow access**.
+The first time you mine, a file called **zethora-miner-key-testnet.txt**
+is created in your Zethora folder. It controls your coins.
 
-Paste this command and press **Enter**:
+1. Click **BACK UP MY KEY** in the Zethora window.
+2. Read the message and click **OK**. File Explorer opens with the key
+   file selected.
+3. Copy it to a USB stick or another safe place.
 
-```powershell
-.\zethora-node.exe --testnet --utxoindex --enable-unsynced-mining
-```
+Never share this file. Anyone who has it can take your coins.
 
-The node starts printing text. **Leave this window open.**
+## Step 5: Stop
 
-*Note: this command is for solo testing. When the public testnet opens, a seed address will be added to it so you can connect to other people.*
+Click **STOP MINING**, or close the window with the X. Both stop
+everything. Your coins and key are kept.
 
----
-
-## Step 4: Start the miner
-
-1. Go back to the extracted folder window.
-2. Click the address bar again, type `powershell`, press **Enter**. A second blue window opens.
-3. Paste this command and press **Enter**:
-
-```powershell
-.\zethora-miner.exe --testnet
-```
-
-The first start can take a few minutes. The first block can take longer on slower PCs.
-
-**Important:** on the first run the miner creates a file called `zethora-miner-key-testnet.txt` in this folder. Keep it: it holds your testnet rewards. Never share it.
-
-**How to read the screen:** each time a block is mined, the miner prints a `Supply check` line. It should end with the word **BALANCED**. If a Supply check line does NOT say BALANCED, stop the miner (Ctrl + C) and take a screenshot.
-
----
-
-## Step 5: Check your balance
-
-The node from Step 3 must still be running.
-
-1. Open a third PowerShell window in the same folder (address bar, type `powershell`, Enter).
-2. Paste this command and press **Enter**:
-
-```powershell
-.\zethora-miner.exe --testnet balance
-```
-
-It prints your testnet balance. New rewards show up after the next block. Testnet coins have no value; this number is only for testing.
-
----
-
-## Step 6: How to stop
-
-1. Click the miner window and press **Ctrl + C**.
-2. Click the node window and press **Ctrl + C**.
-
-To start again later: open PowerShell in the folder (address bar trick) and repeat Step 3, then Step 4.
+To mine again later, double-click **Zethora** and click **START MINING**.
 
 ---
 
-## If something fails
+## Check the download (optional, recommended)
 
-1. Take a screenshot of the window.
-2. Copy the last 5 to 10 lines of text.
-3. Send them to the person who gave you this guide.
+1. In your Zethora folder, click the address bar at the top of File
+   Explorer, type **powershell** and press **Enter**.
+2. In the window that opens, type:
+   `Get-FileHash zethora-node.exe` and press Enter, then
+   `Get-FileHash zethora-miner.exe` and press Enter.
+3. Open **SHA256SUMS.txt** in the same folder (double-click it).
+4. The long code next to each program must match. Upper or lower case
+   does not matter. If they don't match, delete everything and tell us.
 
-If you are on your own, you can report it publicly at: https://github.com/ceoghoxst/zethora-node/issues
+## Something went wrong?
+
+| What you see | What to do |
+|---|---|
+| "Can't find zethora-node.exe or zethora-miner.exe" | You opened Zethora from inside the zip. Go back to Step 2 and use **Extract All**. |
+| The window opens and closes right away | Right-click **Zethora.cmd**, choose **Show more options** if needed, then check you extracted all files (Step 2). |
+| Status stays on **Preparing** for many minutes | Your PC may not have enough free memory. Close other programs. 8 GB or more is needed. |
+| Speed is very low | Normal for the first minutes. Other open programs come first; mining uses what is left. |
+| "The node keeps stopping" | Send us **node-crash.log** from your Zethora folder. |
+
+Report problems (with a screenshot) at:
+**github.com/ceoghoxst/zethora-node/issues**
