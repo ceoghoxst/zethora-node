@@ -352,6 +352,26 @@ impl TestConsensus {
     /// Zethora test hook: records `root` as a private coin list snapshot (anchor) produced for good at `blue_score`,
     /// the way pruned or downloaded snapshots are stored. Lets tests simulate a broken anchor or proof rule, e.g. to
     /// get a payment that takes more out of the private pool than it holds (the turnstile's backstop case).
+    /// Zethora: the private state as of chain block `block`, exactly as a peer serves it at a pruning point
+    pub fn zethora_private_state_at(&self, block: Hash) -> kaspa_consensus_core::api::ZethoraPrivateState {
+        self.consensus.zethora_private_state_at(block).unwrap()
+    }
+
+    /// Zethora: stores a block body directly, as the trusted-block step of IBD does for the pruning point
+    pub fn zethora_insert_block_body(&self, block: Hash, transactions: Vec<Transaction>) {
+        let mut batch = rocksdb::WriteBatch::default();
+        self.consensus.storage.block_transactions_store.insert_batch(&mut batch, block, Arc::new(transactions)).unwrap();
+        self.consensus.db.write(batch).unwrap();
+    }
+
+    pub fn zethora_note_trees_store(&self) -> &Arc<crate::model::stores::zethora_note_trees::DbZethoraNoteTreesStore> {
+        &self.consensus.storage.zethora_note_trees_store
+    }
+
+    pub fn zethora_private_states_store(&self) -> &Arc<crate::model::stores::zethora_private_states::DbZethoraPrivateStatesStore> {
+        &self.consensus.storage.zethora_private_states_store
+    }
+
     pub fn zethora_insert_anchor_for_good(&self, root: &[u8; 32], blue_score: u64) {
         let mut batch = rocksdb::WriteBatch::default();
         self.consensus.storage.zethora_anchors_store.add_for_good_batch(&mut batch, root, blue_score).unwrap();
