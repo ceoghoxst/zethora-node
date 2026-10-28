@@ -54,3 +54,8 @@ test suite, the formatting and lint checks (with CI's compiler version) and the 
 ## Status
 A PR is open into `zethora` and is not merged. It needs CTO review. Private payments stay OFF on testnet and mainnet.
 No devnet reset is needed.
+
+## Update after CTO review
+Both open questions were decided and done: the RPC now reports Zethora's 100,000,000 ZTHR cap as the maximum supply,
+and the "records missing" stop keeps stopping the node but now explains in plain words what happened and how to fix
+it (start once with --reset-db). The same help is in docs/FAQ.md. The PR is still not merged.

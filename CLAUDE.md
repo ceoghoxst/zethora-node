@@ -593,3 +593,12 @@ tracing-subscriber 0.2.25 ignored in .cargo/audit.toml (not in kaspad).
 GetCoinSupply.max_sompi still returns Kaspa's MAX_SOMPI (2.9e18) not
 CAP_UNITS (1e18). Every new test shown failing with its protection
 removed (PR). Written by a Claude Code cloud session.
+2026-10-28 - F2 CTO review (PR #4): approved pending two additions, both
+done on f2-hardening: (1) RPC GetCoinSupply max_sompi = CAP_UNITS
+(1e18 zets = 100M ZTHR), not Kaspa's MAX_SOMPI; CAP_UNITS/ZETS_PER_ZTHR
+moved to consensus-core constants (same values), test
+coin_supply_reports_the_zethora_cap. (2) Item 5 decision: KEEP the
+panic; message is now plain English (records incomplete, likely damaged
+database, restart alone won't fix it, start with --reset-db); same entry
+in docs/FAQ.md. Real-chain cap test skipped by CTO decision (the builder
+test exercises the same function consensus uses). Still NOT merged.
