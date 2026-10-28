@@ -1,7 +1,7 @@
 Zethora testnet - Windows package
 =================================
 
-This zip contains two programs, two launch scripts and supporting files.
+This zip contains two programs, a one-window app, two launch scripts and supporting files.
 
   zethora-node.exe          the Zethora node
   zethora-miner.exe         the CPU miner
@@ -10,6 +10,8 @@ This zip contains two programs, two launch scripts and supporting files.
   LICENSE.txt               ISC License (Zethora inherits it from Kaspa)
   THIRD-PARTY-NOTICES.txt   licenses for bundled components
   THIRD-PARTY-CRATES.txt    licenses of every Rust library compiled in
+  Zethora.cmd               double-click: one-window miner app
+  Zethora.ps1               the app itself (readable text)
   Start-Zethora.cmd         double-click to start node + miner
   Stop-Zethora.cmd          double-click to stop them
 
@@ -43,10 +45,14 @@ you know the binary is the one we published.
 
 EASIEST WAY TO START
 
-Double-click Start-Zethora.cmd. It starts the node and the miner in
-their own windows and shows your balance every minute. Double-click
-Stop-Zethora.cmd to stop. Both are plain text: open them in Notepad
-to read exactly what they do.
+Double-click Zethora.cmd. One window opens: click START MINING.
+It shows your status, speed, blocks found, balance and the supply
+check (it must say BALANCED). Click STOP MINING or close the window
+to stop. Zethora.ps1 is the program behind it: plain text, open it
+in Notepad to read exactly what it does.
+
+Prefer separate windows? Start-Zethora.cmd and Stop-Zethora.cmd do
+the same with the node and miner in their own windows.
 
 GETTING STARTED
 
