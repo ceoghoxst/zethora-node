@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-exclude = ["fuzz"]
+exclude = ["fuzz", "tools/reference/emission", "tools/reference/fees"]
 members = [
     "zethora-miner",
     "zethora-shield",

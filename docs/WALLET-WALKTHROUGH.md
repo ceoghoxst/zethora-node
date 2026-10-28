@@ -2,7 +2,7 @@
 
 Devnet is a private test network for the Zethora team. It is not public, coins have no value, and nothing carries over to testnet or mainnet. No token exists.
 
-All private payments, including shielding, are switched off on testnet and mainnet until an outside cryptographer reviews the privacy layer. This document describes the devnet tool only.
+All private payments, including shielding, are switched off on testnet and mainnet in today's builds. Testnet will enable them as an experimental, unreviewed feature after the current hardening; mainnet keeps them off until an outside review. This document describes the devnet tool only.
 
 Zethora uses Zcash's Orchard 0.16.0 for privacy. On the devnet, private sending is fully enabled.
 

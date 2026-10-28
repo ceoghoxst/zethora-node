@@ -44,9 +44,11 @@ That integration is the work.
 
 ## What we will not do
 
-We will not launch private sends on testnet or mainnet until an independent
-ZK cryptographer reviews the Orchard integration. The gate is enforced by
-node software, not by a marketing decision. See ZTH-SPEC-006 Section 7.3 for
+We will not launch private sends on mainnet until an independent reviewer
+checks the Orchard integration. On testnet, where coins are worth zero, they
+will run as a clearly labeled experimental, unreviewed feature so bugs are
+found early. The gate is enforced by node software, not by a marketing
+decision. See ZTH-SPEC-006 Section 7.3 for
 the emergency switch details.
 
 We will not sell a token. ZTHR is created only by mining. No presale, no

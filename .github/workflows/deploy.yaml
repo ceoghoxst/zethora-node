@@ -59,9 +59,25 @@ jobs:
           (cd bin && 7z a -tzip "../${archive}" *)
           echo "archive=${archive}" >> $GITHUB_ENV
 
+      - name: Build installer (Inno Setup)
+        shell: pwsh
+        run: |
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue) -and -not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+          if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          $ver = "${{ github.ref_name }}".TrimStart('v')
+          & $iscc "/DAppVersion=$ver" build-assets\zethora.iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $setup = "Zethora-Setup-$ver.exe"
+          (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower() + "  " + $setup | Out-File -Encoding ascii "$setup.sha256"
+          "setup=$setup" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
       - name: Upload release asset
         uses: softprops/action-gh-release@v2
         with:
-          files: ./${{ env.archive }}
+          files: |
+            ./${{ env.archive }}
+            ./${{ env.setup }}
+            ./${{ env.setup }}.sha256
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

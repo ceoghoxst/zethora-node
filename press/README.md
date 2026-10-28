@@ -7,8 +7,9 @@ mine at home on a normal CPU. It is built on a fork of Kaspa's GHOSTDAG
 BlockDAG and uses RandomZ, a tuned RandomX mining algorithm. Supply is
 capped at 100 million ZTHR with no premine, and every block runs a public
 supply check that shows no coins were created out of thin air. A private
-payment pool based on Zcash Orchard is in the code but switched off until
-an independent cryptography review is complete. Zethora is in pre-testnet
+payment pool based on Zcash Orchard is in the code and switched off today;
+testnet will turn it on as an experimental, unreviewed feature, and mainnet
+keeps it off until an independent review is complete. Zethora is in pre-testnet
 testing and builds in public.
 
 ## Founder
@@ -20,9 +21,10 @@ reviewed and tested before it ships.
 ## Facts (checkable today)
 
 - No premine, no presale, no airdrop, no ICO. Every coin comes from mining.
-- 100M ZTHR cap; halving every 8 years.
+- 100M ZTHR cap; rewards shrink smoothly every block, halving about every 8 years (no sudden halvings).
 - Windows miner app: one window, START MINING, live supply check.
-- Private payments: OFF on testnet and mainnet until reviewed.
+- Private payments: built in, OFF today. Testnet: on as experimental and
+  unreviewed after current hardening. Mainnet: off until independent review.
 - Not audited yet. Open items: docs/STATUS.md.
 - Testnet coins are worth zero.
 - DeionRaven Labs is a project name, not a registered company.

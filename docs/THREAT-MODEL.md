@@ -12,7 +12,7 @@ be built now, but only a real network with many miners can prove it).
 | T1 | Supply / inflation bug (Bitcoin 2010 overflow, Monero 2017) | Supply ledger checked every block; turnstile on private pool; checked arithmetic (docs/ARITH-SAFETY.md) | BALANCED on every block; ledger tests | DONE | Outside audit |
 | T2 | Private-pool double spend | Nullifier set, parallel-sibling filter | zethora_parallel_nullifier.rs (AB/BA) | DONE | Outside review |
 | T3 | One bad tx stalls the chain (F1) | Per-transaction turnstile in merge order | 6 tests + fail-when-removed (PR pending) | PARTIAL | CTO review, merge |
-| T4 | Counterfeit via ZK flaw (Zcash 2018) | Orchard unmodified; privacy OFF on testnet/mainnet (G11) | G11 refuses before decode | PARTIAL | ZK cryptographer review before privacy ON |
+| T4 | Counterfeit via ZK flaw (Zcash 2018) | Orchard unmodified; privacy OFF on mainnet (G11); testnet experimental after F2 | G11 refuses before decode | PARTIAL | ZK cryptographer review before privacy ON |
 | T5 | Junk-block / bad-PoW spam (DoS) | Peer ban on invalid RandomZ PoW | G5 live ban test | DONE | Load test on testnet |
 | T6 | Secret premine accusation | Genesis stamped with a fresh Bitcoin block hash; no premine | Genesis audit doc | PARTIAL | Regen on launch day, publish how to verify |
 | T7 | Deep reorg / 51% with rented hashrate (common for small CPU coins) | Kaspa finality depth: blocks older than the finality window cannot be reorged; RandomZ = rented hashrate must be rented as CPU (RandomX market exists) | Not tested for Zethora | OPEN | Confirm finality_depth value; test a finality-violating reorg is rejected; publish "wait N confirmations" guidance; LIVE-ONLY to prove |
@@ -37,6 +37,13 @@ Testnet: experimental privacy ON after T3 is merged and reviewed, labeled
 unreviewed; G11 changed for testnet only, with a test that mainnet still refuses.
 Mainnet: privacy ON only after T4 independent ZK review.
 
-## Before mainnet
-Everything above DONE or explicitly ACCEPTED, then an outside security audit
-of this list.
+## Before mainnet (CEO decision 2026-10-28: bootstrapped, no paid audit)
+- Mainnet launches with private payments OFF, stated plainly as "not audited".
+  The public side is Kaspa's engine plus our supply ledger, covered by tests
+  and red-team rounds.
+- Private payments turn on for mainnet only after an independent review of
+  the private-pool integration code (the "glue": ledger, turnstile,
+  nullifiers, anchors, Orchard-in-merge-order). Sought from volunteers who
+  like the project (Zcash community, reviewers), funded later by grants or
+  donations if they come. No paid full audit is planned.
+- Every item above DONE or explicitly ACCEPTED before mainnet.

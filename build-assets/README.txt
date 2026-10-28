@@ -78,8 +78,9 @@ they mature.
 WHAT THIS PACKAGE DOES NOT DO
 
 - Does not mine on mainnet. Mainnet is not launched.
-- Does not enable private transactions. All private payments are
-  disabled on testnet and mainnet until an external review is complete.
+- Does not enable private transactions. This build refuses all private
+  payments. A later testnet release turns them on as an experimental,
+  unreviewed feature; mainnet keeps them off until an independent review.
 - Does not contain a wallet for sending coins. The miner can show your
   balance (see SEE YOUR BALANCE above).
 - Does not promise coins, returns, or income. There is no token.

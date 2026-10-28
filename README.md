@@ -2,8 +2,10 @@
 
 **Self-custodied digital property.**
 
-Status: devnet phase. Private sends are disabled on testnet and mainnet until
-an independent review of the Orchard integration is complete. No token, no
+Status: devnet phase. Private sends are built in and disabled in today's
+builds. Testnet will enable them as an experimental, unreviewed feature after
+the current hardening (F2); mainnet keeps them disabled until an independent
+review of the Orchard integration is complete. No token, no
 presale, no smart contracts.
 
 ---
@@ -69,7 +71,10 @@ node.
 Anyone can run it. Anyone can fork it. Anyone can propose changes. The network
 belongs to whoever runs a node.
 
-**Private sends are currently disabled on testnet and mainnet.** The switch
+**Private sends are currently disabled on testnet and mainnet.** (Plan, CEO
+decision 2026-10-27: testnet enables them as an experimental, unreviewed
+feature after F2; mainnet stays disabled until an independent review. Today's
+code still disables both.) The switch
 is compile-time, set by network type in
 consensus/src/consensus/services.rs:147-151. It is enabled only on devnet
 and simnet. To change it for testnet or mainnet, operators must install new
@@ -92,7 +97,9 @@ This behavior is emergency switch level (a) as described in ZTH-SPEC-006 Section
 - Reference wallet
 
 **Not live:**
-- **Private sends on testnet and mainnet.** See the section above.
+- **Private sends on testnet and mainnet.** Testnet: coming as an
+  experimental, unreviewed feature after F2. Mainnet: after an independent
+  review. See the section above.
 - **Public testnet.** Not open yet.
 - **Mainnet.** Not launched.
 - **Any token.** There is no token. There will be no presale. There will be
@@ -103,7 +110,9 @@ This behavior is emergency switch level (a) as described in ZTH-SPEC-006 Section
 
 ## The privacy review is the gate
 
-Private sends are disabled until an independent ZK cryptographer reviews the
+Private sends are disabled in today's builds. On testnet they will be enabled
+as an experimental, unreviewed feature after the current hardening (F2). On
+mainnet they stay disabled until an independent reviewer has checked the
 Orchard integration. The internal review is complete and backed by regression
 tests. See docs/ZTH-SPEC-006.md for the spec, the mechanism descriptions,
 and an honest list of open questions (Appendix C).

@@ -4,7 +4,7 @@ Plain English, kept up to date. If something here is out of date, open an
 issue. We publish this because trust comes before growth: you should know
 what is unfinished before you spend any time on Zethora.
 
-Last updated: 2026-10-27
+Last updated: 2026-10-28
 
 ## What works today (testnet, not launched yet)
 
@@ -19,16 +19,23 @@ Last updated: 2026-10-27
 
 ## What is turned OFF on purpose
 
-- **Private payments.** The private pool (based on Zcash Orchard, unmodified)
-  is in the code, but testnet and mainnet refuse every private payment. It
-  stays off until the two items below are done.
+- **Private payments (for now).** The private pool (based on Zcash Orchard,
+  unmodified) is in the code, but today's builds refuse every private payment.
+  - **Testnet:** private payments will be switched on as an **experimental,
+    unreviewed** feature after the current hardening (F2) is finished.
+    Testnet coins are worth zero, so this is where bugs should be found.
+  - **Mainnet:** private payments stay **off** at launch and are turned on
+    only after an independent review of the private-pool code, at a block
+    height announced in advance.
 
-## Open items before private payments can be turned on
+## Open items before private payments go on
 
-1. **Per-transaction turnstile (F1).** Today the private-pool safety check
-   adds up a whole block at once. A single bad transaction could make a
-   block invalid and stall the chain. The fix checks each transaction on
-   its own. In progress.
+1. **Per-transaction turnstile (F1): done.** The private-pool safety check
+   now runs per transaction, so one bad payment is skipped instead of
+   stalling the chain. Merged 2026-10-28 with tests.
+   **Hardening (F2): in progress.** Fixes from our first internal red-team
+   round (6 AI attackers, AI-assisted, not an audit): no exploit was found;
+   the round produced tests and hardening items (docs/THREAT-MODEL.md).
 2. **Independent cryptography review.** Nobody outside the project has
    reviewed the private-pool code yet. We are looking for a zero-knowledge
    cryptographer to do it.
