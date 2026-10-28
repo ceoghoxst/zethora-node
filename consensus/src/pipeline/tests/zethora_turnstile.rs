@@ -79,6 +79,19 @@ fn sibling_hashes(node: &mut Node) -> (Hash, Hash) {
     (h1.max(h2), h1.min(h2))
 }
 
+/// Two different blocks given the same hash (the skipped-payment comparison) still have their own block level, because
+/// the level comes from the PoW of the header contents (consensus/pow/src/lib.rs calc_block_level). Indirect parents of
+/// a merging block depend on its parents' levels, so both versions are ground to level 0 (a different nonce; the hash
+/// stays the forced one) to keep the comparison about the transactions alone.
+fn at_level_zero(node: &Node, block: Block) -> Block {
+    let max_block_level = node.tc.params().max_block_level;
+    let mut header = (*block.header).clone();
+    while kaspa_pow::calc_block_level(&header, max_block_level) != 0 {
+        header.nonce += 1;
+    }
+    Block::from_arcs(Arc::new(header), block.transactions)
+}
+
 /// Ids of a chain block's accepted transactions, per merged block, in merge order
 fn acceptance(node: &Node, block: Hash) -> Vec<(Hash, Vec<(TransactionId, u32)>)> {
     node.tc
@@ -213,8 +226,8 @@ async fn skipped_payment_leaves_exactly_the_state_of_the_block_without_it() {
     let fake = counterfeit(OVERDRAW, 66, &[&f.node, &node2]);
     let (x, y) = sibling_hashes(&mut f.node);
     let block_x = f.node.build(x, vec![parent], vec![honest.clone()]);
-    let block_y = f.node.build(y, vec![parent], vec![visible.clone(), fake.clone()]);
-    let block_y_without = node2.build(y, vec![parent], vec![visible.clone()]);
+    let block_y = at_level_zero(&f.node, f.node.build(y, vec![parent], vec![visible.clone(), fake.clone()]));
+    let block_y_without = at_level_zero(&node2, node2.build(y, vec![parent], vec![visible.clone()]));
     assert_eq!(block_y.hash(), block_y_without.hash());
     assert_eq!(block_y.transactions.len(), 3);
     assert_eq!(block_y_without.transactions.len(), 2);
