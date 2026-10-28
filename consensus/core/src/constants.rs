@@ -33,6 +33,12 @@ pub const TRANSIENT_BYTE_TO_MASS_FACTOR: u64 = 4;
 /// MaxSompi is the maximum transaction amount allowed in sompi.
 pub const MAX_SOMPI: u64 = 29_000_000_000 * SOMPI_PER_KASPA;
 
+/// Zethora: 1 ZTHR = 10^10 zets (the base unit).
+pub const ZETS_PER_ZTHR: u64 = 10_000_000_000;
+/// Zethora: the hard cap, 100,000,000 ZTHR in zets (ZTH-SPEC-001 §5). Consensus never issues more
+/// (`kaspa_consensus::processes::zethora_subsidy`, the coinbase cap clamp and the supply ledger's CapExceeded rule).
+pub const CAP_UNITS: u64 = 100_000_000 * ZETS_PER_ZTHR;
+
 // MAX_TX_IN_SEQUENCE_NUM is the maximum sequence number the sequence field
 // of a transaction input can be.
 pub const MAX_TX_IN_SEQUENCE_NUM: u64 = u64::MAX;

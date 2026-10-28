@@ -13,7 +13,7 @@ use kaspa_consensus_core::{
     block::Block,
     coinbase::MinerData,
     config::Config,
-    constants::MAX_SOMPI,
+    constants::CAP_UNITS,
     network::NetworkType,
     tx::{COINBASE_TRANSACTION_INDEX, Transaction},
 };
@@ -866,7 +866,7 @@ NOTE: This error usually indicates an RPC conversion error between the node and 
         }
         let circulating_sompi =
             self.utxoindex.clone().unwrap().get_circulating_supply().await.map_err(|e| RpcError::General(e.to_string()))?;
-        Ok(GetCoinSupplyResponse::new(MAX_SOMPI, circulating_sompi))
+        Ok(coin_supply_response(circulating_sompi))
     }
 
     async fn get_daa_score_timestamp_estimate_call(
@@ -1498,5 +1498,27 @@ impl AsyncService for RpcCoreService {
             trace!("{} stopped", Self::IDENT);
             Ok(())
         })
+    }
+}
+
+/// The GetCoinSupply answer: Zethora's hard cap (100,000,000 ZTHR in zets) as the maximum supply, and the visible coins
+/// in the UTXO set as the circulating supply.
+fn coin_supply_response(circulating_sompi: u64) -> GetCoinSupplyResponse {
+    GetCoinSupplyResponse::new(CAP_UNITS, circulating_sompi)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::coin_supply_response;
+    use kaspa_consensus_core::constants::MAX_SOMPI;
+
+    #[test]
+    fn coin_supply_reports_the_zethora_cap() {
+        let response = coin_supply_response(123_456);
+        // 100,000,000 ZTHR x 10^10 zets per ZTHR
+        assert_eq!(response.max_sompi, 1_000_000_000_000_000_000);
+        assert_eq!(response.circulating_sompi, 123_456);
+        // Not Kaspa's 29 billion KAS (2.9 x 10^18 sompi)
+        assert_ne!(response.max_sompi, MAX_SOMPI);
     }
 }

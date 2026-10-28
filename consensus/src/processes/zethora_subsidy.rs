@@ -32,10 +32,8 @@
 
 use std::sync::Mutex;
 
-/// 1 ZTHR = 10^10 zets.
-pub const ZETS_PER_ZTHR: u64 = 10_000_000_000;
-/// 100,000,000 ZTHR in zets.
-pub const CAP_UNITS: u64 = 100_000_000 * ZETS_PER_ZTHR;
+/// 1 ZTHR = 10^10 zets, and the 100,000,000 ZTHR hard cap in zets (defined in consensus-core, also read by the RPC).
+pub use kaspa_consensus_core::constants::{CAP_UNITS, ZETS_PER_ZTHR};
 /// Never mined; guarantees the hard cap under BlockDAG parallelism (see module docs).
 pub const SUPPLY_RESERVE: u64 = 1_000 * ZETS_PER_ZTHR;
 /// Remaining supply at genesis.
