@@ -21,6 +21,7 @@ $script:node = $null; $script:miner = $null; $script:bal = $null
 $script:minerPos = 0; $script:startedAt = $null; $script:lastBal = [datetime]::MinValue
 $script:unbalanced = $false
 $script:balDue = [datetime]::MinValue
+$script:restarts = 0
 
 # ---------- look ----------
 $bg = [Drawing.Color]::FromArgb(18,18,24); $panel = [Drawing.Color]::FromArgb(30,30,40)
@@ -101,6 +102,8 @@ function Start-Miner {
   Add-Log 'Starting miner...'
   $script:miner = Start-Process -FilePath $minerExe -ArgumentList '--testnet' `
       -WorkingDirectory $here -WindowStyle Hidden -RedirectStandardOutput $minerLog -RedirectStandardError "$minerLog.err" -PassThru
+  # Below-normal priority: full speed when the PC is idle, but your other apps always come first.
+  try { $script:miner.PriorityClass = 'BelowNormal' } catch {}
   $script:minerPos = 0
 }
 
@@ -125,16 +128,27 @@ function Read-New($path,[ref]$pos) {
   } catch { return @() }
 }
 
-$btn.Add_Click({ if ($script:node) { Stop-All } else { Start-All } })
+$btn.Add_Click({ if ($script:node) { Stop-All } else { $script:restarts = 0; Start-All } })
 
 $timer = New-Object Windows.Forms.Timer; $timer.Interval = 1000
 $timer.Add_Tick({
   if (-not $script:node) { return }
-  if ($script:node.HasExited) { Add-Log 'The node stopped unexpectedly. See node.log.'; Stop-All; return }
+  if ($script:node.HasExited) {
+    $script:restarts++
+    if ($script:restarts -gt 3) { Add-Log 'The node keeps stopping. See node.log and send it to us.'; Stop-All; return }
+    Add-Log "The node stopped unexpectedly. Restarting it ($($script:restarts) of 3)..."
+    foreach ($p in @($script:miner,$script:bal)) { if ($p -and -not $p.HasExited) { try { Stop-Process -Id $p.Id -Force } catch {} } }
+    $script:bal = $null; Copy-Item $nodeLog (Join-Path $here 'node-crash.log') -Force -ErrorAction SilentlyContinue; Start-All; return
+  }
   $age = ((Get-Date) - $script:startedAt).TotalSeconds
   if (-not $script:miner -and $age -ge 20) { Start-Miner }
   if ($script:miner) {
-    if ($script:miner.HasExited) { Add-Log 'The miner stopped unexpectedly. See miner.log.'; Stop-All; return }
+    if ($script:miner.HasExited) {
+      $script:restarts++
+      if ($script:restarts -gt 3) { Add-Log 'The miner keeps stopping. See miner.log and send it to us.'; Stop-All; return }
+      Add-Log "The miner stopped unexpectedly. Restarting it ($($script:restarts) of 3)..."
+      Copy-Item $minerLog (Join-Path $here 'miner-crash.log') -Force -ErrorAction SilentlyContinue; Start-Miner; return
+    }
     $pos = $script:minerPos; $lines = Read-New $minerLog ([ref]$pos); $script:minerPos = $pos
     foreach ($l in $lines) {
       Add-Log $l
