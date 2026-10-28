@@ -91,6 +91,10 @@ G10. Testnet keeps private spends OFF at launch.
     testnet/mainnet until an outside audit").
 
 G11. Testnet and mainnet refuse ALL private payments until audit.
+    (Updated 2026-10-28, CEO decision option B: after F2, a testnet-only
+    change enables private payments on testnet as experimental and
+    unreviewed, with a test proving mainnet still refuses. Mainnet keeps
+    G11 until an independent review.)
     Refusal fires at isolation time, before decode and proof. No
     shielding, no spend, no unshield. Side effect: no proof-based peer
     bans on testnet/mainnet (refusal costs no proof work). Devnet and
@@ -230,7 +234,8 @@ If a restart happens, repeat Section 2 and Section 4 from step 1.
 
 ## 6. Out of scope
 
-- Private sending: devnet only until an outside crypto review
+- Private sending on mainnet: off until an outside review (testnet:
+  experimental after F2, per CEO decision 2026-10-27)
   (CLAUDE.md:46; docs/TESTNET-ROADMAP.md:13;
   docs/CEO-BRIEFING-2026-10-22.md:280-283).
 - Mainnet: not launched.

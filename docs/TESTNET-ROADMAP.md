@@ -10,7 +10,7 @@ A stranger can clone the repo, follow the getting-started guide, run a node, con
 
 Mining is the core activity on day one. Everything else is secondary.
 
-Private sending stays DISABLED on testnet until the crypto review is complete. The crypto review does not block testnet launch.
+Private sending (updated 2026-10-28, CEO decision option B): enabled on testnet as an experimental, unreviewed feature after F1 and F2 are merged, with a test that mainnet still refuses. Mainnet keeps it disabled until an independent review of the private-pool code. The review does not block testnet launch.
 
 ## Mandatory before testnet opens
 

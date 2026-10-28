@@ -13,7 +13,7 @@
 This spec describes a mechanism in the **devnet phase**. State of the world:
 
 - **No token exists.** No premine. No presale. No smart contracts.
-- **Private sends are disabled on testnet and mainnet.** They are enabled only on devnet and simnet. See §7.3.
+- **Private sends are disabled on testnet and mainnet.** They are enabled only on devnet and simnet. See §7.3. Planned change (CEO decision 2026-10-27): after F2, testnet enables them as an experimental, unreviewed feature; mainnet stays disabled until an independent review. This spec will be updated when that code lands.
 - The mechanism described here has not been externally audited. An external review of the Orchard integration is the gate for enabling private sends on public networks.
 
 This document is a consolidation of the `ZTH-SPEC-006` citations that appear across the codebase. Where a section is fully specified by code, the mechanism is described. Where a section is cited but the code carries the detail, a code reference is given. Where a section is cited but neither spec text nor code fully specifies it, it is marked **TBD**.

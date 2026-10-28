@@ -66,8 +66,11 @@ Zethora uses RandomZ, which is designed for normal CPUs. GPUs and special
 mining chips have little advantage. We do not claim to detect or block farms.
 
 **Is it private?**
-Private payments exist in the code but are switched off until a safety fix
-and an independent cryptography review are done. See docs/STATUS.md.
+Private payments are built in, using Zcash's Orchard technology. Today they
+are switched off. On testnet they will be turned on as an experimental,
+unreviewed feature after the current hardening work. On mainnet they stay
+off at launch and turn on only after an independent review. Privacy is
+optional: normal payments stay public. See docs/STATUS.md.
 
 **Is this an investment?**
 No. Testnet coins are worth zero, and nothing here promises income or a

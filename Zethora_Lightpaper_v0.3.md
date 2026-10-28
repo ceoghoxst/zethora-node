@@ -12,7 +12,7 @@ Zethora is a Layer-1 proof-of-work blockchain that combines three properties no 
 - **Kaspa's speed** — a BlockDAG ordered by GHOSTDAG, target ~1 block per second.
 - **Monero's home mining** — CPU-friendly proof-of-work (RandomZ) that any home computer can run.
 
-It adds **Zcash-grade privacy** using Orchard 0.16.0. Privacy is integrated and working on the private devnet. Private sending is disabled on testnet and mainnet until an independent cryptographic review is complete — that review is being arranged now.
+It adds **Zcash-grade privacy** using Orchard 0.16.0. Privacy is integrated and working on the private devnet. Private sending is disabled in today's testnet and mainnet builds. Testnet will enable it as an experimental, unreviewed feature after the current hardening; mainnet keeps it disabled until an independent review is complete. We are looking for a reviewer.
 
 **Programmability (smart contracts) is planned research, not a current feature.** See Section 5.3. It requires a dedicated engineering team and will be pursued when resources allow. It is not promised for testnet or mainnet.
 

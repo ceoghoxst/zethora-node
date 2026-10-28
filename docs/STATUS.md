@@ -19,11 +19,16 @@ Last updated: 2026-10-28
 
 ## What is turned OFF on purpose
 
-- **Private payments.** The private pool (based on Zcash Orchard, unmodified)
-  is in the code, but testnet and mainnet refuse every private payment. It
-  stays off until the two items below are done.
+- **Private payments (for now).** The private pool (based on Zcash Orchard,
+  unmodified) is in the code, but today's builds refuse every private payment.
+  - **Testnet:** private payments will be switched on as an **experimental,
+    unreviewed** feature after the current hardening (F2) is finished.
+    Testnet coins are worth zero, so this is where bugs should be found.
+  - **Mainnet:** private payments stay **off** at launch and are turned on
+    only after an independent review of the private-pool code, at a block
+    height announced in advance.
 
-## Open items before private payments can be turned on
+## Open items before private payments go on
 
 1. **Per-transaction turnstile (F1): done.** The private-pool safety check
    now runs per transaction, so one bad payment is skipped instead of

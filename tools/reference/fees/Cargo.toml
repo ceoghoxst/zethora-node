@@ -1,0 +1,13 @@
+[package]
+name = "zethora-fees"
+version = "0.1.0"
+edition = "2021"
+description = "Reference implementation of Zethora (ZTHR) fee split, burn and fee pool, ZTH-SPEC-008"
+license = "MIT"
+
+[profile.test]
+opt-level = 3
+
+[[bin]]
+name = "zethora-fees"
+path = "fees.rs"
