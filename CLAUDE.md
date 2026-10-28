@@ -538,3 +538,21 @@ cargo about generate --workspace about.hbs -o build-assets\THIRD-PARTY-CRATES.tx
 
 ## Standing rule: trust comes before growth
 Nothing ships that a stranger can't verify, and nothing in the user experience may look hidden, pressured, or misleading. If a feature grows faster but costs trust, it waits. (Launchers are readable .cmd scripts for this reason; a GUI ships only with code signing.)
+
+2026-10-28 - F1 per-transaction turnstile (branch f1-per-tx-turnstile,
+PR open, NOT merged, PENDING CTO REVIEW). Merge loop keeps a running
+private pool balance from the selected parent's sealed balance; each
+merged block's valid txs are walked in block order with
+zethora_supply::turnstile_accepts; a tx that would go below zero is
+dropped before ANY effect (UTXO diff + muhash, coin tags, fingerprint,
+note tree, fees, pool flows, acceptance data, seq-commit). Chain
+block's own txs get the same running check (else disqualified, like the
+own-tx coin tag rule). Template refuses pool_out above what is left
+(ignores same-block pool_in). Per-block ledger_step turnstile kept as
+backstop. No stored-state change, no devnet reset. Tests:
+pipeline/tests/zethora_turnstile.rs (6) + 2 zethora_supply unit tests;
+counterfeit = spend of a local-only coin whose anchor the test registers
+as matured (TestConsensus::zethora_insert_anchor_for_good). Each new
+test shown failing with its check removed (PR description). Written by
+a Claude Code cloud session; needs CTO review before merge (standing
+rule). Private payments stay OFF on testnet/mainnet (G11 unchanged).
