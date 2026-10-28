@@ -161,8 +161,13 @@ are not from us:
   not yet happened.
 - **No farm detection claim.** Zethora does not detect or block industrial
   mining. Any anti-farm feature is undecided and post-testnet.
-- **No timeline claim.** Testnet and mainnet ship when the code is ready and
-  the audit is complete. We do not publish dates.
+- **No timeline claim.** Testnet and mainnet ship when the code is ready.
+  We do not publish dates. Public testnet runs at least 6 months before
+  mainnet.
+- **Launch promises changed 2026-10-28, openly.** Mainnet launches without a
+  paid audit and says so; private payments stay off on mainnet until an
+  independent review. Details and the original promises:
+  docs/specs/ZTH-SPEC-012-security.md.
 - **No passive income claim.** Mining is operational work.
 - **No price or token claim.** No token exists. No presale. No airdrop.
 - **No Solana-level speed claim yet.** We say fast until we spec and

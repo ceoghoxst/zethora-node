@@ -19,7 +19,18 @@ A practice network. Everything works like the real thing, but the coins are
 worth zero. It exists so we can find problems before real value is involved.
 
 **How do I start?**
-Unzip the download, double-click `Zethora.cmd`, click START MINING.
+Download **Zethora-Setup** from the releases page, open it, click Next until
+it installs, then click START MINING. Every click is written out in
+docs/TESTNET-GUIDE.md.
+
+**My browser says the download is unsafe or "not commonly downloaded".**
+Expected for a new program that is not code-signed yet. In Edge: Downloads,
+"...", Keep, Show more, Keep anyway. Check the file's SHA256 against the
+.sha256 file on the release page if you want to be sure it is ours.
+
+**Windows Security asks to allow Zethora on the network.**
+Zethora shares blocks with other computers, so it needs the network. Tick
+Private networks and click Allow. It only asks once.
 
 **Windows says "Windows protected your PC". Is that a virus?**
 The programs are not code-signed yet, so Windows warns about every new

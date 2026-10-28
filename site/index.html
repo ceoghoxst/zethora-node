@@ -43,8 +43,20 @@ footer{color:var(--dim);font-size:13px;margin-top:56px;border-top:1px solid #2c2
     <div class="card"><h3>Fair launch</h3><p>100M cap, rewards shrink smoothly (half mined in the first 8 years), no premine. The team mines like everyone else.</p></div>
   </div>
 
+  <h2>How to start (about 10 minutes)</h2>
+  <ol style="color:var(--dim);padding-left:20px">
+    <li><b>Download</b> <i>Zethora-Setup</i> from the releases page (button above, when testnet opens).</li>
+    <li>If your browser warns the file is uncommon or unsafe: that is expected for a new, unsigned program. In Edge: Downloads &rarr; &hellip; &rarr; <b>Keep</b> &rarr; Show more &rarr; <b>Keep anyway</b>.</li>
+    <li><b>Open it.</b> If Windows shows "Windows protected your PC": <b>More info</b> &rarr; <b>Run anyway</b>.</li>
+    <li>Click <b>Next</b> until it installs, then <b>Finish</b>. A Zethora icon appears on your desktop.</li>
+    <li>Click <b>START MINING</b>. When Windows Security asks, tick <b>Private networks</b> and click <b>Allow</b>.</li>
+    <li>Wait 1&ndash;2 minutes: Status turns <b>Mining</b> and the supply check turns green: <b>BALANCED</b>.</li>
+    <li>Click <b>BACK UP MY KEY</b> and copy your key file somewhere safe.</li>
+  </ol>
+  <p><a href="https://github.com/ceoghoxst/zethora-node/blob/zethora/docs/TESTNET-GUIDE.md">Full step-by-step guide</a></p>
+
   <h2>Verify your download</h2>
-  <p style="color:var(--dim)">Only download from the GitHub releases page linked here. Every release lists a SHA256 checksum for each file. Before running anything, open PowerShell in the folder and run <code>Get-FileHash zethora-node.exe</code> and <code>Get-FileHash zethora-miner.exe</code>. The hashes must match <b>SHA256SUMS.txt</b> and the hashes posted here at launch. If they don't match, delete the files and report it.</p>
+  <p style="color:var(--dim)">Only download from the GitHub releases page linked here. Every release lists a SHA256 checksum for each file. Before running anything, open PowerShell in your Downloads folder and run <code>Get-FileHash Zethora-Setup*</code>. The hash must match the <b>.sha256</b> file on the release page and the hash posted here at launch. If they don't match, delete the files and report it.</p>
 
   <h2>Honest status</h2>
   <ul>
