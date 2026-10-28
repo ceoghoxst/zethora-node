@@ -106,9 +106,10 @@ pub fn private_state_anchor_element(root: &[u8; 32], blue_score: u64) -> [u8; 41
 }
 
 /// A spend must use a private coin list snapshot (anchor) produced at least this many blue blocks below the
-/// block that accepts it (ZTH-SPEC-006 §6.2). On today's devnet (one home miner, about 1 block per second) that is
-/// about 10 minutes; a reorg that deep never happens in practice, so a payment that was valid stays valid. Far inside
-/// the merge depth and finality. TODO before testnet: scale with the network's real block rate (10x at 10 blocks/s).
+/// block that accepts it (ZTH-SPEC-006 §6.2). Every network runs at 1 block per second, so that is about 10 minutes;
+/// a reorg that deep never happens in practice, so a payment that was valid stays valid. Far inside the merge depth
+/// and finality. Consensus reads `Params::anchor_depth` (600 on every network, not overridable); this constant is the
+/// default the network params are built from.
 pub const ANCHOR_DEPTH: u64 = 600;
 
 /// Orchard flags byte: bit 0 means "this payment spends private coins".
