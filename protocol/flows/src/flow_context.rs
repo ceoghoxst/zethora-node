@@ -449,20 +449,13 @@ impl FlowContext {
         const WINDOW_SECS: u64 = 10 * 60;
         const THRESHOLD: usize = 3;
 
-        let count = {
-            let mut attempts = self.implausible_pow_epoch_attempts.lock();
-            let now = Instant::now();
-            // ZTH-IMPL-020: Prevent memory exhaustion (DoS) from spoofed IPs
-            if attempts.len() > 10_000 {
-                attempts.retain(|_, v| {
-                    v.retain(|t| now.duration_since(*t).as_secs() < WINDOW_SECS);
-                    !v.is_empty()
-                });
-            }
-            let entry = attempts.entry(ip).or_default();
-            entry.push(now);
-            entry.len()
-        };
+        let count = record_implausible_proof_attempt(
+            &mut self.implausible_pow_epoch_attempts.lock(),
+            ip,
+            Instant::now(),
+            WINDOW_SECS,
+            THRESHOLD,
+        );
         if count < THRESHOLD {
             warn!("Peer IP {} sent an implausible RandomZ epoch proof ({}/{}): {}", ip, count, THRESHOLD, err);
             return;
@@ -936,5 +929,90 @@ impl ConnectionInitializer for FlowContext {
         // it is considered a protocol error and the connection will disconnect
 
         Ok(())
+    }
+}
+
+/// Zethora (ZTH-IMPL-020 D4, seam review pack 1, #16): records one implausible-proof attempt by `ip` at `now` and
+/// returns how many attempts by `ip` fall inside the last `window_secs` (at most `threshold`). The map never holds more
+/// than `MAX_TRACKED_IPS` + 1 addresses: past the cap, expired entries are dropped first, then the least recently seen
+/// addresses, down to half the cap.
+pub(crate) fn record_implausible_proof_attempt(
+    attempts: &mut HashMap<IpAddr, Vec<Instant>>,
+    ip: IpAddr,
+    now: Instant,
+    window_secs: u64,
+    threshold: usize,
+) -> usize {
+    const MAX_TRACKED_IPS: usize = 10_000;
+    if attempts.len() > MAX_TRACKED_IPS {
+        attempts.retain(|_, v| {
+            v.retain(|t| now.duration_since(*t).as_secs() < window_secs);
+            !v.is_empty()
+        });
+        if attempts.len() > MAX_TRACKED_IPS {
+            let mut by_last_seen: Vec<_> = attempts.iter().map(|(ip, v)| (*v.last().unwrap(), *ip)).collect();
+            by_last_seen.sort_unstable();
+            let excess = attempts.len() - MAX_TRACKED_IPS / 2;
+            for (_, old_ip) in by_last_seen.into_iter().take(excess) {
+                attempts.remove(&old_ip);
+            }
+        }
+    }
+    let entry = attempts.entry(ip).or_default();
+    // Only attempts inside the window count (before, old attempts were dropped only when the map passed the cap, so
+    // attempts spread over days could still ban)
+    entry.retain(|t| now.duration_since(*t).as_secs() < window_secs);
+    entry.push(now);
+    if entry.len() > threshold {
+        entry.drain(..entry.len() - threshold);
+    }
+    entry.len()
+}
+
+#[cfg(test)]
+mod zethora_attempt_tests {
+    use super::record_implausible_proof_attempt;
+    use std::{
+        collections::HashMap,
+        net::{IpAddr, Ipv4Addr},
+        time::{Duration, Instant},
+    };
+
+    fn ip(n: u32) -> IpAddr {
+        IpAddr::V4(Ipv4Addr::from(n))
+    }
+
+    #[test]
+    fn attempts_count_only_inside_the_window() {
+        let mut map = HashMap::new();
+        let t0 = Instant::now();
+        // Positive control: 3 attempts within 10 minutes reach the threshold
+        assert_eq!(record_implausible_proof_attempt(&mut map, ip(1), t0, 600, 3), 1);
+        assert_eq!(record_implausible_proof_attempt(&mut map, ip(1), t0 + Duration::from_secs(60), 600, 3), 2);
+        assert_eq!(record_implausible_proof_attempt(&mut map, ip(1), t0 + Duration::from_secs(120), 600, 3), 3);
+        // Spread over hours, the count never reaches 3 (before the fix it did)
+        let t1 = t0 + Duration::from_secs(10_000);
+        assert_eq!(record_implausible_proof_attempt(&mut map, ip(2), t1, 600, 3), 1);
+        assert_eq!(record_implausible_proof_attempt(&mut map, ip(2), t1 + Duration::from_secs(700), 600, 3), 1);
+        assert_eq!(record_implausible_proof_attempt(&mut map, ip(2), t1 + Duration::from_secs(1_400), 600, 3), 1);
+        // At most `threshold` timestamps are kept per address
+        for i in 0..10 {
+            record_implausible_proof_attempt(&mut map, ip(3), t0 + Duration::from_secs(i), 600, 3);
+        }
+        assert_eq!(map[&ip(3)].len(), 3);
+    }
+
+    #[test]
+    fn the_map_never_grows_without_bound() {
+        let mut map = HashMap::new();
+        let t0 = Instant::now();
+        // 25,000 distinct addresses, all inside the window (nothing expires): the map stays bounded
+        for n in 0..25_000u32 {
+            record_implausible_proof_attempt(&mut map, ip(n), t0 + Duration::from_millis(n as u64), 600, 3);
+            assert!(map.len() <= 10_001, "map grew to {}", map.len());
+        }
+        // The most recently seen address is still tracked; the oldest ones were dropped
+        assert!(map.contains_key(&ip(24_999)));
+        assert!(!map.contains_key(&ip(0)));
     }
 }

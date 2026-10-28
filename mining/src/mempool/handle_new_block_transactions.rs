@@ -87,7 +87,9 @@ impl Mempool {
             }
         }
         // Zethora: waiting payments that spend a private coin this block's transaction just spent can never be accepted
-        for nullifier in kaspa_consensus_core::zethora_private::nullifiers(&transaction.payload) {
+        for nullifier in
+            kaspa_consensus_core::zethora_private::nullifiers(kaspa_consensus_core::zethora_private::private_payload(transaction))
+        {
             if let Some(owner_id) = self.transaction_pool.get_nullifier_owner_id(&nullifier)
                 && *owner_id != transaction.id()
             {

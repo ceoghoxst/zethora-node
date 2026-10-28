@@ -468,3 +468,64 @@ async fn mempool_refuses_a_payment_the_pool_cannot_cover() {
 
     f.node.shutdown();
 }
+
+/// Hands the template builder its transactions in fixed batches: the first call returns the first batch, the next
+/// call (made only after a rejection) the second, and so on.
+struct BatchedSelector {
+    batches: std::collections::VecDeque<Vec<Transaction>>,
+    rejected: Arc<Mutex<Vec<TransactionId>>>,
+}
+
+impl TemplateTransactionSelector for BatchedSelector {
+    fn select_transactions(&mut self) -> Vec<Transaction> {
+        self.batches.pop_front().unwrap_or_default()
+    }
+
+    fn reject_selection(&mut self, tx_id: TransactionId) {
+        self.rejected.lock().unwrap().push(tx_id);
+    }
+
+    fn is_successful(&self) -> bool {
+        true
+    }
+}
+
+/// Seam review pack 1, #4: the template's coin tag check must run on EVERY selection batch, not only the first. Batch
+/// 1 holds a spend A of the coin plus an invalid transaction Z (its rejection makes the builder ask for batch 2);
+/// batch 2 holds B, another spend of the same coin (same tag). B must be left out, or the miner's block would carry
+/// the same coin tag twice and be refused by every node.
+#[tokio::test]
+async fn block_template_checks_coin_tags_on_every_selection_batch() {
+    let mut f = shield_one_coin_on_chain().await;
+    let a = f.spend(30_000);
+    let b = f.spend(20_000); // same coin, so the same tag, different payment
+    assert_ne!(a.id(), b.id());
+    assert_eq!(nullifiers(&a.payload), nullifiers(&b.payload));
+    let z = counterfeit(SHIELDED + 1, 66, &[&f.node]); // takes more than the pool holds: refused in batch 1
+
+    // Positive control: batch 2 is really asked for after a rejection, and a non-conflicting spend there is taken
+    let rejected = Arc::new(Mutex::new(Vec::new()));
+    let selector = BatchedSelector { batches: vec![vec![z.clone()], vec![b.clone()]].into(), rejected: rejected.clone() };
+    let template = f.node.tc.build_block_template(f.node.miner.clone(), Box::new(selector), TemplateBuildMode::Standard).unwrap();
+    assert_eq!(*rejected.lock().unwrap(), vec![z.id()]);
+    assert_eq!(template.block.transactions.iter().skip(1).map(|tx| tx.id()).collect::<Vec<_>>(), vec![b.id()]);
+
+    let rejected = Arc::new(Mutex::new(Vec::new()));
+    let selector = BatchedSelector { batches: vec![vec![a.clone(), z.clone()], vec![b.clone()]].into(), rejected: rejected.clone() };
+    let template = f.node.tc.build_block_template(f.node.miner.clone(), Box::new(selector), TemplateBuildMode::Standard).unwrap();
+    let block = template.block.to_immutable();
+    let rejected = rejected.lock().unwrap().clone();
+
+    // Batch 2 really was asked for (Z's rejection), and B was refused there: the block carries A only
+    assert_eq!(rejected, vec![z.id(), b.id()]);
+    assert_eq!(block.transactions.iter().skip(1).map(|tx| tx.id()).collect::<Vec<_>>(), vec![a.id()]);
+
+    // ... so the miner's block is valid and spends the coin exactly once
+    let hash = block.hash();
+    assert_eq!(f.node.insert_block(block).await, BlockStatus::StatusUTXOValid);
+    f.node.tip = hash;
+    let accepting = f.node.mine(vec![]).await;
+    assert_eq!(f.node.accepted_count(accepting, a.id()), 1);
+    assert_eq!(f.node.accepted_count(accepting, b.id()), 0);
+    f.node.shutdown();
+}

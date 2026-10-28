@@ -1288,12 +1288,16 @@ impl VirtualStateProcessor {
         // Only payments declaring a sane action count are prechecked (bounds the store lookups); the in-isolation
         // decode refuses the rest cheaply
         let prechecked = |mtx: &MutableTransaction| {
-            kaspa_consensus_core::zethora_private::private_payment_bytes(&mtx.tx.payload)
-                .and_then(kaspa_consensus_core::zethora_private::action_count)
-                .is_some_and(|n| (1..=zethora_shielded::codec::MAX_ACTIONS_PER_TX).contains(&n))
+            kaspa_consensus_core::zethora_private::private_payment_bytes(kaspa_consensus_core::zethora_private::private_payload(
+                &mtx.tx,
+            ))
+            .and_then(kaspa_consensus_core::zethora_private::action_count)
+            .is_some_and(|n| (1..=zethora_shielded::codec::MAX_ACTIONS_PER_TX).contains(&n))
         };
-        if !txs.iter().any(prechecked) {
-            return vec![Ok(()); txs.len()]; // no private payments: don't take the virtual lock at all
+        // No private payments, or private payments switched off on this network (the in-isolation check refuses them
+        // all before decode, seam review pack 1, #11): don't take the virtual lock or touch the stores at all
+        if !self.transaction_validator.private_spends_enabled() || !txs.iter().any(prechecked) {
+            return vec![Ok(()); txs.len()];
         }
         let virtual_read = self.virtual_stores.read();
         let virtual_state = virtual_read.state.get().unwrap();
@@ -1384,6 +1388,9 @@ impl VirtualStateProcessor {
                 }
             })
         });
+        // Zethora (seam review pack 1, #10): the turnstile across the whole batch, in batch order. Each payment above
+        // was checked against the same pool balance; together they may not take out more than the pool holds.
+        cumulative_mempool_turnstile(mutable_txs.iter().map(|mtx| &*mtx.tx), &mut results, pool_left);
         results
     }
 
@@ -1483,14 +1490,15 @@ impl VirtualStateProcessor {
         let mut template_pool_left = self.virtual_shielded_balance(&virtual_state);
         let mut tag_check = |tx: &Transaction, res: TxResult<u64>| -> TxResult<u64> {
             let fee = res?;
-            let nfs = kaspa_consensus_core::zethora_private::nullifiers(&tx.payload);
+            let nfs = kaspa_consensus_core::zethora_private::nullifiers(kaspa_consensus_core::zethora_private::private_payload(tx));
             if nfs.iter().any(|nf| template_nullifiers.contains(nf)) {
                 return Err(TxRuleError::InvalidPrivatePayment("private coin tag already used".to_string()));
             }
-            let value_out = match kaspa_consensus_core::zethora_private::pool_flows(&tx.payload) {
-                Ok(flows) => flows.map_or(0, |(_, value_out)| value_out),
-                Err(()) => return Err(TxRuleError::InvalidPrivatePayment("unreadable value balance".to_string())),
-            };
+            let value_out =
+                match kaspa_consensus_core::zethora_private::pool_flows(kaspa_consensus_core::zethora_private::private_payload(tx)) {
+                    Ok(flows) => flows.map_or(0, |(_, value_out)| value_out),
+                    Err(()) => return Err(TxRuleError::InvalidPrivatePayment("unreadable value balance".to_string())),
+                };
             if value_out > template_pool_left {
                 return Err(TxRuleError::InvalidPrivatePayment(format!(
                     "would take {value_out} zets out of the private pool, which has {template_pool_left} left for this block"
@@ -1876,4 +1884,88 @@ impl VirtualStateProcessor {
 enum MergesetIncreaseResult {
     Accepted { increase_size: u64 },
     Rejected { new_candidate: Hash },
+}
+
+/// Zethora (ZTH-SPEC-006 §7.1, seam review pack 1, #10): walks a mempool batch in order and refuses every private
+/// payment that, together with the payments before it in the batch, would take more out of the private pool than
+/// `pool_left` holds. Results already refused are skipped and don't use up the pool. Value brought in is not counted,
+/// the same rule as the block template.
+pub(crate) fn cumulative_mempool_turnstile<'a>(
+    txs: impl Iterator<Item = &'a kaspa_consensus_core::tx::Transaction>,
+    results: &mut [TxResult<()>],
+    pool_left: u64,
+) {
+    let mut left = pool_left;
+    for (tx, result) in txs.zip(results.iter_mut()) {
+        if result.is_err() {
+            continue;
+        }
+        let payload = kaspa_consensus_core::zethora_private::private_payload(tx);
+        if let Ok(Some((_, value_out))) = kaspa_consensus_core::zethora_private::pool_flows(payload) {
+            if value_out > left {
+                *result = Err(TxRuleError::InvalidPrivatePayment(format!(
+                    "together with earlier payments in this batch, would take {value_out} zets out of the private pool, which has {left} left"
+                )));
+            } else {
+                left -= value_out;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod zethora_mempool_batch_tests {
+    use super::cumulative_mempool_turnstile;
+    use crate::processes::transaction_validator::errors::{TxResult, TxRuleError};
+    use kaspa_consensus_core::{
+        subnets::SUBNETWORK_ID_NATIVE,
+        tx::Transaction,
+        zethora_private::{ACTION_SIZE, PRIVATE_PAYMENT_MAGIC},
+    };
+
+    /// A transaction carrying a private payment with this value balance (positive: leaves the pool)
+    fn payment(value_balance: i64) -> Transaction {
+        let mut p = PRIVATE_PAYMENT_MAGIC.to_vec();
+        p.extend([1u8, 1, 0]); // pool version, one action
+        p.extend(vec![0u8; ACTION_SIZE]);
+        p.push(0); // flags
+        p.extend(value_balance.to_le_bytes());
+        Transaction::new(0, vec![], vec![], 0, SUBNETWORK_ID_NATIVE, 0, p)
+    }
+
+    fn ordinary() -> Transaction {
+        Transaction::new(0, vec![], vec![], 0, SUBNETWORK_ID_NATIVE, 0, b"hello".to_vec())
+    }
+
+    fn verdicts(results: &[TxResult<()>]) -> Vec<bool> {
+        results.iter().map(|r| r.is_ok()).collect()
+    }
+
+    #[test]
+    fn a_batch_may_not_take_out_more_than_the_pool_holds_together() {
+        // Positive control: payments that fit together are all accepted
+        let txs = [payment(300), ordinary(), payment(700)];
+        let mut results = vec![Ok(()); 3];
+        cumulative_mempool_turnstile(txs.iter(), &mut results, 1_000);
+        assert_eq!(verdicts(&results), vec![true, true, true]);
+
+        // Each fits alone (pool 1,000), but not all together: the first two in batch order are kept, the third refused
+        let txs = [payment(600), payment(400), payment(1)];
+        let mut results = vec![Ok(()); 3];
+        cumulative_mempool_turnstile(txs.iter(), &mut results, 1_000);
+        assert_eq!(verdicts(&results), vec![true, true, false]);
+        assert!(matches!(&results[2], Err(TxRuleError::InvalidPrivatePayment(m)) if m.contains("has 0 left")));
+
+        // Two payments that each take the whole pool: only the first is kept (before the fix both were)
+        let txs = [payment(1_000), payment(1_000)];
+        let mut results = vec![Ok(()); 2];
+        cumulative_mempool_turnstile(txs.iter(), &mut results, 1_000);
+        assert_eq!(verdicts(&results), vec![true, false]);
+
+        // An already refused payment doesn't use up the pool; value brought in is not counted
+        let txs = [payment(900), payment(-5_000), payment(900)];
+        let mut results = vec![Err(TxRuleError::InvalidPrivatePayment("refused earlier".into())), Ok(()), Ok(())];
+        cumulative_mempool_turnstile(txs.iter(), &mut results, 1_000);
+        assert_eq!(verdicts(&results), vec![false, true, true]);
+    }
 }

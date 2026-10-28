@@ -189,4 +189,44 @@ mod tests {
         tx_back.send(()).unwrap();
         timeout(ACQUIRE_TIMEOUT, h).await.unwrap().unwrap();
     }
+
+    /// Zethora (seam review pack 1, #3): the exact pattern in VirtualStateProcessor::commit_utxo_state. A thread holding
+    /// a blocking read takes a second blocking read while a writer (the pruning thread) is already waiting. The lock is
+    /// readers-first, so this must not deadlock; and the writer must still get in once both reads are released.
+    #[test]
+    fn recursive_blocking_read_with_a_waiting_writer_does_not_deadlock() {
+        use std::sync::mpsc;
+        let l = Arc::new(RfRwLock::new());
+        let read1 = l.blocking_read();
+
+        // The writer queues up behind read1
+        let (writer_started, writer_started_rx) = mpsc::channel();
+        let (writer_done, writer_done_rx) = mpsc::channel();
+        let l_writer = l.clone();
+        let writer = std::thread::spawn(move || {
+            writer_started.send(()).unwrap();
+            let _w = l_writer.blocking_write();
+            writer_done.send(()).unwrap();
+        });
+        writer_started_rx.recv().unwrap();
+        std::thread::sleep(Duration::from_millis(100)); // let the writer block on the semaphore
+
+        // Positive control: the writer is really waiting (it can't get in while read1 is held)
+        assert!(writer_done_rx.try_recv().is_err());
+
+        // The second read on another thread standing in for the same call chain: must not hang
+        let (read2_taken, read2_taken_rx) = mpsc::channel();
+        let l_reader = l.clone();
+        let reader = std::thread::spawn(move || {
+            let _read2 = l_reader.blocking_read();
+            read2_taken.send(()).unwrap();
+        });
+        read2_taken_rx.recv_timeout(ACQUIRE_TIMEOUT).expect("second read deadlocked behind a waiting writer");
+        reader.join().unwrap();
+
+        // Release the first read: now the writer gets the lock
+        drop(read1);
+        writer_done_rx.recv_timeout(ACQUIRE_TIMEOUT).expect("writer never acquired after readers released");
+        writer.join().unwrap();
+    }
 }

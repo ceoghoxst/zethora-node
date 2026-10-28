@@ -58,7 +58,7 @@ impl MempoolUtxoSet {
             self.pool_unspent_outputs.insert(outpoint, entry);
         }
 
-        for nullifier in zethora_private::nullifiers(&transaction.tx.payload) {
+        for nullifier in zethora_private::nullifiers(zethora_private::private_payload(&transaction.tx)) {
             let previous_owner = self.nullifier_owner_id.insert(nullifier, transaction_id);
             debug_assert!(
                 previous_owner.is_none_or(|id| id == transaction_id),
@@ -87,7 +87,7 @@ impl MempoolUtxoSet {
             self.pool_unspent_outputs.remove(&outpoint);
         }
 
-        for nullifier in zethora_private::nullifiers(&transaction.tx.payload) {
+        for nullifier in zethora_private::nullifiers(zethora_private::private_payload(&transaction.tx)) {
             if self.nullifier_owner_id.get(&nullifier) == Some(&transaction_id) {
                 self.nullifier_owner_id.remove(&nullifier);
             }
@@ -105,7 +105,7 @@ impl MempoolUtxoSet {
         let transaction_id = transaction.id();
         let mut conflicts = vec![];
         let mut visited = HashSet::new();
-        for nullifier in zethora_private::nullifiers(&transaction.tx.payload) {
+        for nullifier in zethora_private::nullifiers(zethora_private::private_payload(&transaction.tx)) {
             if let Some(owner_id) = self.nullifier_owner_id.get(&nullifier)
                 && *owner_id != transaction_id
                 && visited.insert(*owner_id)

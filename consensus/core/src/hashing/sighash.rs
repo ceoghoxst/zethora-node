@@ -305,6 +305,93 @@ mod tests {
 
     use super::*;
 
+    /// Zethora (seam review pack 1, #1): the private payment digest leaves the payload out, so a shielding transaction is
+    /// bound to its private payment only by the transparent signatures covering the payload. If any signature type
+    /// skipped the payload, an attacker could swap in their own bundle, keep the victim's signatures and steal the
+    /// shielded funds. Checked for every allowed signature type, every input, both transaction versions: swapping the
+    /// payload (one byte, or a whole other bundle) always changes what is signed.
+    #[test]
+    fn every_signature_type_commits_to_the_private_payment_payload() {
+        let prev = TransactionId::from_str("880eb9819a31821d9d2399e2f35e2433b72637e393d71ecc9b8d0250f49153c3").unwrap();
+        let spk = ScriptPublicKey::new(0, SmallVec::from_vec(vec![0x51]));
+        let input = |i: u32, version: u16| TransactionInput {
+            previous_outpoint: TransactionOutpoint { transaction_id: prev, index: i },
+            signature_script: vec![],
+            sequence: i as u64,
+            compute_commit: if version == 0 { ComputeCommit::SigopCount(0.into()) } else { ComputeCommit::ComputeBudget(11.into()) },
+        };
+        let mut victim_bundle = b"ZSHP".to_vec();
+        victim_bundle.extend(std::iter::repeat_n(0x11u8, 900));
+        let mut one_byte_changed = victim_bundle.clone();
+        *one_byte_changed.last_mut().unwrap() ^= 1;
+        let mut attacker_bundle = b"ZSHP".to_vec();
+        attacker_bundle.extend(std::iter::repeat_n(0x22u8, 900));
+
+        let hash_types: Vec<SigHashType> = [
+            SIG_HASH_ALL.to_u8(),
+            SIG_HASH_NONE.to_u8(),
+            SIG_HASH_SINGLE.to_u8(),
+            SIG_HASH_ALL.to_u8() | SIG_HASH_ANY_ONE_CAN_PAY.to_u8(),
+            SIG_HASH_NONE.to_u8() | SIG_HASH_ANY_ONE_CAN_PAY.to_u8(),
+            SIG_HASH_SINGLE.to_u8() | SIG_HASH_ANY_ONE_CAN_PAY.to_u8(),
+        ]
+        .into_iter()
+        .map(|v| SigHashType::from_u8(v).unwrap())
+        .collect();
+        assert_eq!(hash_types.len(), 6);
+
+        let mut checked = 0;
+        for version in [0u16, 1] {
+            let tx_with = |payload: Vec<u8>| {
+                Transaction::new(
+                    version,
+                    vec![input(0, version), input(1, version)],
+                    vec![TransactionOutput { value: 300, script_public_key: spk.clone(), covenant: None }],
+                    0,
+                    SUBNETWORK_ID_NATIVE,
+                    0,
+                    payload,
+                )
+            };
+            let entries = || {
+                vec![
+                    UtxoEntry {
+                        amount: 500,
+                        script_public_key: spk.clone(),
+                        block_daa_score: 0,
+                        is_coinbase: false,
+                        covenant_id: None,
+                    },
+                    UtxoEntry {
+                        amount: 500,
+                        script_public_key: spk.clone(),
+                        block_daa_score: 0,
+                        is_coinbase: false,
+                        covenant_id: None,
+                    },
+                ]
+            };
+            let (victim, changed, attacker) =
+                (tx_with(victim_bundle.clone()), tx_with(one_byte_changed.clone()), tx_with(attacker_bundle.clone()));
+            let (pv, pc, pa) = (
+                PopulatedTransaction::new(&victim, entries()),
+                PopulatedTransaction::new(&changed, entries()),
+                PopulatedTransaction::new(&attacker, entries()),
+            );
+            for &ht in &hash_types {
+                for i in 0..2 {
+                    let h = |tx: &PopulatedTransaction| calc_schnorr_signature_hash(tx, i, ht, &SigHashReusedValuesUnsync::new());
+                    // Positive control: the same transaction signs to the same hash
+                    assert_eq!(h(&pv), h(&PopulatedTransaction::new(&victim, entries())));
+                    assert_ne!(h(&pv), h(&pc), "version {version}, {ht:?}, input {i}: one payload byte not signed");
+                    assert_ne!(h(&pv), h(&pa), "version {version}, {ht:?}, input {i}: swapped bundle not signed");
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(checked, 2 * 6 * 2);
+    }
+
     #[test]
     fn test_signature_hash() {
         // TODO: Copy all sighash tests from go kaspad.
