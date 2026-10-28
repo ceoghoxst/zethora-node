@@ -125,36 +125,36 @@ async fn nullifier_in_pending_set_is_rejected_by_private_double_spend() {
 // ---------------------------------------------------------------------------
 
 /// Snapshot depth for these tests only (real networks: 600, locked in Params).
-const TEST_ANCHOR_DEPTH: u64 = 10;
+pub(super) const TEST_ANCHOR_DEPTH: u64 = 10;
 /// Zets shielded into the private pool, and the fee each private spend pays out of it.
-const SHIELDED: u64 = 50_000;
-const SPEND_FEE: u64 = 1_000;
+pub(super) const SHIELDED: u64 = 50_000;
+pub(super) const SPEND_FEE: u64 = 1_000;
 /// Fee of the shielding transaction (paid from the visible coin).
-const SHIELD_FEE: u64 = 10_000;
+pub(super) const SHIELD_FEE: u64 = 10_000;
 
 /// Coinbase payload offsets (consensus/core/src/coinbase.rs): shielded balance 48..56, note root 56..88.
-fn shielded_balance(coinbase_payload: &[u8]) -> u64 {
+pub(super) fn shielded_balance(coinbase_payload: &[u8]) -> u64 {
     u64::from_le_bytes(coinbase_payload[48..56].try_into().unwrap())
 }
 
-fn note_root(coinbase_payload: &[u8]) -> [u8; 32] {
+pub(super) fn note_root(coinbase_payload: &[u8]) -> [u8; 32] {
     coinbase_payload[56..88].try_into().unwrap()
 }
 
 /// One fresh consensus instance with a single chain of blocks mined to an OpTrue script.
-struct Node {
-    tc: TestConsensus,
-    handles: Vec<JoinHandle<()>>,
-    miner: MinerData,
-    tip: Hash,
-    next_word: u64,
-    coinbase_maturity: u64,
+pub(super) struct Node {
+    pub(super) tc: TestConsensus,
+    pub(super) handles: Vec<JoinHandle<()>>,
+    pub(super) miner: MinerData,
+    pub(super) tip: Hash,
+    pub(super) next_word: u64,
+    pub(super) coinbase_maturity: u64,
     /// Every block this node built and inserted, in insertion order (replayed into other nodes by the determinism test)
-    inserted: Mutex<Vec<Block>>,
+    pub(super) inserted: Mutex<Vec<Block>>,
 }
 
 impl Node {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let config = ConfigBuilder::new(DEVNET_PARAMS)
             .skip_proof_of_work()
             .edit_consensus_params(|p| p.anchor_depth = TEST_ANCHOR_DEPTH)
@@ -174,76 +174,78 @@ impl Node {
         }
     }
 
-    fn fresh_hash(&mut self) -> Hash {
+    pub(super) fn fresh_hash(&mut self) -> Hash {
         self.next_word += 1;
         Hash::from_u64_word(self.next_word)
     }
 
     /// Builds a block with these parents and transactions (the builder refuses txs invalid on top of `parents`)
     /// and inserts it through validate_and_insert_block, waiting for the virtual state.
-    async fn insert(&self, hash: Hash, parents: Vec<Hash>, txs: Vec<Transaction>) -> BlockStatus {
+    pub(super) async fn insert(&self, hash: Hash, parents: Vec<Hash>, txs: Vec<Transaction>) -> BlockStatus {
         let block = self.build(hash, parents, txs);
         self.inserted.lock().unwrap().push(block.clone());
         self.insert_block(block).await
     }
 
     /// Builds a block with these parents and transactions on top of what this node has, without inserting it.
-    fn build(&self, hash: Hash, parents: Vec<Hash>, txs: Vec<Transaction>) -> Block {
+    pub(super) fn build(&self, hash: Hash, parents: Vec<Hash>, txs: Vec<Transaction>) -> Block {
         self.tc.build_utxo_valid_block_with_parents(hash, parents, self.miner.clone(), txs).to_immutable()
     }
 
     /// Inserts an already built block (possibly built by another node) through validate_and_insert_block.
-    async fn insert_block(&self, block: Block) -> BlockStatus {
+    pub(super) async fn insert_block(&self, block: Block) -> BlockStatus {
         self.tc.validate_and_insert_block(block).virtual_state_task.await.unwrap()
     }
 
     /// Mines one block on the tip; it must become the new UTXO-valid tip.
-    async fn mine(&mut self, txs: Vec<Transaction>) -> Hash {
+    pub(super) async fn mine(&mut self, txs: Vec<Transaction>) -> Hash {
         let hash = self.fresh_hash();
         assert_eq!(self.insert(hash, vec![self.tip], txs).await, BlockStatus::StatusUTXOValid);
         self.tip = hash;
         hash
     }
 
-    async fn mine_empty(&mut self, count: u64) {
+    pub(super) async fn mine_empty(&mut self, count: u64) {
         for _ in 0..count {
             self.mine(vec![]).await;
         }
     }
 
-    fn coinbase_payload(&self, block: Hash) -> Vec<u8> {
+    pub(super) fn coinbase_payload(&self, block: Hash) -> Vec<u8> {
         self.tc.get_block(block).unwrap().transactions[0].payload.clone()
     }
 
     /// How many times chain block `block` accepted transaction `id` (over its whole mergeset).
-    fn accepted_count(&self, block: Hash, id: TransactionId) -> usize {
+    pub(super) fn accepted_count(&self, block: Hash, id: TransactionId) -> usize {
         let data = self.tc.get_block_acceptance_data(block).unwrap();
         data.iter().flat_map(|m| m.accepted_transactions.iter()).filter(|e| e.transaction_id == id).count()
     }
 
     /// The real mempool path: in-isolation checks (incl. the Orchard proof) and UTXO-context checks against the
     /// virtual. Also fills in the storage mass commitment the block builder checks.
-    fn mempool_checked(&self, tx: Transaction) -> Transaction {
+    pub(super) fn mempool_checked(&self, tx: Transaction) -> Transaction {
         let mut mtx = MutableTransaction::from_tx(tx);
         self.tc.validate_mempool_transaction(&mut mtx, &TransactionValidationArgs::default()).unwrap();
         (*mtx.tx).clone()
     }
 
-    fn shutdown(self) {
+    pub(super) fn shutdown(self) {
         self.tc.shutdown(self.handles);
     }
 }
 
 /// A node whose private pool holds one real 50,000-zet coin, shielded on chain, with a matured snapshot.
-struct Funded {
-    node: Node,
-    scanner: Scanner,
-    coin: OwnedCoin,
-    me: Address,
-    friend: Address,
+pub(super) struct Funded {
+    pub(super) node: Node,
+    pub(super) scanner: Scanner,
+    pub(super) coin: OwnedCoin,
+    pub(super) me: Address,
+    pub(super) friend: Address,
+    /// The shielding transaction; its output 0 is visible change (to the OpTrue script) that tests can spend
+    pub(super) shield: Transaction,
 }
 
-async fn shield_one_coin_on_chain() -> Funded {
+pub(super) async fn shield_one_coin_on_chain() -> Funded {
     let mut node = Node::new();
 
     // Funding: the coinbase of block 3 (it pays block 2's reward to the OpTrue script)
@@ -291,13 +293,13 @@ async fn shield_one_coin_on_chain() -> Funded {
     assert_eq!(coins.len(), 1);
     assert_eq!(coins[0].value(), SHIELDED);
     let coin = coins[0].clone();
-    Funded { node, scanner, coin, me, friend }
+    Funded { node, scanner, coin, me, friend, shield }
 }
 
 impl Funded {
     /// A fully private spend of the coin: `to_friend` to the friend, the rest minus the fee back to me.
     /// Checked through the mempool path against the current virtual.
-    fn spend(&self, to_friend: u64) -> Transaction {
+    pub(super) fn spend(&self, to_friend: u64) -> Transaction {
         let mut tx = Transaction::new_non_finalized(TX_VERSION, vec![], vec![], 0, SUBNETWORK_ID_NATIVE, 0, vec![]);
         let digest = zethora_private_payment_digest(&tx);
         let outputs = [(self.friend, to_friend), (self.me, SHIELDED - SPEND_FEE - to_friend)];
