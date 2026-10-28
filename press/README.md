@@ -1,7 +1,37 @@
-Zethora Press Kit
+# Zethora press kit
 
-One-Paragraph Description
-Zethora is a fair-launch Layer-1 Proof of Work blockchain combining Kaspa's GHOSTDAG BlockDAG architecture, RandomZ CPU mining, and Zcash Orchard privacy. It enforces a strict 100M hard cap with no premine. The project is currently in the devnet phase, building in public with a focus on verifiable technical milestones and a fully automated test suite. It is home-mineable and every script is readable.
+## One-paragraph description
 
-Founder Bio
-Deion Smith is the founder and lead engineer of Zethora. He built the Layer-1 network using AI tooling to navigate the complexity of the Rust codebase, prioritizing verifiable test coverage and structural integrity.
+Zethora is a fair-launch Layer-1 proof-of-work blockchain that anyone can
+mine at home on a normal CPU. It is built on a fork of Kaspa's GHOSTDAG
+BlockDAG and uses RandomZ, a tuned RandomX mining algorithm. Supply is
+capped at 100 million ZTHR with no premine, and every block runs a public
+supply check that shows no coins were created out of thin air. A private
+payment pool based on Zcash Orchard is in the code but switched off until
+an independent cryptography review is complete. Zethora is in pre-testnet
+testing and builds in public.
+
+## Founder
+
+Deion Smith is the founder of Zethora and leads the project: design,
+decisions and testing. He builds with AI tools, and every change is
+reviewed and tested before it ships.
+
+## Facts (checkable today)
+
+- No premine, no presale, no airdrop, no ICO. Every coin comes from mining.
+- 100M ZTHR cap; halving every 8 years.
+- Windows miner app: one window, START MINING, live supply check.
+- Private payments: OFF on testnet and mainnet until reviewed.
+- Not audited yet. Open items: docs/STATUS.md.
+- Testnet coins are worth zero.
+- DeionRaven Labs is a project name, not a registered company.
+
+## Links
+
+- Source code: https://github.com/ceoghoxst/zethora-node
+- Status and known risks: docs/STATUS.md
+- FAQ: docs/FAQ.md
+- X: @ZethoraNetwork
+
+Logo and screenshots: coming before testnet launch.
