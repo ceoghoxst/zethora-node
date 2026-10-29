@@ -47,9 +47,10 @@ impl TransactionValidator {
         let total_in = self.check_transaction_input_amounts(tx)?;
         // Zethora (ZTH-SPEC-006): value moving into the private pool counts like an output, and value
         // leaving it counts like an input. So: fee = transparent in + pool out - transparent out - pool in.
-        let (pool_in, pool_out) = kaspa_consensus_core::zethora_private::pool_flows(&tx.tx().payload)
-            .map_err(|_| TxRuleError::InvalidPrivatePayment("unreadable value balance".to_string()))?
-            .unwrap_or((0, 0));
+        let (pool_in, pool_out) =
+            kaspa_consensus_core::zethora_private::pool_flows(kaspa_consensus_core::zethora_private::private_payload(tx.tx()))
+                .map_err(|_| TxRuleError::InvalidPrivatePayment("unreadable value balance".to_string()))?
+                .unwrap_or((0, 0));
         let total_in = total_in.checked_add(pool_out).filter(|t| *t <= MAX_SOMPI).ok_or(TxRuleError::InputAmountTooHigh)?;
         let total_out = Self::check_transaction_output_values(tx, total_in)?;
         let total_out = total_out

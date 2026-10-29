@@ -364,7 +364,7 @@ impl MassCalculator {
         };
 
         // Zethora: private payments also pay for checking their proof (ZTH-SPEC-006 §5)
-        let proof_mass = crate::zethora_private::proof_mass(&tx.payload);
+        let proof_mass = crate::zethora_private::proof_mass(crate::zethora_private::private_payload(tx));
         let compute_mass = compute_mass_for_size + total_script_public_key_mass + script_mass + proof_mass;
         let transient_mass = size * TRANSIENT_BYTE_TO_MASS_FACTOR;
 

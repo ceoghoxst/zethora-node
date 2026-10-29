@@ -64,6 +64,11 @@ impl TransactionValidator {
         self
     }
 
+    /// Zethora: are private payments accepted on this network (ZTH-SPEC-006 §7.3)?
+    pub fn private_spends_enabled(&self) -> bool {
+        self.private_spends_enabled
+    }
+
     pub fn new_for_tests(
         max_tx_inputs: usize,
         max_tx_outputs: usize,

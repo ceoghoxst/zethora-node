@@ -70,11 +70,15 @@ pub enum VerifyError {
     BindingSignature,
     /// The zero-knowledge proof is wrong.
     Proof,
+    /// The payment could not be committed to (Orchard refused to compute its commitment). Never expected for a
+    /// decoded pool 1 payment; reported instead of panicking, so no relayed transaction can crash a node
+    /// (seam review pack 1, #7). A plain refusal, not proof of forgery: nobody is banned for it.
+    Commitment,
 }
 
 /// Checks a private payment the way a node will: signatures first (cheap), then the proof (expensive).
 pub fn verify_payment(bundle: &Bundle<Authorized, i64>, vk: &VerifyingKey, tx_digest: &[u8; 32]) -> Result<(), VerifyError> {
-    let commitment = bundle.commitment(TxVersion::V5).expect("pool 1 bundles are always committable as v5");
+    let commitment = bundle.commitment(TxVersion::V5).map_err(|_| VerifyError::Commitment)?;
     let sighash = sighash(tx_digest, commitment.into());
     for (i, action) in bundle.actions().iter().enumerate() {
         action.rk().verify(&sighash, action.authorization()).map_err(|_| VerifyError::SpendSignature(i))?;
