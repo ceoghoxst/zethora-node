@@ -73,9 +73,10 @@ impl Flow for HandleRelayInvsFlow {
 
     async fn start(&mut self) -> Result<(), ProtocolError> {
         let res = self.start_impl().await;
-        // Zethora: a block with a forged private payment gets the peer that sent it banned (ZTH-SPEC-006 §8.3)
+        // Zethora: a block with a forged private payment gets the peer that sent it banned (ZTH-SPEC-006 §8.3); a header
+        // with unearned proof of work is a strike (seam review P4-1). Counted once, here.
         if let Err(err) = &res {
-            self.ctx.ban_if_forged_private_payment(&self.router, err).await;
+            self.ctx.penalize_if_misbehaving(&self.router, err).await;
         }
         res
     }
@@ -291,6 +292,8 @@ impl HandleRelayInvsFlow {
         };
 
         if should_orphan {
+            // Seam review P4-1: an orphan can't be checked against its real difficulty, so cap how many one IP can send
+            self.ctx.note_relayed_orphan(self.router.net_address().ip())?;
             let hash = block.hash();
             match self.ctx.add_orphan(consensus, block, Some(self.router.net_address().ip())).await {
                 // There is a sync gap between consensus and the orphan pool, meaning that consensus might have indicated

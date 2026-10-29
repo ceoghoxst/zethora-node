@@ -7,7 +7,7 @@ This guide takes a fresh Windows PC to a running Zethora devnet node and miner.
 ## What you need
 
 - Windows 10 or 11 (64-bit)
-- 8 GB RAM minimum (16 GB recommended)
+- 8 GB RAM minimum (16 GB recommended). The miner needs about 2.5 GB. A node on its own needs at least 4 GB: it keeps up to four 256 MB RandomZ setups, and while it checks a new peer's pruning proof it builds up to four more.
 - 50 GB free disk space
 - A stable internet connection
 

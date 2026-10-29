@@ -633,8 +633,9 @@ pub const MAINNET_PARAMS: Params = Params {
 
     pre_crescendo_target_time_per_block: 1000,
 
-    // Roughly 2025-05-05 1500 UTC
-    crescendo_activation: ForkActivation::new(110_165_000),
+    // Zethora (seam review P4-2): Kaspa's Crescendo rules from genesis, as on devnet and simnet (the old value was
+    // Kaspa's own activation DAA score)
+    crescendo_activation: ForkActivation::always(),
 };
 
 pub const TESTNET_PARAMS: Params = Params {
@@ -684,8 +685,9 @@ pub const TESTNET_PARAMS: Params = Params {
 
     pre_crescendo_target_time_per_block: 1000,
 
-    // 18:30 UTC, March 6, 2025
-    crescendo_activation: ForkActivation::new(88_657_000),
+    // Zethora (seam review P4-2): Kaspa's Crescendo rules from genesis, as on devnet and simnet (the old value was
+    // Kaspa's own activation DAA score)
+    crescendo_activation: ForkActivation::always(),
 };
 
 pub const SIMNET_PARAMS: Params = Params {
@@ -776,6 +778,19 @@ pub const DEVNET_PARAMS: Params = Params {
 
 #[cfg(test)]
 mod tests {
+    /// Seam review P4-2: no Kaspa activation height is left on any Zethora network; every network runs the rules all
+    /// testing used (devnet) from genesis.
+    #[test]
+    fn every_network_activates_crescendo_at_genesis() {
+        use super::*;
+        for params in [&MAINNET_PARAMS, &TESTNET_PARAMS, &DEVNET_PARAMS, &SIMNET_PARAMS] {
+            assert_eq!(params.crescendo_activation, ForkActivation::always(), "{}", params.net);
+            assert!(params.crescendo_activation.is_active(0), "{}", params.net);
+            // bps_history() (the only reader) gives the same block rate before and after
+            assert_eq!(params.bps_history().before(), params.bps_history().after(), "{}", params.net);
+        }
+    }
+
     use super::*;
 
     #[test]

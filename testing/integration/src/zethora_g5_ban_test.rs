@@ -23,8 +23,9 @@
 //! window, so the real threshold logic (unchanged) fires. Time is not injected or altered.
 //!
 //! NEGATIVE CONTROL (test-discipline Rule 4, verified out-of-band and recorded in the G5 report):
-//! commenting out the `ctx.ban_if_implausible_pow_epoch(...)` call in
-//! `protocol/flows/src/ibd/flow.rs::sync_and_validate_pruning_proof` makes the
+//! commenting out the `ctx.penalize_if_misbehaving(...)` call in
+//! `protocol/flows/src/ibd/flow.rs` (`IbdFlow::start`; before seam review P4-1 the call sat in
+//! `sync_and_validate_pruning_proof`) makes the
 //! `evil peer must be banned after the 3rd bogus proof` assertion below FAIL (the banned set stays
 //! empty and the reconnect is not refused); restoring the call makes it pass.
 
