@@ -211,8 +211,9 @@ mod tests {
     fn a_coinbase_is_never_read_as_a_private_payment() {
         // Seam review pack 1, #12: a coinbase payload starting with the blue score 0x5048535A reads "ZSHP"
         use crate::{subnets::SUBNETWORK_ID_COINBASE, subnets::SUBNETWORK_ID_NATIVE, tx::Transaction};
-        let mut payload = 0x5048535A_u64.to_le_bytes().to_vec();
-        payload.extend(fake(2, 1_000)[4..].iter().copied()); // ... followed by bytes that look like a payment
+        // (the blue score's low 4 bytes, then bytes that look like a payment)
+        let mut payload = 0x5048535A_u64.to_le_bytes()[..4].to_vec();
+        payload.extend(fake(2, 1_000)[4..].iter().copied());
         assert_eq!(&payload[..4], &PRIVATE_PAYMENT_MAGIC[..]);
         assert_eq!(pool_flows(&payload), Ok(Some((0, 1_000)))); // the raw readers alone would be fooled
         let coinbase = Transaction::new(0, vec![], vec![], 0, SUBNETWORK_ID_COINBASE, 0, payload.clone());
