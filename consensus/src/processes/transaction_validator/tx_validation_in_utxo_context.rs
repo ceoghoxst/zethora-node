@@ -1,4 +1,4 @@
-use crate::constants::{MAX_SOMPI, SEQUENCE_LOCK_TIME_DISABLED, SEQUENCE_LOCK_TIME_MASK};
+use crate::constants::{MAX_ZETS, SEQUENCE_LOCK_TIME_DISABLED, SEQUENCE_LOCK_TIME_MASK};
 use kaspa_consensus_core::{
     hashing::sighash::{SigHashReusedValuesSync, SigHashReusedValuesUnsync},
     mass::Gram,
@@ -51,7 +51,7 @@ impl TransactionValidator {
             kaspa_consensus_core::zethora_private::pool_flows(kaspa_consensus_core::zethora_private::private_payload(tx.tx()))
                 .map_err(|_| TxRuleError::InvalidPrivatePayment("unreadable value balance".to_string()))?
                 .unwrap_or((0, 0));
-        let total_in = total_in.checked_add(pool_out).filter(|t| *t <= MAX_SOMPI).ok_or(TxRuleError::InputAmountTooHigh)?;
+        let total_in = total_in.checked_add(pool_out).filter(|t| *t <= MAX_ZETS).ok_or(TxRuleError::InputAmountTooHigh)?;
         let total_out = Self::check_transaction_output_values(tx, total_in)?;
         let total_out = total_out
             .checked_add(pool_in)
@@ -116,7 +116,7 @@ impl TransactionValidator {
                 return Err(TxRuleError::InputAmountOverflow);
             }
 
-            if total > MAX_SOMPI {
+            if total > MAX_ZETS {
                 return Err(TxRuleError::InputAmountTooHigh);
             }
         }

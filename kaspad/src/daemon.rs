@@ -461,6 +461,17 @@ do you confirm? (answer y/n or pass --yes to the Kaspad command line to confirm 
             continue 'db_upgrade;
         }
 
+        // Zethora (seam review P2-5): DB version 8 changed the virtual state row (it now records the private coin list
+        // size). Zethora's networks have not launched, so an older database is deleted and synced again, never migrated.
+        if version <= 7 {
+            let msg = format!(
+                "This node database (version {version}) is from an older Zethora build whose stored state this build can't \
+                 read. It must be deleted and synced again. Do you confirm the delete? (y/n)"
+            );
+            is_db_reset_needed = request_database_deletion_approval_with_message(&msg, args.yes);
+            continue 'db_upgrade;
+        }
+
         let msg = "NOTE: Node database is from an older version. Proceeding with the upgrade is instant and safe.
 However, downgrading to an older node version later will require deleting the database.
 Do you confirm? (y/n)";

@@ -254,4 +254,25 @@ mod tests {
         assert_eq!(tree.size(), 0);
         assert_eq!(tree.root(), MerkleHashOrchard::empty_root(TREE_DEPTH.into()));
     }
+
+    /// Seam review P2-2: the coin list holds exactly 2^32 coins (consensus's NOTE_TREE_CAPACITY). Two places from full,
+    /// two more coins fit, the next one is refused with TreeFull (consensus now refuses the transaction before this).
+    #[test]
+    fn the_coin_list_holds_exactly_2_pow_32_coins() {
+        use incrementalmerkletree::{Hashable, Position};
+        let leaf = MerkleHashOrchard::empty_leaf();
+        let position = Position::from((1u64 << 32) - 3);
+        // A frontier at that position needs one ommer per 1-bit of the position below the top: find the count it takes
+        let frontier = (0..=32)
+            .find_map(|n| Frontier::<MerkleHashOrchard, TREE_DEPTH>::from_parts(position, leaf, vec![leaf; n]).ok())
+            .expect("a frontier at position 2^32 - 3");
+        let mut tree = NoteCommitmentTree { frontier };
+        assert_eq!(tree.size(), (1u64 << 32) - 2);
+        let cmx = ExtractedNoteCommitment::from_bytes(&[0; 32]).unwrap();
+        assert_eq!(tree.append(&cmx), Ok(()));
+        assert_eq!(tree.append(&cmx), Ok(()));
+        assert_eq!(tree.size(), 1u64 << 32);
+        assert_eq!(tree.append(&cmx), Err(TreeFull));
+        assert_eq!(tree.size(), 1u64 << 32);
+    }
 }

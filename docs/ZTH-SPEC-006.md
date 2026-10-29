@@ -91,7 +91,7 @@ An **anchor** is a historical coin-list root. A private spend references the anc
 
 Rules:
 
-- **Depth.** An anchor is usable only when the block that produced it is at least `ANCHOR_DEPTH = 600` blue scores below the current tip (`utxo_validation.rs::anchor_matured_on_chain`). At 1 BPS this is roughly 10 minutes. **TODO before testnet:** scale with the network's real block rate (10x at 10 blocks/s), per the code comment in `zethora_private.rs`.
+- **Depth.** An anchor is usable only when the block that produced it is at least `ANCHOR_DEPTH = 600` blue scores below the **selected parent of the chain block that accepts the spend** (for the mempool and block templates: the virtual's selected parent, i.e. the current tip) (`utxo_validation.rs::anchor_matured_on_chain`). Boundary: 599 below is too young, 600 and 601 are matured (seam review P2-7). At 1 BPS this is roughly 10 minutes. **TODO before testnet:** scale with the network's real block rate (10x at 10 blocks/s), per the code comment in `zethora_private.rs`.
 - **Provenance.** The producing block must be a chain ancestor of the selected parent, or the anchor must have been rewritten to `ANCHORED_FOR_GOOD` by the pruning processor (blue score preserved).
 - **Storage.** `DbZethoraAnchorsStore` maps `anchor_root -> Vec<ProducerRecord>` where each record is `(block, blue_score)`. Genesis produces the first (empty-list) anchor.
 - **Pruning rewrite.** When the producing block is pruned, its record is rewritten to `ANCHORED_FOR_GOOD` preserving blue score, so a node that joined from a pruning point makes the same maturity decision as a node with full history.

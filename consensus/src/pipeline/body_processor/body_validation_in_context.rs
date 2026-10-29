@@ -107,10 +107,7 @@ mod tests {
 
     #[tokio::test]
     async fn validate_body_in_context_test() {
-        let config = ConfigBuilder::new(MAINNET_PARAMS)
-            .skip_proof_of_work()
-            .edit_consensus_params(|p| p.deflationary_phase_daa_score = p.genesis.daa_score + 2)
-            .build();
+        let config = ConfigBuilder::new(MAINNET_PARAMS).skip_proof_of_work().build();
         let consensus = TestConsensus::new(&config);
         let wait_handles = consensus.init();
         let body_processor = consensus.block_body_processor();
@@ -167,7 +164,7 @@ mod tests {
         let valid_block_child = consensus.build_block_with_parents_and_transactions(6.into(), vec![3.into()], vec![]);
         consensus.validate_and_insert_block(valid_block_child.clone().to_immutable()).virtual_state_task.await.unwrap();
         {
-            // The block DAA score is 2, so the subsidy should be calculated according to the deflationary stage.
+            // A coinbase claiming a subsidy other than zethora_subsidy's for its DAA score is refused.
             let mut block = consensus.build_block_with_parents_and_transactions(7.into(), vec![6.into()], vec![]);
             block.transactions[0].payload[8..16].copy_from_slice(&(5_u64).to_le_bytes());
             block.header.hash_merkle_root = calc_hash_merkle_root(block.transactions.iter());
@@ -222,7 +219,6 @@ mod tests {
         sequence: u64,
         should_pass: bool,
     ) {
-        // The block DAA score is 2, so the subsidy should be calculated according to the deflationary stage.
         let block = consensus.build_block_with_parents_and_transactions(
             block_hash,
             vec![parent],

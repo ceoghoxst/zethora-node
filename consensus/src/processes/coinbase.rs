@@ -40,6 +40,16 @@ const MIN_PAYLOAD_LENGTH: usize = LENGTH_OF_BLUE_SCORE
 // We define a year as 365.25 days and a month as 365.25 / 12 = 30.4375
 // SECONDS_PER_MONTH = 30.4375 * 24 * 60 * 60
 
+/// Seam review P5-2: a checked addition; an overflow refuses the coinbase instead of panicking or wrapping.
+fn add(a: u64, b: u64, what: &str) -> CoinbaseResult<u64> {
+    a.checked_add(b).ok_or_else(|| CoinbaseError::ZethoraSupply(format!("{what} overflows u64")))
+}
+
+/// Seam review P5-2: a checked sum.
+fn checked_sum(values: impl IntoIterator<Item = u64>, what: &str) -> CoinbaseResult<u64> {
+    values.into_iter().try_fold(0u64, |a, b| add(a, b, what))
+}
+
 #[derive(Clone)]
 pub struct CoinbaseManager {
     coinbase_payload_script_public_key_max_len: u8,
@@ -88,8 +98,10 @@ impl CoinbaseManager {
         let mut outputs = Vec::with_capacity(ghostdag_data.mergeset_blues.len() + 1); // + 1 for possible red reward
 
         // Zethora (ZTH-SPEC-008): miners get subsidy + tips; base fees go 60% to the pool, 40% burned.
-        let base_total: u64 = mergeset_rewards.values().map(|r| r.base_fees).sum();
-        let pool = zethora_fees::pool_step(parent_pool, base_total);
+        // Seam review P5-2: every sum here is checked. Real values stay far below u64::MAX, but an unchecked sum would
+        // panic in a debug build and wrap in a release build, so two nodes could disagree on the same block.
+        let base_total = checked_sum(mergeset_rewards.values().map(|r| r.base_fees), "base fees")?;
+        let pool = zethora_fees::pool_step(parent_pool, base_total).map_err(|e| CoinbaseError::ZethoraSupply(e.to_string()))?;
 
         // Zethora supply ledger (ZTH-SPEC-006 §7.2): count every zet this coinbase creates or destroys
         let mut issued = 0u64;
@@ -111,16 +123,17 @@ impl CoinbaseManager {
         for blue in ghostdag_data.mergeset_blues.iter().filter(|h| !mergeset_non_daa.contains(h)) {
             let reward_data = mergeset_rewards.get(blue).unwrap();
             let subsidy = paid_subsidy(reward_data.subsidy);
-            issued += subsidy;
-            if subsidy + reward_data.tips() > 0 {
-                outputs.push(TransactionOutput::new(subsidy + reward_data.tips(), reward_data.script_public_key.clone()));
+            issued = add(issued, subsidy, "issued")?;
+            let value = add(subsidy, reward_data.tips(), "blue reward")?;
+            if value > 0 {
+                outputs.push(TransactionOutput::new(value, reward_data.script_public_key.clone()));
             }
         }
 
         // Zethora: a blue block outside the DAA window is paid nothing, so its tips are destroyed (counted as burned).
         // Such a block may have no reward data at all (e.g. genesis in the very first virtual state): nothing is lost then.
         for blue in ghostdag_data.mergeset_blues.iter().filter(|h| mergeset_non_daa.contains(h)) {
-            unpaid += mergeset_rewards.get(blue).map_or(0, |r| r.tips());
+            unpaid = add(unpaid, mergeset_rewards.get(blue).map_or(0, |r| r.tips()), "unpaid tips")?;
         }
 
         // Collect all rewards from mergeset reds ∩ DAA window and create a
@@ -130,26 +143,26 @@ impl CoinbaseManager {
         for red in ghostdag_data.mergeset_reds.iter() {
             let reward_data = mergeset_rewards.get(red).unwrap();
             if mergeset_non_daa.contains(red) {
-                red_reward += reward_data.tips();
+                red_reward = add(red_reward, reward_data.tips(), "red reward")?;
             } else {
                 let subsidy = paid_subsidy(reward_data.subsidy);
-                red_reward += subsidy + reward_data.tips();
-                issued += subsidy;
+                red_reward = add(red_reward, add(subsidy, reward_data.tips(), "red reward")?, "red reward")?;
+                issued = add(issued, subsidy, "issued")?;
             }
         }
 
         // Zethora: this block's payout from the fee pool goes to this block's miner (same output as red rewards)
-        red_reward += pool.payout;
+        red_reward = add(red_reward, pool.payout, "red reward")?;
 
         if red_reward > 0 {
             outputs.push(TransactionOutput::new(red_reward, miner_data.script_public_key.clone()));
         }
 
         // Zethora: build this block's supply ledger from what it really does, and refuse it if it does not balance
-        let coinbase_out: u64 = outputs.iter().map(|o| o.value).sum();
+        let coinbase_out = checked_sum(outputs.iter().map(|o| o.value), "coinbase outputs")?;
         // Zethora: value moved into / out of the private pool by the accepted transactions (the turnstile)
-        let shielded_in: u64 = mergeset_rewards.values().map(|r| r.pool_in).sum();
-        let shielded_out: u64 = mergeset_rewards.values().map(|r| r.pool_out).sum();
+        let shielded_in = checked_sum(mergeset_rewards.values().map(|r| r.pool_in), "private pool inflow")?;
+        let shielded_out = checked_sum(mergeset_rewards.values().map(|r| r.pool_out), "private pool outflow")?;
         let flows = BlockFlows { issued, unpaid, visible_change, coinbase_out, shielded_in, shielded_out };
         let ledger =
             zethora_supply::ledger_step(parent_pool, pool.next, flows).map_err(|e| CoinbaseError::ZethoraSupply(e.to_string()))?;
@@ -194,6 +207,12 @@ impl CoinbaseManager {
             .chain(data.miner_data.extra_data.as_ref().iter().copied())                         // Extra data
             .collect();
 
+        // Seam review P5-4: refuse here, with a clear error, a payload that body validation would refuse anyway
+        // (deserialize_coinbase_payload), so a template never wastes a miner's work.
+        if payload.len() > self.max_coinbase_payload_len {
+            return Err(CoinbaseError::PayloadLenAboveMax(payload.len(), self.max_coinbase_payload_len));
+        }
+
         Ok(payload)
     }
 
@@ -216,6 +235,11 @@ impl CoinbaseManager {
                 .chain(miner_data.script_public_key.script().iter().copied())    // Script public key
                 .chain(miner_data.extra_data.as_ref().iter().copied()), // Extra data
         );
+
+        // Seam review P5-4: same length rule as serialize_coinbase_payload (a template's miner data can be swapped)
+        if payload.len() > self.max_coinbase_payload_len {
+            return Err(CoinbaseError::PayloadLenAboveMax(payload.len(), self.max_coinbase_payload_len));
+        }
 
         Ok(payload)
     }
@@ -486,6 +510,127 @@ mod tests {
         );
         let exact = BlockFlows { issued: 50, coinbase_out: 50, ..Default::default() };
         assert_eq!(zethora_supply::ledger_step(parent, parent, exact).unwrap().total_issued, CAP_UNITS);
+    }
+
+    /// Seam review P5-2: an overflowing sum refuses the coinbase with a supply error (before the fix: a panic in
+    /// debug builds, a silent wrap in release builds).
+    #[test]
+    fn an_overflowing_coinbase_sum_is_refused_not_wrapped() {
+        let cbm = create_manager(&MAINNET_PARAMS);
+        // Positive control: the largest tips that still fit are paid exactly
+        let (outs, _) = cap_block(&cbm, ledger_below_cap(1_000), &[(0, u64::MAX - 1_000)], &[]).unwrap();
+        assert_eq!(outs, vec![u64::MAX - 1_000]);
+        // One zet more than u64 can hold (subsidy 1 + tips u64::MAX): refused, with the reason
+        match cap_block(&cbm, ledger_below_cap(1_000), &[(1, u64::MAX)], &[]) {
+            Err(CoinbaseError::ZethoraSupply(msg)) => assert_eq!(msg, "blue reward overflows u64"),
+            other => panic!("expected a supply error, got {other:?}"),
+        }
+        // Same for a red block
+        match cap_block(&cbm, ledger_below_cap(1_000), &[(0, 0)], &[(1, u64::MAX)]) {
+            Err(CoinbaseError::ZethoraSupply(msg)) => assert_eq!(msg, "red reward overflows u64"),
+            other => panic!("expected a supply error, got {other:?}"),
+        }
+    }
+
+    /// Seam review P5-4 (test P5-T4): with the longest allowed script (150 bytes) only 27 bytes of extra data fit in the
+    /// 300-byte payload. Building a payload that body validation would refuse is refused at once, with the reason.
+    #[test]
+    fn a_too_long_coinbase_payload_is_refused_when_building() {
+        let params = MAINNET_PARAMS.clone();
+        assert_eq!((params.max_coinbase_payload_len, params.coinbase_payload_script_public_key_max_len), (300, 150));
+        let cbm = create_manager(&params);
+        let script = ScriptPublicKey::new(0, ScriptVec::from_slice(&[0x51; 150]));
+        let data = |extra: &[u8]| CoinbaseData {
+            blue_score: 1,
+            subsidy: 2,
+            pool: PoolState::default(),
+            note_root: [0; 32],
+            private_state: [0; 32],
+            miner_data: MinerData { script_public_key: script.clone(), extra_data: extra.to_vec() },
+        };
+        // Positive control: exactly 300 bytes is built, and body validation's reader accepts it
+        let payload = cbm.serialize_coinbase_payload(&data(&[7; 27])).unwrap();
+        assert_eq!(payload.len(), 300);
+        assert_eq!(cbm.deserialize_coinbase_payload(&payload).unwrap().miner_data.extra_data, &[7u8; 27][..]);
+        // One byte more: refused when building (the reader refuses it too, so a mined block would have been invalid)
+        match cbm.serialize_coinbase_payload(&data(&[7; 28])) {
+            Err(CoinbaseError::PayloadLenAboveMax(301, 300)) => {}
+            other => panic!("expected PayloadLenAboveMax(301, 300), got {other:?}"),
+        }
+        // The review's case: 150-byte script + 40 bytes of extra data
+        assert!(matches!(cbm.serialize_coinbase_payload(&data(&[7; 40])), Err(CoinbaseError::PayloadLenAboveMax(313, 300))));
+        // Swapping the miner data of a good payload follows the same rule
+        let swapped = MinerData { script_public_key: script.clone(), extra_data: vec![7u8; 28] };
+        assert!(matches!(cbm.modify_coinbase_payload(payload.clone(), &swapped), Err(CoinbaseError::PayloadLenAboveMax(301, 300))));
+        let fits = MinerData { script_public_key: script.clone(), extra_data: vec![9u8; 27] };
+        assert_eq!(cbm.modify_coinbase_payload(payload, &fits).unwrap().len(), 300);
+    }
+
+    /// Seam review P5-6 (test P5-T6): every network's genesis has DAA score 0, so the first mined block (score 1) is
+    /// paid reward(1) of the schedule, not a reward from far into it (Kaspa's mainnet genesis had score 1,312,860).
+    #[test]
+    fn every_genesis_starts_the_reward_schedule_at_zero() {
+        use crate::params::{DEVNET_PARAMS, SIMNET_PARAMS, TESTNET_PARAMS};
+        use crate::processes::zethora_subsidy::{D, EMISSION_START};
+        let schedule = ZethoraSubsidy::new();
+        for p in [&MAINNET_PARAMS, &TESTNET_PARAMS, &DEVNET_PARAMS, &SIMNET_PARAMS] {
+            assert_eq!(p.genesis.daa_score, 0, "{} genesis DAA score", p.net);
+            let cbm = create_manager(p);
+            assert_eq!(cbm.calc_block_subsidy(p.genesis.daa_score), EMISSION_START / D, "{}", p.net);
+            assert_eq!(cbm.calc_block_subsidy(p.genesis.daa_score + 1), schedule.subsidy(1), "{}", p.net);
+            assert_eq!(schedule.subsidy(1), (EMISSION_START - EMISSION_START / D) / D);
+        }
+    }
+
+    /// Seam review P2-1 (not a bug, proof test): the private pool flows of EVERY merged block are counted, whatever
+    /// its colour or DAA status. A red block shields 700 zets, a non-DAA blue unshields 200, the paid blue moves
+    /// nothing: the sealed private pool grows by exactly 500 and the ledger balances. Counting only paid blues would
+    /// leave the 500 in the visible change and the block would be refused as unbalanced.
+    #[test]
+    fn pool_flows_of_red_and_non_daa_blocks_are_counted() {
+        use kaspa_consensus_core::{BlockHashMap, BlockHashSet, Hash};
+        let cbm = create_manager(&MAINNET_PARAMS);
+        let miner = MinerData::new(ScriptPublicKey::new(0, scriptvec![0x51]), vec![]);
+        let (blue, non_daa_blue, red) = (Hash::from_u64_word(1), Hash::from_u64_word(2), Hash::from_u64_word(3));
+        let spk = ScriptPublicKey::new(0, scriptvec![0x52]);
+        let build = |red_in: u64, non_daa_out: u64| {
+            let mut rewards = BlockHashMap::default();
+            rewards.insert(blue, BlockRewardData::new(100, 0, 0, spk.clone()));
+            rewards.insert(non_daa_blue, BlockRewardData::new(100, 0, 0, spk.clone()).with_pool_flows(0, non_daa_out));
+            rewards.insert(red, BlockRewardData::new(100, 0, 0, spk.clone()).with_pool_flows(red_in, 0));
+            let non_daa: BlockHashSet = [non_daa_blue].into_iter().collect();
+            let ghostdag = GhostdagData::new(
+                7,
+                Default::default(),
+                blue,
+                std::sync::Arc::new(vec![blue, non_daa_blue]),
+                std::sync::Arc::new(vec![red]),
+                Default::default(),
+            );
+            let parent = PoolState { total_issued: 1_000, transparent_supply: 700, shielded_balance: 300, ..Default::default() };
+            // Visible coins: -700 shielded by the red block, +200 unshielded by the non-DAA blue
+            let visible_change = -(red_in as i128) + non_daa_out as i128;
+            cbm.expected_coinbase_transaction(
+                100,
+                miner.clone(),
+                &ghostdag,
+                &rewards,
+                &non_daa,
+                parent,
+                visible_change,
+                [0; 32],
+                [0; 32],
+            )
+            .map(|t| cbm.deserialize_coinbase_payload(&t.tx.payload).unwrap().pool)
+        };
+        // Positive control: no private flows at all
+        let plain = build(0, 0).unwrap();
+        assert_eq!(plain.shielded_balance, 300);
+        // The red block's shield and the non-DAA block's unshield both reach the sealed private pool
+        let ledger = build(700, 200).unwrap();
+        assert_eq!(ledger.shielded_balance, 300 + 700 - 200);
+        assert_eq!(ledger.transparent_supply, plain.transparent_supply - 500);
+        assert_eq!(zethora_supply::check_balanced(&ledger), Ok(()));
     }
 
     fn create_manager(params: &Params) -> CoinbaseManager {

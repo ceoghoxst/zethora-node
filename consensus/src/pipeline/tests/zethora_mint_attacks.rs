@@ -13,7 +13,7 @@ use crate::processes::zethora_supply::turnstile_accepts;
 use kaspa_consensus_core::api::ConsensusApi;
 use kaspa_consensus_core::api::args::TransactionValidationArgs;
 use kaspa_consensus_core::coinbase::PoolState;
-use kaspa_consensus_core::constants::{MAX_SOMPI, TX_VERSION};
+use kaspa_consensus_core::constants::{MAX_ZETS, TX_VERSION};
 use kaspa_consensus_core::errors::tx::TxRuleError;
 use kaspa_consensus_core::subnets::SUBNETWORK_ID_NATIVE;
 use kaspa_consensus_core::tx::{
@@ -62,7 +62,7 @@ fn extreme_value_balances_cannot_wrap_the_fee() {
     assert_eq!(fee(&[], &[], fake_payment(1_000)), Ok(1_000));
     assert_eq!(fee(&[10_000], &[], fake_payment(-9_000)), Ok(1_000));
     assert_eq!(fee(&[10_000], &[4_000], fake_payment(-6_000)), Ok(0));
-    assert_eq!(fee(&[], &[], fake_payment(MAX_SOMPI as i64)), Ok(MAX_SOMPI)); // the turnstile, not the fee rule, caps this
+    assert_eq!(fee(&[], &[], fake_payment(MAX_ZETS as i64)), Ok(MAX_ZETS)); // the turnstile, not the fee rule, caps this
 
     // The readers never wrap either: i64::MIN is 2^63 zets INTO the pool
     assert_eq!(value_balance(&fake_payment(i64::MIN)[4..]), Some(i64::MIN));
@@ -71,9 +71,9 @@ fn extreme_value_balances_cannot_wrap_the_fee() {
 
     // i64::MAX out of the pool: above the most value that can exist
     assert_eq!(fee(&[], &[], fake_payment(i64::MAX)), Err(TxRuleError::InputAmountTooHigh));
-    assert_eq!(fee(&[], &[], fake_payment(MAX_SOMPI as i64 + 1)), Err(TxRuleError::InputAmountTooHigh));
+    assert_eq!(fee(&[], &[], fake_payment(MAX_ZETS as i64 + 1)), Err(TxRuleError::InputAmountTooHigh));
     // ... also when added to visible inputs
-    assert_eq!(fee(&[MAX_SOMPI], &[], fake_payment(1)), Err(TxRuleError::InputAmountTooHigh));
+    assert_eq!(fee(&[MAX_ZETS], &[], fake_payment(1)), Err(TxRuleError::InputAmountTooHigh));
     // i64::MIN into the pool: more than the transaction has
     assert_eq!(fee(&[], &[], fake_payment(i64::MIN)), Err(TxRuleError::SpendTooHigh(1u64 << 63, 0)));
     assert_eq!(fee(&[10_000], &[], fake_payment(i64::MIN)), Err(TxRuleError::SpendTooHigh(1u64 << 63, 10_000)));

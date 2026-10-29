@@ -166,6 +166,11 @@ pub enum RuleError {
     #[error("invalid transactions in new block template")]
     InvalidTransactionsInNewBlock(HashMap<TransactionId, TxRuleError>),
 
+    /// Zethora (seam review P2-5): the virtual state is still the placeholder written before a pruning point's state is
+    /// imported, so a block built on it would seal the wrong private state.
+    #[error("the node is still importing a pruning point's state; block templates are available once it is done")]
+    ZethoraVirtualNotReady,
+
     #[error("DAA window data has only {0} entries")]
     InsufficientDaaWindowSize(usize),
 

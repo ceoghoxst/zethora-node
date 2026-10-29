@@ -119,7 +119,9 @@ pub fn private_state_anchor_element(root: &[u8; 32], blue_score: u64) -> [u8; 41
 }
 
 /// A spend must use a private coin list snapshot (anchor) produced at least this many blue blocks below the
-/// block that accepts it (ZTH-SPEC-006 §6.2). Every network runs at 1 block per second, so that is about 10 minutes;
+/// SELECTED PARENT of the chain block that accepts it (ZTH-SPEC-006 §6.2; seam review P2-7: the mempool and the block
+/// template measure from the virtual's selected parent, the merge loop from the accepting chain block's, so all three
+/// agree; test anchor_depth_boundary_is_measured_from_the_selected_parent). Every network runs at 1 block per second, so that is about 10 minutes;
 /// a reorg that deep never happens in practice, so a payment that was valid stays valid. Far inside the merge depth
 /// and finality. Consensus reads `Params::anchor_depth` (600 on every network, not overridable); this constant is the
 /// default the network params are built from.
@@ -141,6 +143,15 @@ pub fn spend_anchor(payload: &[u8]) -> Option<[u8; 32]> {
     }
     let anchor_at = trailer + layout::ANCHOR_OFFSET;
     encoded.get(anchor_at..anchor_at + 32).map(|b| b.try_into().expect("32 bytes"))
+}
+
+/// How many private coins the private coin list (the Orchard note commitment tree, depth 32) can ever hold.
+pub const NOTE_TREE_CAPACITY: u64 = 1 << 32;
+
+/// New private coins (note commitments) this payload adds to the coin list: one per action, 0 for ordinary
+/// transactions (and for a payload whose action count can't be read; validation refuses such a payment anyway).
+pub fn new_coin_count(payload: &[u8]) -> u64 {
+    private_payment_bytes(payload).and_then(action_count).map_or(0, |n| n as u64)
 }
 
 /// Extra compute mass for the proof in this payload (0 for ordinary transactions).
@@ -253,5 +264,15 @@ mod tests {
         p.truncate(4 + 1 + 2 + 2 * ACTION_SIZE + 1 + 4);
         assert_eq!(pool_flows(&p), Err(()));
         assert_eq!(pool_flows(b"ZSHP"), Err(()));
+    }
+
+    /// Seam review P2-2: one new private coin per action; the coin list's capacity is Orchard's 2^32.
+    #[test]
+    fn new_coins_are_counted_per_action() {
+        assert_eq!(NOTE_TREE_CAPACITY, 1u64 << 32);
+        assert_eq!(new_coin_count(b"not a private payment"), 0);
+        assert_eq!(new_coin_count(&fake(1, 0)), 1);
+        assert_eq!(new_coin_count(&fake(16, -5)), 16);
+        assert_eq!(new_coin_count(&PRIVATE_PAYMENT_MAGIC), 0); // unreadable count
     }
 }

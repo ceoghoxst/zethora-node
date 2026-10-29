@@ -64,8 +64,7 @@ impl DbZethoraAnchorsStore {
     /// blue score (ZTH-SPEC-006 §6.4). The pruning point is on every future chain, so the snapshot is too.
     pub fn add_for_good_batch(&self, batch: &mut WriteBatch, root: &[u8; 32], blue_score: u64) -> Result<(), StoreError> {
         let mut blocks = self.producing_blocks(root);
-        if !blocks.iter().any(|p| p.block == ANCHORED_FOR_GOOD) {
-            blocks.push(AnchorProducer { block: ANCHORED_FOR_GOOD, blue_score });
+        if set_for_good(&mut blocks, blue_score) {
             self.access.write(BatchDbWriter::new(batch), Hash::from_bytes(*root), blocks)?;
         }
         Ok(())
@@ -85,8 +84,8 @@ impl DbZethoraAnchorsStore {
             return Ok(()); // this block did not change the list, so it produced no anchor
         };
         blocks.retain(|p| p.block != block);
-        if was_on_chain && !blocks.iter().any(|p| p.block == ANCHORED_FOR_GOOD) {
-            blocks.push(AnchorProducer { block: ANCHORED_FOR_GOOD, blue_score: pruned.blue_score });
+        if was_on_chain {
+            set_for_good(&mut blocks, pruned.blue_score);
         }
         if blocks.is_empty() {
             self.access.delete(BatchDbWriter::new(batch), Hash::from_bytes(*root))
@@ -103,6 +102,26 @@ impl DbZethoraAnchorsStore {
                 key.as_ref().try_into().map_err(|_| StoreError::DataInconsistency("anchor key is not 32 bytes".into()))?;
             Ok((root, blocks))
         })
+    }
+}
+
+/// Adds the `ANCHORED_FOR_GOOD` entry with this blue score, or, if there already is one, keeps the LOWER of the two
+/// scores (seam review P2-10). Before pruning, a spend may use a root if ANY of its on-chain producers is deep enough,
+/// i.e. the oldest one counts; keeping the minimum gives the same answer after pruning, and the same answer on a node
+/// that pruned and on one that joined from the pruning point, whatever order the records arrive in. (Two on-chain
+/// producers of one root can't happen while the coin list can't end in the empty leaf; this makes the store
+/// order-independent even if that ever broke.) Returns true if the list changed.
+fn set_for_good(blocks: &mut Vec<AnchorProducer>, blue_score: u64) -> bool {
+    match blocks.iter_mut().find(|p| p.block == ANCHORED_FOR_GOOD) {
+        Some(existing) if existing.blue_score <= blue_score => false,
+        Some(existing) => {
+            existing.blue_score = blue_score;
+            true
+        }
+        None => {
+            blocks.push(AnchorProducer { block: ANCHORED_FOR_GOOD, blue_score });
+            true
+        }
     }
 }
 
@@ -156,5 +175,40 @@ mod tests {
         let mut all_tags: Vec<_> = tags.iter_all().map(|r| r.unwrap()).collect();
         all_tags.sort_by_key(|(tag, _)| *tag);
         assert_eq!(all_tags, vec![([1; 32], vec![on]), ([2; 32], vec![on]), ([3; 32], vec![SPENT_FOR_GOOD])]);
+    }
+
+    /// Seam review P2-10: the "for good" entry keeps the lowest blue score it was ever given, in either order, through
+    /// both the join path and the pruning path.
+    #[test]
+    fn for_good_keeps_the_lowest_blue_score_in_any_order() {
+        let (_lifetime, db) = create_temp_db!(ConnBuilder::default().with_files_limit(10));
+        let anchors = DbZethoraAnchorsStore::new(Arc::clone(&db), CachePolicy::Count(16));
+        let for_good = |score| vec![AnchorProducer { block: ANCHORED_FOR_GOOD, blue_score: score }];
+        let write = |f: &dyn Fn(&mut WriteBatch)| {
+            let mut batch = WriteBatch::default();
+            f(&mut batch);
+            db.write(batch).unwrap();
+        };
+        // Higher then lower: the lower wins
+        write(&|b| anchors.add_for_good_batch(b, &[1; 32], 70).unwrap());
+        write(&|b| anchors.add_for_good_batch(b, &[1; 32], 40).unwrap());
+        assert_eq!(anchors.producing_blocks(&[1; 32]), for_good(40));
+        // Lower then higher: the lower stays (positive control: the same value twice changes nothing either)
+        write(&|b| anchors.add_for_good_batch(b, &[2; 32], 40).unwrap());
+        write(&|b| anchors.add_for_good_batch(b, &[2; 32], 70).unwrap());
+        write(&|b| anchors.add_for_good_batch(b, &[2; 32], 40).unwrap());
+        assert_eq!(anchors.producing_blocks(&[2; 32]), for_good(40));
+        // Pruning an on-chain producer with a lower score than the joined record lowers it; a higher one doesn't
+        let (low, high) = (Hash::from_u64_word(11), Hash::from_u64_word(12));
+        write(&|b| anchors.add_for_good_batch(b, &[3; 32], 50).unwrap());
+        write(&|b| anchors.add_batch(b, low, 45, &[3; 32]).unwrap());
+        write(&|b| anchors.add_batch(b, high, 55, &[3; 32]).unwrap());
+        write(&|b| anchors.prune_block_batch(b, high, &[3; 32], true).unwrap());
+        assert_eq!(
+            anchors.producing_blocks(&[3; 32]),
+            vec![AnchorProducer { block: ANCHORED_FOR_GOOD, blue_score: 50 }, AnchorProducer { block: low, blue_score: 45 }]
+        );
+        write(&|b| anchors.prune_block_batch(b, low, &[3; 32], true).unwrap());
+        assert_eq!(anchors.producing_blocks(&[3; 32]), for_good(45));
     }
 }

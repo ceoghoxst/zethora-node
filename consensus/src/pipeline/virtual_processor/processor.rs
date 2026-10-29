@@ -635,6 +635,7 @@ impl VirtualStateProcessor {
 
         // Zethora: the private coin list root after the virtual's mergeset (read before ctx's borrow ends)
         let note_root = ctx.note_tree.root().to_bytes();
+        let note_tree_size = ctx.note_tree.size();
         let private_state = ctx.private_state.clone().finalize().as_bytes();
         let mergeset_nullifiers = std::mem::take(&mut ctx.nullifier_list);
 
@@ -653,6 +654,7 @@ impl VirtualStateProcessor {
             note_root,
             private_state,
             mergeset_nullifiers,
+            note_tree_size,
         ));
         Ok(virtual_state)
     }
@@ -1479,6 +1481,10 @@ impl VirtualStateProcessor {
         let virtual_read = self.virtual_stores.read();
         let virtual_state = virtual_read.state.get().unwrap();
         let virtual_utxo_view = &virtual_read.utxo_set;
+        // Zethora (seam review P2-5): never build on the placeholder virtual state written before a pruning point import
+        if virtual_state.is_placeholder(self.genesis.hash) {
+            return Err(RuleError::ZethoraVirtualNotReady);
+        }
 
         let mut invalid_transactions = HashMap::new();
         // Zethora: private coin tags already used by the virtual's mergeset or by earlier template txs (§6.3)
@@ -1488,6 +1494,9 @@ impl VirtualStateProcessor {
         // the per-transaction turnstile in any order (an honest spend never needs a coin shielded in the same block: the
         // coin's snapshot must mature first)
         let mut template_pool_left = self.virtual_shielded_balance(&virtual_state);
+        // Zethora (seam review P2-2): free places in the private coin list after the virtual's mergeset
+        let mut template_coin_room =
+            kaspa_consensus_core::zethora_private::NOTE_TREE_CAPACITY.saturating_sub(virtual_state.note_tree_size);
         let mut tag_check = |tx: &Transaction, res: TxResult<u64>| -> TxResult<u64> {
             let fee = res?;
             let nfs = kaspa_consensus_core::zethora_private::nullifiers(kaspa_consensus_core::zethora_private::private_payload(tx));
@@ -1504,6 +1513,14 @@ impl VirtualStateProcessor {
                     "would take {value_out} zets out of the private pool, which has {template_pool_left} left for this block"
                 )));
             }
+            let new_coins =
+                kaspa_consensus_core::zethora_private::new_coin_count(kaspa_consensus_core::zethora_private::private_payload(tx));
+            if new_coins > template_coin_room {
+                return Err(TxRuleError::InvalidPrivatePayment(format!(
+                    "its {new_coins} new private coins don't fit: the private coin list has {template_coin_room} places left"
+                )));
+            }
+            template_coin_room -= new_coins;
             template_pool_left -= value_out;
             template_nullifiers.extend(nfs);
             Ok(fee)

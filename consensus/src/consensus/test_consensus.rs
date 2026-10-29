@@ -377,6 +377,21 @@ impl TestConsensus {
         self.consensus.storage.zethora_anchors_store.add_for_good_batch(&mut batch, root, blue_score).unwrap();
         self.consensus.db.write(batch).unwrap();
     }
+
+    /// Test hook: records that chain block `block` (with this blue score) produced coin list snapshot `root`, as the
+    /// block commit does.
+    pub fn zethora_insert_anchor(&self, block: Hash, blue_score: u64, root: &[u8; 32]) {
+        let mut batch = rocksdb::WriteBatch::default();
+        self.consensus.storage.zethora_anchors_store.add_batch(&mut batch, block, blue_score, root).unwrap();
+        self.consensus.db.write(batch).unwrap();
+    }
+
+    /// Test hook: records that chain block `block` accepted a payment spending these coin tags, as the block commit does.
+    pub fn zethora_insert_nullifiers(&self, block: Hash, nullifiers: &[[u8; 32]]) {
+        let mut batch = rocksdb::WriteBatch::default();
+        self.consensus.storage.zethora_nullifiers_store.add_batch(&mut batch, block, nullifiers).unwrap();
+        self.consensus.db.write(batch).unwrap();
+    }
 }
 
 impl std::ops::Deref for TestConsensus {

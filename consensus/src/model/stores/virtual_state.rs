@@ -22,9 +22,13 @@ use serde::{Deserialize, Serialize};
 /// Version suffix appended to every post-Toccata `VirtualState` row's DB key.
 /// Pre-Toccata rows have no suffix and are decoded through
 /// [`PreToccataVirtualState`] by the version-aware path in [`CachedDbItem`].
-pub const POST_TOCCATA_VIRTUAL_STATE_VERSION: u8 = 1;
+///
+/// Zethora: 2 since seam review P2-5 (the Zethora fields, then `note_tree_size`, were added to Kaspa's version-1
+/// layout). A Zethora database with version-1 rows is from DB version 7 or older, which the node resets before opening
+/// (kaspad daemon, `LATEST_DB_VERSION` 8), so no version-1 row is ever read as version 2.
+pub const POST_TOCCATA_VIRTUAL_STATE_VERSION: u8 = 2;
 
-#[derive(Clone, Serialize, Deserialize, Default)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct VirtualState {
     pub parents: Vec<Hash>,
     pub ghostdag_data: GhostdagData,
@@ -51,6 +55,35 @@ pub struct VirtualState {
     /// Zethora: private coin tags (nullifiers) spent by the virtual's mergeset (ZTH-SPEC-006 §6.3).
     /// A block built on this virtual state may not spend them again.
     pub mergeset_nullifiers: Vec<[u8; 32]>,
+    /// Zethora: number of private coins in the coin list after the virtual's mergeset (seam review P2-2): a block
+    /// built on this virtual state may only add as many as still fit.
+    pub note_tree_size: u64,
+}
+
+/// Seam review P2-5: no derived Default (it set the coin list root to 32 zero bytes, which is not the empty list's
+/// root). The default is the state of an empty chain: empty coin list, the genesis private state fingerprint. It is
+/// only a placeholder, written when the virtual is moved to a new pruning point before the pruning point's state is
+/// imported (and the LKG value before the store is initialized); the virtual is recomputed after the import, and
+/// block templates are refused until then (`VirtualState::is_placeholder`).
+impl Default for VirtualState {
+    fn default() -> Self {
+        Self {
+            parents: Vec::new(),
+            ghostdag_data: GhostdagData::default(),
+            daa_score: 0,
+            bits: 0,
+            past_median_time: 0,
+            multiset: MuHash::new(),
+            utxo_diff: UtxoDiff::default(),
+            accepted_id_digests: Vec::new(),
+            mergeset_rewards: BlockHashMap::new(),
+            mergeset_non_daa: BlockHashSet::default(),
+            note_root: zethora_shielded::NoteCommitmentTree::new().root().to_bytes(),
+            private_state: crate::processes::zethora_private_state::genesis_private_state().finalize().as_bytes(),
+            mergeset_nullifiers: Vec::new(),
+            note_tree_size: 0,
+        }
+    }
 }
 
 impl VirtualState {
@@ -69,6 +102,7 @@ impl VirtualState {
         note_root: [u8; 32],
         private_state: [u8; 32],
         mergeset_nullifiers: Vec<[u8; 32]>,
+        note_tree_size: u64,
     ) -> Self {
         Self {
             parents,
@@ -84,6 +118,7 @@ impl VirtualState {
             note_root,
             private_state,
             mergeset_nullifiers,
+            note_tree_size,
         }
     }
 
@@ -106,7 +141,16 @@ impl VirtualState {
             note_root: zethora_shielded::NoteCommitmentTree::new().root().to_bytes(), // empty private coin list
             private_state: crate::processes::zethora_private_state::genesis_private_state().finalize().as_bytes(),
             mergeset_nullifiers: Vec::new(),
+            note_tree_size: 0,
         }
+    }
+
+    /// Seam review P2-5: true for the placeholder written when the virtual moves to a new pruning point, before that
+    /// pruning point's state is imported and the virtual recomputed. Every computed virtual state has reward data for at
+    /// least its selected parent; only the genesis virtual state (`from_genesis`) and the placeholder have none, and the
+    /// genesis state really is the empty chain's. A block built on a placeholder would seal the wrong private state.
+    pub fn is_placeholder(&self, genesis: Hash) -> bool {
+        self.mergeset_rewards.is_empty() && self.parents != [genesis]
     }
 
     pub fn to_virtual_state_approx_id(&self) -> VirtualStateApproxId {
@@ -152,23 +196,15 @@ struct PreToccataVirtualState {
     mergeset_non_daa: BlockHashSet,
 }
 
+/// Seam review P2-5: a pre-Toccata row can only come from a Kaspa database (every Zethora database was written in the
+/// post-Toccata layout), and it holds none of Zethora's private state. Converting it used to fill the private fields
+/// with the genesis values, so templates would seal a wrong coin list root until the next virtual update. Refuse it.
 impl From<PreToccataVirtualState> for VirtualState {
-    fn from(v: PreToccataVirtualState) -> Self {
-        Self {
-            parents: v.parents,
-            ghostdag_data: v.ghostdag_data,
-            daa_score: v.daa_score,
-            bits: v.bits,
-            past_median_time: v.past_median_time,
-            multiset: v.multiset,
-            utxo_diff: v.utxo_diff.into(),
-            accepted_id_digests: v.accepted_id_digests,
-            mergeset_rewards: v.mergeset_rewards,
-            mergeset_non_daa: v.mergeset_non_daa,
-            note_root: zethora_shielded::NoteCommitmentTree::new().root().to_bytes(),
-            private_state: crate::processes::zethora_private_state::genesis_private_state().finalize().as_bytes(),
-            mergeset_nullifiers: Vec::new(),
-        }
+    fn from(_: PreToccataVirtualState) -> Self {
+        panic!(
+            "This node database holds a virtual state in Kaspa's pre-Toccata format, which no Zethora node writes. \
+             It is not a Zethora database (or it is damaged). Restart the node with --reset-db to start a fresh one."
+        )
     }
 }
 
@@ -349,7 +385,10 @@ mod tests {
     /// constructor unwrapped a `DeserializationError(Io(UnexpectedEof))`
     /// because the post-Toccata `UtxoEntry` visitor's EOF→None trick does
     /// not compose inside `UtxoDiff`'s `HashMap`s.
+    /// Zethora (seam review P2-5): a pre-Toccata row (Kaspa's format) is refused with a plain-English message, never
+    /// converted with made-up private state.
     #[test]
+    #[should_panic(expected = "not a Zethora database")]
     fn legacy_virtual_state_decodes_via_shadow() {
         let (_lifetime, db) = create_temp_db!(ConnBuilder::default().with_files_limit(10));
 
@@ -432,6 +471,7 @@ mod tests {
             note_root: [7; 32],
             private_state: [9; 32],
             mergeset_nullifiers: vec![[8; 32]],
+            note_tree_size: 5,
         });
 
         store.set(state.clone()).unwrap();
@@ -448,5 +488,30 @@ mod tests {
         assert_eq!(round.utxo_diff.add.len(), 1);
         let entry = round.utxo_diff.add.values().next().unwrap();
         assert_eq!(entry.covenant_id, Some(Hash::from_bytes([0x5a; 32])));
+        // Zethora fields round-trip too
+        assert_eq!((round.note_root, round.private_state, round.note_tree_size), ([7; 32], [9; 32], 5));
+        assert_eq!(round.mergeset_nullifiers, vec![[8; 32]]);
+    }
+
+    /// Seam review P2-5: the default (placeholder) state holds the empty chain's private state, not zero bytes, and is
+    /// recognised as a placeholder unless it sits on genesis.
+    #[test]
+    fn default_virtual_state_is_the_empty_chain_and_a_placeholder() {
+        let d = VirtualState::default();
+        assert_eq!(d.note_root, zethora_shielded::NoteCommitmentTree::new().root().to_bytes());
+        assert_ne!(d.note_root, [0; 32]);
+        assert_eq!(d.private_state, crate::processes::zethora_private_state::genesis_private_state().finalize().as_bytes());
+        assert_eq!(d.note_tree_size, 0);
+        let genesis = Hash::from_bytes([1; 32]);
+        let placeholder = VirtualState { parents: vec![Hash::from_bytes([2; 32])], ..VirtualState::default() };
+        assert!(placeholder.is_placeholder(genesis));
+        let on_genesis = VirtualState { parents: vec![genesis], ..VirtualState::default() };
+        assert!(!on_genesis.is_placeholder(genesis));
+        // A computed state always has reward data for its selected parent
+        let mut computed = placeholder.clone();
+        computed
+            .mergeset_rewards
+            .insert(Hash::from_bytes([2; 32]), BlockRewardData::new(1, 0, 0, kaspa_consensus_core::tx::ScriptPublicKey::default()));
+        assert!(!computed.is_placeholder(genesis));
     }
 }

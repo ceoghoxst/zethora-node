@@ -7,7 +7,7 @@ use itertools::Itertools;
 use kaspa_addresses::{Address, Prefix, Version};
 use kaspa_consensus_core::{
     config::params::TESTNET_PARAMS,
-    constants::{SOMPI_PER_KASPA, TX_VERSION, TX_VERSION_TOCCATA},
+    constants::{KASPA_SOMPI_PER_KAS, TX_VERSION, TX_VERSION_TOCCATA},
     hashing::covenant_id::covenant_id,
     network::NetworkType,
     sign::sign,
@@ -33,7 +33,7 @@ use tokio::time::{Instant, MissedTickBehavior, interval};
 
 mod gas;
 
-const DEFAULT_SEND_AMOUNT: u64 = 10 * SOMPI_PER_KASPA;
+const DEFAULT_SEND_AMOUNT: u64 = 10 * KASPA_SOMPI_PER_KAS;
 const MILLIS_PER_TICK: u64 = 10;
 const ADDRESS_VERSION: Version = Version::PubKey;
 

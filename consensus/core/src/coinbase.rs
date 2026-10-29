@@ -72,8 +72,11 @@ impl BlockRewardData {
     }
 
     /// Tips: the part of fees paid directly to the block's miner.
+    /// Seam review P5-5: base fees are min(fee, ...) per transaction (zethora_fees::base_fee), so they never exceed the
+    /// total; saturating keeps a broken caller from panicking or wrapping, and debug builds still catch it.
     pub fn tips(&self) -> u64 {
-        self.total_fees - self.base_fees
+        debug_assert!(self.base_fees <= self.total_fees, "base fees {} above total fees {}", self.base_fees, self.total_fees);
+        self.total_fees.saturating_sub(self.base_fees)
     }
 }
 

@@ -40,6 +40,10 @@ impl DbZethoraNoteTreesStore {
 impl ZethoraNoteTreesStoreReader for DbZethoraNoteTreesStore {
     fn get(&self, hash: Hash) -> Result<NoteCommitmentTree, StoreError> {
         let bytes = self.access.read(hash)?;
-        Ok(NoteCommitmentTree::from_bytes(&bytes).expect("stored note tree bytes are valid"))
+        // Seam review pack 2: damaged bytes are a store error (the callers turn it into the plain-English "start with
+        // --reset-db" stop, missing_private_state_message), not a bare panic
+        NoteCommitmentTree::from_bytes(&bytes).map_err(|_| {
+            StoreError::DataInconsistency(format!("the stored private coin list of block {hash} is damaged (unreadable bytes)"))
+        })
     }
 }

@@ -27,10 +27,13 @@
 //! only simnet (tests) runs at 10.
 //!
 //! In the BlockDAG, `n` is the block's DAA score (one step per block in the DAA window, ~1 per second).
-//! Remaining_n is found from a checkpoint every 2^20 scores (~12 days) plus a short walk,
-//! with a cache of the last answer so sequential blocks cost a few steps.
+//! Remaining_n is found from a checkpoint every 2^12 scores (~68 minutes) plus a walk of at most 4,095 steps
+//! (seam review P5-1). Checkpoints are computed once, lazily, in order, and never change, so lookups only take a
+//! read lock: any number of validation threads can look up rewards at once, in any order, and each lookup costs at
+//! most 4,095 divisions. The table is capped at `EMISSION_END_SCORE` (Remaining never changes after it): at most
+//! ~2 million checkpoints (~16 MB) after 257 years; about 7,700 (62 KB) per year of chain.
 
-use std::sync::Mutex;
+use parking_lot::RwLock;
 
 /// 1 ZTHR = 10^10 zets, and the 100,000,000 ZTHR hard cap in zets (defined in consensus-core, also read by the RPC).
 pub use kaspa_consensus_core::constants::{CAP_UNITS, ZETS_PER_ZTHR};
@@ -45,8 +48,8 @@ pub const EMISSION_END_SCORE: u64 = 8_126_002_948;
 /// Everything the schedule ever pays, in zets: Remaining_0 minus what is left when the reward reaches 0
 /// (99,998,999.9635776057 ZTHR). Computed exactly by `full_emission_schedule`.
 pub const TOTAL_EMISSION: u64 = 999_989_999_635_776_057;
-/// Checkpoint spacing (2^20 DAA scores).
-const CHECKPOINT_SHIFT: u32 = 20;
+/// Checkpoint spacing (2^12 DAA scores): a lookup walks at most CHECKPOINT_INTERVAL - 1 steps.
+const CHECKPOINT_SHIFT: u32 = 12;
 const CHECKPOINT_INTERVAL: u64 = 1 << CHECKPOINT_SHIFT;
 
 #[inline]
@@ -54,15 +57,9 @@ fn step(remaining: u64) -> u64 {
     remaining - remaining / D
 }
 
-struct State {
-    /// checkpoints[k] = Remaining at DAA score k * CHECKPOINT_INTERVAL
-    checkpoints: Vec<u64>,
-    /// (score, Remaining at score) of the last lookup
-    last: (u64, u64),
-}
-
 pub struct ZethoraSubsidy {
-    state: Mutex<State>,
+    /// checkpoints[k] = Remaining at DAA score k * CHECKPOINT_INTERVAL. Only ever appended to; entries never change.
+    checkpoints: RwLock<Vec<u64>>,
 }
 
 impl Default for ZethoraSubsidy {
@@ -73,42 +70,45 @@ impl Default for ZethoraSubsidy {
 
 impl ZethoraSubsidy {
     pub fn new() -> Self {
-        Self { state: Mutex::new(State { checkpoints: vec![EMISSION_START], last: (0, EMISSION_START) }) }
+        Self { checkpoints: RwLock::new(vec![EMISSION_START]) }
+    }
+
+    /// Remaining at checkpoint `k`: a read lock if it is known, else computed once (in order) under the write lock.
+    fn checkpoint(&self, k: usize) -> u64 {
+        if let Some(&r) = self.checkpoints.read().get(k) {
+            return r;
+        }
+        let mut c = self.checkpoints.write();
+        // Another thread may have filled it while this one waited for the write lock
+        while c.len() <= k {
+            let mut r = *c.last().expect("the table starts with EMISSION_START");
+            for _ in 0..CHECKPOINT_INTERVAL {
+                r = step(r);
+            }
+            c.push(r);
+        }
+        c[k]
     }
 
     /// Remaining supply (zets) before the block at `score` is rewarded.
     pub fn remaining_at(&self, score: u64) -> u64 {
-        let mut s = self.state.lock().unwrap();
-        // Fast path: walk forward from the last answer if close.
-        let (last_score, last_rem) = s.last;
-        if score >= last_score && score - last_score <= CHECKPOINT_INTERVAL {
-            let mut r = last_rem;
-            for _ in last_score..score {
-                r = step(r);
-            }
-            s.last = (score, r);
-            return r;
-        }
-        // Extend checkpoints as needed.
-        let k = (score >> CHECKPOINT_SHIFT) as usize;
-        while s.checkpoints.len() <= k {
-            let mut r = *s.checkpoints.last().unwrap();
-            for _ in 0..CHECKPOINT_INTERVAL {
-                r = step(r);
-            }
-            s.checkpoints.push(r);
-        }
-        let mut r = s.checkpoints[k];
+        // Remaining is constant from EMISSION_END_SCORE on (the reward is 0), so the table never grows past it
+        let score = score.min(EMISSION_END_SCORE);
+        let mut r = self.checkpoint((score >> CHECKPOINT_SHIFT) as usize);
         for _ in 0..(score & (CHECKPOINT_INTERVAL - 1)) {
             r = step(r);
         }
-        s.last = (score, r);
         r
     }
 
     /// Block subsidy (zets) for a block with this DAA score.
     pub fn subsidy(&self, daa_score: u64) -> u64 {
         self.remaining_at(daa_score) / D
+    }
+
+    #[cfg(test)]
+    fn checkpoints_len(&self) -> usize {
+        self.checkpoints.read().len()
     }
 }
 
@@ -251,6 +251,65 @@ mod tests {
             TOTAL_EMISSION % ZETS_PER_ZTHR,
             CAP_UNITS - TOTAL_EMISSION
         );
+    }
+
+    /// Seam review P5-1 (test P5-T1): shuffled lookups in a 3,000-wide window that straddles a checkpoint, from 8
+    /// threads, give exactly the step-by-step answer, and each costs at most CHECKPOINT_INTERVAL - 1 steps.
+    #[test]
+    fn parallel_shuffled_lookups_are_exact_and_cheap() {
+        let z = std::sync::Arc::new(ZethoraSubsidy::new());
+        let base = 5 * CHECKPOINT_INTERVAL - 1_500; // window straddles checkpoint 5
+        // The reference: walk step by step, no table
+        let mut expected = Vec::with_capacity(3_000);
+        let mut r = EMISSION_START;
+        for _ in 0..base {
+            r = step(r);
+        }
+        for _ in 0..3_000 {
+            expected.push(r);
+            r = step(r);
+        }
+        let expected = std::sync::Arc::new(expected);
+        let handles: Vec<_> = (0..8u64)
+            .map(|t| {
+                let (z, expected) = (z.clone(), expected.clone());
+                std::thread::spawn(move || {
+                    let mut times = Vec::with_capacity(1_250);
+                    // A different shuffle per thread (multiplicative step coprime to 3,000)
+                    for i in 0..1_250u64 {
+                        let off = (i * 1_201 + t * 377) % 3_000;
+                        let start = std::time::Instant::now();
+                        let got = z.remaining_at(base + off);
+                        times.push(start.elapsed());
+                        assert_eq!(got, expected[off as usize], "score {}", base + off);
+                    }
+                    times
+                })
+            })
+            .collect();
+        let mut times: Vec<_> = handles.into_iter().flat_map(|h| h.join().unwrap()).collect();
+        times.sort();
+        let p99 = times[times.len() * 99 / 100];
+        println!("P5-T1: 10,000 lookups on 8 threads, p99 {p99:?}");
+        // Exactly the checkpoints up to the window's end were built, no more
+        assert_eq!(z.checkpoints_len(), ((base + 2_999) >> CHECKPOINT_SHIFT) as usize + 1);
+        if !cfg!(debug_assertions) {
+            assert!(p99 < std::time::Duration::from_micros(50), "p99 {p99:?}");
+        }
+    }
+
+    /// The table stops growing at EMISSION_END_SCORE, so an absurd score can't make it allocate without limit,
+    /// and the reward stays 0 from there on.
+    #[test]
+    fn scores_past_the_end_are_clamped() {
+        if cfg!(debug_assertions) {
+            println!("scores_past_the_end_are_clamped: walks 8 billion steps, only runs in release mode");
+            return;
+        }
+        let z = ZethoraSubsidy::new();
+        assert_eq!(z.remaining_at(u64::MAX), z.remaining_at(EMISSION_END_SCORE));
+        assert_eq!(z.subsidy(u64::MAX), 0);
+        assert_eq!(z.checkpoints_len(), (EMISSION_END_SCORE >> CHECKPOINT_SHIFT) as usize + 1);
     }
 
     #[test]

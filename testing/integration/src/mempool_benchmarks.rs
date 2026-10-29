@@ -14,7 +14,7 @@ use itertools::Itertools;
 use kaspa_addresses::Address;
 use kaspa_consensus::params::Params;
 use kaspa_consensus_core::{
-    constants::{SOMPI_PER_KASPA, TX_VERSION_TOCCATA},
+    constants::{KASPA_SOMPI_PER_KAS, TX_VERSION_TOCCATA},
     hashing::sighash::SigHashReusedValuesUnsync,
     mass::{ComputeBudget, MassCalculator, ScriptUnits, transaction_estimated_serialized_size},
     network::NetworkType,
@@ -107,7 +107,7 @@ async fn bench_bbt_latency() {
         enable_unsynced_mining: true,
         num_prealloc_utxos: Some(TX_LEVEL_WIDTH as u64 * CONTRACT_FACTOR),
         prealloc_address: Some(prealloc_address.to_string()),
-        prealloc_amount: 500 * SOMPI_PER_KASPA,
+        prealloc_amount: 500 * KASPA_SOMPI_PER_KAS,
         block_template_cache_lifetime: Some(0),
         ..Default::default()
     };
