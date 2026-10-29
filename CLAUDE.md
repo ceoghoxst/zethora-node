@@ -608,3 +608,23 @@ CTO. Verdicts, assignments (F3a-F3f) and PR order: docs/F3-PLAN.md; raw
 reviews: docs/reviews/seam-pack-1..5.md. CEO rule: fix every finding,
 high or low; non-bugs get permanent proof tests. F2 (PR #4) merged as
 7bd7d20. F3a on branch f3a-seam-pack1 (CI round 2 pending).
+
+2026-10-28 (night) - CTO session. F3a: run #63 red (template batch test built its
+over-pool payment through the mempool; F2 refuses it), run #71 1,292/1,293 (coinbase
+"ZSHP" test payload 4 bytes off); both test-only fixes. CI now uses nextest
+--no-fail-fast. Every F3a test shown failing with its protection removed (PR #7).
+F3e (PR #8, stacked on F3a): P4-1 difficulty/DAA checked before RandomZ for headers
+with known parents; unearned-PoW strikes (3 in 10 min ban) via
+FlowContext::penalize_if_misbehaving, counted once per error; per-IP orphan budget
+(2x block rate per 10 min, disconnect only); P4-2 Crescendo always() everywhere;
+P4-3 randomx-rs mutable buffers + null VM error; P4-5 proof spot check before
+precompute; P4-6 wasm never reports valid PoW; P4-7 from_parts crate-private; P4-8
+next-epoch light setup prepared in the background, separate proof memo, 4 GB node RAM;
+P4-9 orphans only use epochs around the tip; P4-10 miner key file 0600, parse errors,
+unsynced = warning (refusing would stall a fresh network: CTO decision). P4-4 (PR #9):
+RandomZ platforms workflow (Linux x86_64, Windows, Linux ARM required; macOS checked),
+epochs 0/1/1000, JIT/interpreter/portable/fast. The cloud sandbox can now download
+crates: compile and test locally before pushing (protoc from GitHub releases).
+P5-3 table + recommendation (C = 10^13): docs/decisions/P5-3-storage-mass.md (on the
+F3e branch), pending CEO/VP decision. VP notes: merges at most once a day, no night
+messages; P4-4 high priority for the release.

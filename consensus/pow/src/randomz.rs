@@ -392,6 +392,49 @@ mod tests {
         assert_eq!(pow_value_light(1, &input), Uint256::from_le_bytes(epoch1));
     }
 
+    /// Seam review P4-4: the values every platform must agree on, for Zethora's own PoW input under the keys of epochs
+    /// 0, 1 and 1000 (hex of the 32-byte hash, as RandomX outputs it).
+    const PLATFORM_VECTORS: [(u64, &str); 3] = [
+        (0, "e1b606241badec135352de94f1941a1706a598dae448a7940398f724eb066fc6"),
+        (1, "60fae6cc9276be53116447c0d8f520a6978e26c8e0b834009155707b4a4ea161"),
+        (1000, "c20bf34b091ebfb6563f1070e6f1176951fa4a72886fadcd347d19bb2f40f0a9"),
+    ];
+
+    fn platform_input() -> [u8; POW_INPUT_LEN] {
+        pow_input(&[7u8; 32], 1_000, 1)
+    }
+
+    /// Seam review P4-4: light mode with the JIT compiler (when this CPU supports it), the interpreter, and the fully
+    /// portable configuration (software AES, reference Argon2) give the same RandomZ hash on every platform CI runs (Linux x86_64, Windows x86_64, Linux aarch64, macOS aarch64).
+    /// A platform whose RandomZ differs would split from the network, so this must never fail anywhere.
+    #[test]
+    fn randomz_light_mode_agrees_on_every_platform() {
+        let recommended = flags();
+        let interpreter = recommended & !RandomXFlag::FLAG_JIT;
+        // No JIT, software AES, reference Argon2: what a CPU without AES-NI/AVX2 runs
+        let portable = RandomXFlag::FLAG_DEFAULT;
+        println!("recommended RandomX flags on this platform: {recommended:?}");
+        for (epoch, expected) in PLATFORM_VECTORS {
+            for mode_flags in [recommended, interpreter, portable] {
+                let cache = RandomXCache::new(mode_flags, &key_for_epoch(epoch)).unwrap();
+                let vm = RandomXVM::new(mode_flags, Some(cache), None).unwrap();
+                assert_eq!(hex(&vm.calculate_hash(&platform_input()).unwrap()), expected, "epoch {epoch}, flags {mode_flags:?}");
+            }
+        }
+    }
+
+    /// Seam review P4-4: fast (full dataset) mode, what miners use, gives the same hashes. Needs ~2.5 GB and ~30 s per
+    /// epoch, so it runs only in the platform workflow (`--include-ignored`).
+    #[test]
+    #[ignore = "needs ~2.5 GB of RAM and about a minute; run by the RandomZ platforms workflow"]
+    fn randomz_fast_mode_agrees_on_every_platform() {
+        for (epoch, expected) in PLATFORM_VECTORS.into_iter().take(2) {
+            let dataset = new_mining_dataset(epoch);
+            let vm = RandomXVM::new(flags() | RandomXFlag::FLAG_FULL_MEM, None, Some(dataset.0.clone())).unwrap();
+            assert_eq!(hex(&vm.calculate_hash(&platform_input()).unwrap()), expected, "epoch {epoch}, fast mode");
+        }
+    }
+
     /// Seam review P4-8: a batch (a pruning proof) never wipes the live blocks' remembered values.
     #[test]
     fn proof_batches_do_not_wipe_live_values() {
