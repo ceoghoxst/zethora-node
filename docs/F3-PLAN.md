@@ -30,6 +30,11 @@ not a bug still gets a permanent test proving it.** Every security test follows 
   known parents; strikes for unearned PoW in relay, IBD and orphan revalidation; per-IP orphan budget = 2x the block rate per 10 min, 1,200 at 1 bps; over it the peer is disconnected, not banned).
 - P5-3 table + recommendation (C = 10^13): docs/decisions/P5-3-storage-mass.md. Waiting for the CEO/VP decision.
 
+## Status update (2026-10-29)
+- F3a (PR #7), F3e (PR #8) and P4-4 (PR #9) MERGED. zethora CI green after the merges (Tests #80, #81, #84).
+- F3c (branch `f3c-sync-robustness`): all pack 3 items and pack 1 #2 #8 #9 done in code and tested locally, with
+  fail-when-removed proofs (PR description). Next: F3f, then F3d, then F3b.
+
 ## VP notes (2026-10-28, approved breakdown)
 - Batch CI so Deion merges PRs at most once a day. No messages at night (3 AM).
 - P5-3 table and recommendation due this week, before F3f.

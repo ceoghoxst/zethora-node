@@ -255,15 +255,17 @@ pub struct FlowContextInner {
     ibd_metadata: Arc<RwLock<Option<IbdMetadata>>>,
     pub address_manager: Arc<Mutex<AddressManager>>,
     connection_manager: RwLock<Option<Arc<ConnectionManager>>>,
-    /// ZTH-IMPL-020 D4 / seam review P4-1: per-IP strike timestamps for unearned proof of work (bad RandomZ nonce,
-    /// wrong difficulty or DAA score, impossible epoch, implausible pruning proof), used to apply the 3-in-10-minutes
-    /// ban threshold. Entries older than the window are pruned and the map is capped.
-    unearned_pow_strikes: Arc<Mutex<HashMap<IpAddr, Vec<Instant>>>>,
+    /// ZTH-IMPL-020 D4 / seam review P4-1, P3-4, pack 1 #9: per-IP strike timestamps (`ProtocolError::is_strike`), used
+    /// to apply the 3-in-10-minutes ban threshold. Entries older than the window are pruned and the map is capped.
+    strikes: Arc<Mutex<HashMap<IpAddr, Vec<Instant>>>>,
     /// Seam review P4-1: per-IP times of relayed blocks that turned out to be orphans. An orphan can't be checked
     /// against its real difficulty (its parents are unknown), so each one costs a RandomZ check that may never lead to
     /// a strike; past `orphan_budget()` in `ORPHAN_BUDGET_WINDOW_SECS` the peer is disconnected (not banned).
     /// Per IP: (start of the current window, orphans counted in it).
     relayed_orphans: Arc<Mutex<HashMap<IpAddr, (Instant, usize)>>>,
+    /// Seam review P3-1: the private state served to joining peers, built once per pruning point.
+    pub(crate) zethora_private_state_cache:
+        Arc<crate::flowcontext::zethora_state_cache::SingleEntryCache<Hash, kaspa_consensus_core::api::ZethoraPrivateState>>,
     mining_manager: MiningManagerProxy,
     pub(crate) tick_service: Arc<TickService>,
     notification_root: Arc<ConsensusNotificationRoot>,
@@ -376,8 +378,9 @@ impl FlowContext {
                 hub,
                 address_manager,
                 connection_manager: Default::default(),
-                unearned_pow_strikes: Arc::new(Mutex::new(HashMap::new())),
+                strikes: Arc::new(Mutex::new(HashMap::new())),
                 relayed_orphans: Arc::new(Mutex::new(HashMap::new())),
+                zethora_private_state_cache: Default::default(),
                 mining_manager,
                 tick_service,
                 notification_root,
@@ -423,55 +426,31 @@ impl FlowContext {
         self.connection_manager.read().clone()
     }
 
-    /// Zethora (ZTH-SPEC-006 §8.3): if `err` shows the peer sent a forged private payment (in a transaction or inside a
-    /// block), ban its IP for 24 hours and disconnect it. Peers added with --connect / --addpeer are never banned.
-    pub async fn ban_if_forged_private_payment(&self, router: &Router, err: &ProtocolError) {
-        self.ban_ip_if_forged_private_payment(router.net_address().ip(), err).await
-    }
-
-    /// Same as `ban_if_forged_private_payment`, by IP (for orphan blocks, validated after their sender's message).
-    pub async fn ban_ip_if_forged_private_payment(&self, ip: IpAddr, err: &ProtocolError) {
-        if !err.is_forged_private_payment() {
-            return;
-        }
-        warn!("Banning peer IP {} for sending a forged private payment: {}", ip, err);
-        if let Some(connection_manager) = self.connection_manager() {
-            connection_manager.ban(ip).await;
-        }
-    }
-
-    /// Zethora: everything a peer's error can cost it. A forged private payment bans its IP at once (ZTH-SPEC-006 §8.3);
-    /// unearned proof of work (seam review P4-1, ZTH-IMPL-020) is a strike, and 3 strikes in 10 minutes ban its IP.
-    /// Peers added with --connect / --addpeer are never banned. Call this exactly once per error.
+    /// Zethora: everything a peer's error can cost it (`ProtocolError::is_strike`): a forged private payment (ZTH-SPEC-006
+    /// §8.3, pack 1 #9), unearned proof of work (seam review P4-1, ZTH-IMPL-020) or a private state that does not match
+    /// its pruning point (P3-4) is a strike, and 3 strikes in 10 minutes (ZTH-IMPL-020 D4) ban its IP; escalation is
+    /// handled by the connection manager (ZTH-IMPL-020 D2). Peers added with --connect / --addpeer are never banned.
+    /// Call this exactly once per error.
     pub async fn penalize_if_misbehaving(&self, router: &Router, err: &ProtocolError) {
         self.penalize_ip_if_misbehaving(router.net_address().ip(), err).await
     }
 
     /// Same as `penalize_if_misbehaving`, by IP (for orphan blocks, validated after their sender's message).
     pub async fn penalize_ip_if_misbehaving(&self, ip: IpAddr, err: &ProtocolError) {
-        self.ban_ip_if_forged_private_payment(ip, err).await;
-        self.strike_ip_if_unearned_pow(ip, err).await;
-    }
-
-    /// Seam review P4-1 (generalizes ZTH-IMPL-020 D1): if `err` shows the peer sent a header or pruning proof with
-    /// unearned proof of work (see `ProtocolError::is_unearned_pow`), record a strike; at 3 strikes in 10 minutes
-    /// (ZTH-IMPL-020 D4) ban its IP. Escalation is handled by the connection manager (ZTH-IMPL-020 D2).
-    pub async fn strike_ip_if_unearned_pow(&self, ip: IpAddr, err: &ProtocolError) {
-        if !err.is_unearned_pow() {
+        if !err.is_strike() {
             return;
         }
         const WINDOW_SECS: u64 = 10 * 60;
         const THRESHOLD: usize = 3;
 
-        let count =
-            record_implausible_proof_attempt(&mut self.unearned_pow_strikes.lock(), ip, Instant::now(), WINDOW_SECS, THRESHOLD);
+        let count = record_implausible_proof_attempt(&mut self.strikes.lock(), ip, Instant::now(), WINDOW_SECS, THRESHOLD);
         if count < THRESHOLD {
-            warn!("Peer IP {} sent unearned proof of work ({}/{}): {}", ip, count, THRESHOLD, err);
+            warn!("Peer IP {} misbehaved (strike {}/{}): {}", ip, count, THRESHOLD, err);
             return;
         }
 
-        warn!("Banning peer IP {} for {} unearned proof-of-work strikes in {}s: {}", ip, count, WINDOW_SECS, err);
-        self.unearned_pow_strikes.lock().remove(&ip);
+        warn!("Banning peer IP {} for {} strikes in {}s: {}", ip, count, WINDOW_SECS, err);
+        self.strikes.lock().remove(&ip);
         if let Some(connection_manager) = self.connection_manager() {
             connection_manager.ban(ip).await;
         }

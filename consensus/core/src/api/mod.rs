@@ -71,7 +71,8 @@ pub type ImportLaneBatchIterator<'a> = &'a mut (dyn Iterator<Item = Vec<ImportLa
 
 /// Zethora: the private state as of a pruning point (ZTH-SPEC-006 §6.4), sent to nodes joining from that point.
 /// Checked against the private state fingerprint and coin list root sealed in the pruning point's coinbase.
-#[derive(Clone, Debug, Default)]
+/// (No `Default`, seam review P3-8: an empty state is never a meaningful value to pass around.)
+#[derive(Clone, Debug)]
 pub struct ZethoraPrivateState {
     /// The private coin list (note commitment tree frontier) after the pruning point's mergeset
     pub note_tree: Vec<u8>,
@@ -344,8 +345,42 @@ pub trait ConsensusApi: Send + Sync {
     }
 
     /// Zethora: checks a downloaded private state against the fingerprint sealed in the pruning point's coinbase and,
-    /// only if it matches, stores it. Must run before `import_pruning_point_utxo_set`, which builds on it.
+    /// only if it matches, keeps it. Must run before `import_pruning_point_utxo_set`, which builds on it. The same as
+    /// `begin_zethora_private_state_import`, appending everything and `finish_zethora_private_state_import`.
     fn import_zethora_private_state(&self, _new_pruning_point: Hash, _state: ZethoraPrivateState) -> PruningImportResult<()> {
+        unimplemented!()
+    }
+
+    /// Zethora (seam review P3-3): the most spent coin tags and coin list snapshots the chain up to `pruning_point` can
+    /// physically hold, so a download announcing more is refused at once.
+    fn zethora_private_state_limits(&self, _pruning_point: Hash) -> ConsensusResult<(u64, u64)> {
+        unimplemented!()
+    }
+
+    /// Zethora (seam review P3-2, P3-3): starts a streamed private state import: clears what any earlier import left.
+    fn begin_zethora_private_state_import(&self) {
+        unimplemented!()
+    }
+
+    /// Zethora (seam review P3-3): stores one downloaded chunk (so memory stays flat whatever the size) and adds it to
+    /// the running fingerprint. Nothing stored is used before `finish_zethora_private_state_import` accepts the whole.
+    fn append_imported_zethora_private_state(
+        &self,
+        _spent: &[[u8; 32]],
+        _anchors: &[([u8; 32], u64)],
+        _current_fingerprint: &mut MuHash,
+    ) {
+        unimplemented!()
+    }
+
+    /// Zethora (seam review P3-3): checks the coin list and the fingerprint of everything appended against what the
+    /// pruning point seals. Accepted: the state is kept. Refused: everything appended is cleared again.
+    fn finish_zethora_private_state_import(
+        &self,
+        _new_pruning_point: Hash,
+        _note_tree: &[u8],
+        _fingerprint: MuHash,
+    ) -> PruningImportResult<()> {
         unimplemented!()
     }
 

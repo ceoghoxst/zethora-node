@@ -92,14 +92,19 @@ pub fn private_state_as_of<E>(
     Ok((spent, anchors))
 }
 
-/// Checks a private state downloaded from a peer against what the pruning point's coinbase seals: its coin list root
-/// and its private state fingerprint. On success returns the coin list and the (unfinalized) fingerprint to store.
-pub fn check_downloaded_private_state(
-    state: &ZethoraPrivateState,
-    expected_note_root: &[u8; 32],
-    expected_fingerprint: &[u8; 32],
-) -> Result<(NoteCommitmentTree, MuHash), String> {
-    let tree = NoteCommitmentTree::from_bytes(&state.note_tree).map_err(|_| "the private coin list is unreadable".to_string())?;
+/// Seam review P3-7: the longest a valid coin list (note commitment tree frontier) can be in bytes: 42 + 32 x 32.
+pub const MAX_NOTE_TREE_BYTES: usize = 42 + 32 * 32;
+
+/// Checks a downloaded coin list against the root the pruning point seals: not too long (P3-7), readable, the right
+/// root, and not padded with empty entries.
+pub fn check_coin_list(note_tree: &[u8], expected_note_root: &[u8; 32]) -> Result<NoteCommitmentTree, String> {
+    if note_tree.len() > MAX_NOTE_TREE_BYTES {
+        return Err(format!(
+            "the private coin list is {} bytes, more than a valid one can be ({MAX_NOTE_TREE_BYTES})",
+            note_tree.len()
+        ));
+    }
+    let tree = NoteCommitmentTree::from_bytes(note_tree).map_err(|_| "the private coin list is unreadable".to_string())?;
     if tree.root().to_bytes() != *expected_note_root {
         return Err("the private coin list does not match the root sealed in the pruning point".to_string());
     }
@@ -108,6 +113,17 @@ pub fn check_downloaded_private_state(
     if tree.ends_in_empty_leaf() {
         return Err("the private coin list is padded with empty entries".to_string());
     }
+    Ok(tree)
+}
+
+/// Checks a private state downloaded from a peer against what the pruning point's coinbase seals: its coin list root
+/// and its private state fingerprint. On success returns the coin list and the (unfinalized) fingerprint to store.
+pub fn check_downloaded_private_state(
+    state: &ZethoraPrivateState,
+    expected_note_root: &[u8; 32],
+    expected_fingerprint: &[u8; 32],
+) -> Result<(NoteCommitmentTree, MuHash), String> {
+    let tree = check_coin_list(&state.note_tree, expected_note_root)?;
     let mut seen_tags = HashSet::with_capacity(state.spent.len());
     if !state.spent.iter().all(|nf| seen_tags.insert(*nf)) {
         return Err("a spent private coin tag is listed twice".to_string());

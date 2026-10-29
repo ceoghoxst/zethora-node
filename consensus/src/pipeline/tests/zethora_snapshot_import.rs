@@ -149,6 +149,24 @@ async fn pruning_point_private_state_import_end_to_end() {
     assert_refused(node2.tc.import_zethora_private_state(p, invented), p, fingerprint_mismatch);
     assert_eq!(private_stores(&node2, p), before);
 
+    // Seam review P3-3: the import is streamed (each chunk stored as it arrives), so a repeated tag is no longer caught by
+    // a set held in memory; the fingerprint is a set hash, so a repeat can never match it, and the copy is refused and
+    // cleared again like any other
+    let mut repeated = honest.clone();
+    repeated.spent.push(nf);
+    assert_refused(node2.tc.import_zethora_private_state(p, repeated), p, fingerprint_mismatch);
+    assert_eq!(private_stores(&node2, p), before);
+
+    // Seam review P3-7: a coin list longer than a valid one can be is refused before anything is written
+    let mut long_list = honest.clone();
+    long_list.note_tree.resize(1_067, 0);
+    assert_refused(
+        node2.tc.import_zethora_private_state(p, long_list),
+        p,
+        "the private coin list is 1067 bytes, more than a valid one can be (1066)",
+    );
+    assert_eq!(private_stores(&node2, p), before);
+
     let mut younger = honest.clone();
     let at = younger.anchors.iter().position(|(root, _)| *root == r2).unwrap();
     younger.anchors[at].1 -= 1; // claims the snapshot is one block older than it is, so spends could use it earlier

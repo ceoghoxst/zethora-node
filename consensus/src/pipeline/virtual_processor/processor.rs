@@ -1724,6 +1724,58 @@ impl VirtualStateProcessor {
     /// records pruning leaves behind. The pruning point's own coin list and fingerprint go last, since block processing
     /// needs them and an interrupted import must not look finished. The caller holds a consensus session, so pruning
     /// cannot run meanwhile; block commits wait on the records lock.
+    /// Seam review P3-2 / pack 1 #8: removes every "for good" coin tag and snapshot mark, i.e. everything a pruning-point
+    /// import wrote (and what this node's own pruning turned into for-good marks, which the next import brings back in
+    /// full: a downloaded state holds every tag and snapshot of the new pruning point's chain). Records of blocks this
+    /// node still has are kept. Called whenever the pruning point UTXO set is cleared (the start of every state sync, so
+    /// also a retry after a crash), at startup while the UTXO set is not stable, and at the start of every import.
+    /// Returns how many records it changed.
+    pub fn clear_zethora_for_good_records(&self) -> usize {
+        let _records_guard = self.zethora_records_lock.lock();
+        self.clear_zethora_for_good_records_locked()
+    }
+
+    fn clear_zethora_for_good_records_locked(&self) -> usize {
+        use crate::model::stores::{zethora_anchors::ANCHORED_FOR_GOOD, zethora_nullifiers::SPENT_FOR_GOOD};
+        const WRITES_PER_BATCH: usize = 10_000;
+        let tags: Vec<[u8; 32]> = self
+            .zethora_nullifiers_store
+            .iter_all()
+            .map(|r| r.unwrap_or_else(|e| panic!("Zethora: reading the private coin tags failed: {e}")))
+            .filter(|(_, blocks)| blocks.contains(&SPENT_FOR_GOOD))
+            .map(|(tag, _)| tag)
+            .collect();
+        let roots: Vec<[u8; 32]> = self
+            .zethora_anchors_store
+            .iter_all()
+            .map(|r| r.unwrap_or_else(|e| panic!("Zethora: reading the coin list snapshots failed: {e}")))
+            .filter(|(_, producers)| producers.iter().any(|p| p.block == ANCHORED_FOR_GOOD))
+            .map(|(root, _)| root)
+            .collect();
+        for chunk in tags.chunks(WRITES_PER_BATCH) {
+            let mut batch = WriteBatch::default();
+            for tag in chunk {
+                self.zethora_nullifiers_store.remove_for_good_batch(&mut batch, tag).unwrap();
+            }
+            self.db.write(batch).unwrap();
+        }
+        for chunk in roots.chunks(WRITES_PER_BATCH) {
+            let mut batch = WriteBatch::default();
+            for root in chunk {
+                self.zethora_anchors_store.remove_for_good_batch(&mut batch, root).unwrap();
+            }
+            self.db.write(batch).unwrap();
+        }
+        if !tags.is_empty() || !roots.is_empty() {
+            info!(
+                "Zethora: cleared {} for-good coin tags and {} for-good snapshots before a new private state import",
+                tags.len(),
+                roots.len()
+            );
+        }
+        tags.len() + roots.len()
+    }
+
     pub fn store_zethora_private_state(
         &self,
         pruning_point: Hash,
@@ -1732,8 +1784,22 @@ impl VirtualStateProcessor {
         spent: &[[u8; 32]],
         anchors: &[([u8; 32], u64)],
     ) {
-        const WRITES_PER_BATCH: usize = 10_000;
         let _records_guard = self.zethora_records_lock.lock();
+        // Seam review P3-2 / pack 1 #8: an earlier import (interrupted, or for another pruning point) must leave nothing
+        // behind, so the stores end up holding exactly this pruning point's state
+        self.clear_zethora_for_good_records_locked();
+        self.append_zethora_for_good_records_locked(spent, anchors);
+        self.set_zethora_pruning_point_private_state_locked(pruning_point, note_tree, fingerprint);
+    }
+
+    /// Seam review P3-3: writes one downloaded chunk of a pruning point's private state as for-good records.
+    pub fn append_zethora_for_good_records(&self, spent: &[[u8; 32]], anchors: &[([u8; 32], u64)]) {
+        let _records_guard = self.zethora_records_lock.lock();
+        self.append_zethora_for_good_records_locked(spent, anchors);
+    }
+
+    fn append_zethora_for_good_records_locked(&self, spent: &[[u8; 32]], anchors: &[([u8; 32], u64)]) {
+        const WRITES_PER_BATCH: usize = 10_000;
         for chunk in spent.chunks(WRITES_PER_BATCH) {
             let mut batch = WriteBatch::default();
             for nullifier in chunk {
@@ -1748,6 +1814,31 @@ impl VirtualStateProcessor {
             }
             self.db.write(batch).unwrap();
         }
+    }
+
+    /// Seam review P3-3: whether the coin list `root` is among the imported (for-good) snapshots.
+    pub fn zethora_root_anchored_for_good(&self, root: &[u8; 32]) -> bool {
+        use crate::model::stores::zethora_anchors::ANCHORED_FOR_GOOD;
+        self.zethora_anchors_store.producing_blocks(root).iter().any(|p| p.block == ANCHORED_FOR_GOOD)
+    }
+
+    /// Writes the pruning point's coin list and fingerprint: the last step of an accepted import.
+    pub fn set_zethora_pruning_point_private_state(
+        &self,
+        pruning_point: Hash,
+        note_tree: &zethora_shielded::NoteCommitmentTree,
+        fingerprint: MuHash,
+    ) {
+        let _records_guard = self.zethora_records_lock.lock();
+        self.set_zethora_pruning_point_private_state_locked(pruning_point, note_tree, fingerprint);
+    }
+
+    fn set_zethora_pruning_point_private_state_locked(
+        &self,
+        pruning_point: Hash,
+        note_tree: &zethora_shielded::NoteCommitmentTree,
+        fingerprint: MuHash,
+    ) {
         let mut batch = WriteBatch::default();
         self.zethora_note_trees_store.set_batch(&mut batch, pruning_point, note_tree).unwrap();
         self.zethora_private_states_store.set_batch(&mut batch, pruning_point, fingerprint).unwrap();
