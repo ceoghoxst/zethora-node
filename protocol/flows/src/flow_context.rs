@@ -952,7 +952,7 @@ pub(crate) fn record_implausible_proof_attempt(
         if attempts.len() > MAX_TRACKED_IPS {
             let mut by_last_seen: Vec<_> = attempts.iter().map(|(ip, v)| (*v.last().unwrap(), *ip)).collect();
             by_last_seen.sort_unstable();
-            let excess = attempts.len() - MAX_TRACKED_IPS / 2;
+            let excess = attempts.len().saturating_sub(MAX_TRACKED_IPS / 2);
             for (_, old_ip) in by_last_seen.into_iter().take(excess) {
                 attempts.remove(&old_ip);
             }
@@ -964,7 +964,7 @@ pub(crate) fn record_implausible_proof_attempt(
     entry.retain(|t| now.duration_since(*t).as_secs() < window_secs);
     entry.push(now);
     if entry.len() > threshold {
-        entry.drain(..entry.len() - threshold);
+        entry.drain(..entry.len().saturating_sub(threshold));
     }
     entry.len()
 }

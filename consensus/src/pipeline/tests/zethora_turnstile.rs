@@ -500,7 +500,9 @@ async fn block_template_checks_coin_tags_on_every_selection_batch() {
     let a = f.spend(30_000);
     let b = f.spend(20_000); // same coin, so the same tag, different payment
     assert_ne!(a.id(), b.id());
-    assert_eq!(nullifiers(&a.payload), nullifiers(&b.payload));
+    // Both spend the same coin, so both carry its tag (each payment also has its own random dummy tag)
+    assert!(nullifiers(&a.payload).contains(&f.coin.nullifier));
+    assert!(nullifiers(&b.payload).contains(&f.coin.nullifier));
     let z = counterfeit(SHIELDED + 1, 66, &[&f.node]); // takes more than the pool holds: refused in batch 1
 
     // Positive control: batch 2 is really asked for after a rejection, and a non-conflicting spend there is taken
