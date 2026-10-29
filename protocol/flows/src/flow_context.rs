@@ -255,9 +255,15 @@ pub struct FlowContextInner {
     ibd_metadata: Arc<RwLock<Option<IbdMetadata>>>,
     pub address_manager: Arc<Mutex<AddressManager>>,
     connection_manager: RwLock<Option<Arc<ConnectionManager>>>,
-    /// ZTH-IMPL-020 D4: per-IP attempt timestamps for implausible-epoch proofs, used
-    /// to apply the 3-in-10-minutes ban threshold. Entries older than the window are pruned.
-    implausible_pow_epoch_attempts: Arc<Mutex<HashMap<IpAddr, Vec<Instant>>>>,
+    /// ZTH-IMPL-020 D4 / seam review P4-1: per-IP strike timestamps for unearned proof of work (bad RandomZ nonce,
+    /// wrong difficulty or DAA score, impossible epoch, implausible pruning proof), used to apply the 3-in-10-minutes
+    /// ban threshold. Entries older than the window are pruned and the map is capped.
+    unearned_pow_strikes: Arc<Mutex<HashMap<IpAddr, Vec<Instant>>>>,
+    /// Seam review P4-1: per-IP times of relayed blocks that turned out to be orphans. An orphan can't be checked
+    /// against its real difficulty (its parents are unknown), so each one costs a RandomZ check that may never lead to
+    /// a strike; past `orphan_budget()` in `ORPHAN_BUDGET_WINDOW_SECS` the peer is disconnected (not banned).
+    /// Per IP: (start of the current window, orphans counted in it).
+    relayed_orphans: Arc<Mutex<HashMap<IpAddr, (Instant, usize)>>>,
     mining_manager: MiningManagerProxy,
     pub(crate) tick_service: Arc<TickService>,
     notification_root: Arc<ConsensusNotificationRoot>,
@@ -370,7 +376,8 @@ impl FlowContext {
                 hub,
                 address_manager,
                 connection_manager: Default::default(),
-                implausible_pow_epoch_attempts: Arc::new(Mutex::new(HashMap::new())),
+                unearned_pow_strikes: Arc::new(Mutex::new(HashMap::new())),
+                relayed_orphans: Arc::new(Mutex::new(HashMap::new())),
                 mining_manager,
                 tick_service,
                 notification_root,
@@ -433,46 +440,61 @@ impl FlowContext {
         }
     }
 
-    /// Zethora (ZTH-IMPL-020 D1): if `err` shows the peer sent a pruning proof whose RandomZ
-    /// epoch is implausible, ban its IP. Threshold and escalation are handled by the caller
-    /// (ZTH-IMPL-020 D2/D4). Peers added with --connect / --addpeer are never banned.
-    pub async fn ban_if_implausible_pow_epoch(&self, router: &Router, err: &ProtocolError) {
-        self.ban_ip_if_implausible_pow_epoch(router.net_address().ip(), err).await
+    /// Zethora: everything a peer's error can cost it. A forged private payment bans its IP at once (ZTH-SPEC-006 §8.3);
+    /// unearned proof of work (seam review P4-1, ZTH-IMPL-020) is a strike, and 3 strikes in 10 minutes ban its IP.
+    /// Peers added with --connect / --addpeer are never banned. Call this exactly once per error.
+    pub async fn penalize_if_misbehaving(&self, router: &Router, err: &ProtocolError) {
+        self.penalize_ip_if_misbehaving(router.net_address().ip(), err).await
     }
 
-    /// Same as `ban_if_implausible_pow_epoch`, by IP (for orphan blocks validated later).
-    pub async fn ban_ip_if_implausible_pow_epoch(&self, ip: IpAddr, err: &ProtocolError) {
-        if !err.is_implausible_pow_epoch() {
+    /// Same as `penalize_if_misbehaving`, by IP (for orphan blocks, validated after their sender's message).
+    pub async fn penalize_ip_if_misbehaving(&self, ip: IpAddr, err: &ProtocolError) {
+        self.ban_ip_if_forged_private_payment(ip, err).await;
+        self.strike_ip_if_unearned_pow(ip, err).await;
+    }
+
+    /// Seam review P4-1 (generalizes ZTH-IMPL-020 D1): if `err` shows the peer sent a header or pruning proof with
+    /// unearned proof of work (see `ProtocolError::is_unearned_pow`), record a strike; at 3 strikes in 10 minutes
+    /// (ZTH-IMPL-020 D4) ban its IP. Escalation is handled by the connection manager (ZTH-IMPL-020 D2).
+    pub async fn strike_ip_if_unearned_pow(&self, ip: IpAddr, err: &ProtocolError) {
+        if !err.is_unearned_pow() {
             return;
         }
-        // ZTH-IMPL-020 D4: threshold of 3 failures in 10 minutes.
         const WINDOW_SECS: u64 = 10 * 60;
         const THRESHOLD: usize = 3;
 
-        let count = {
-            let mut attempts = self.implausible_pow_epoch_attempts.lock();
-            let now = Instant::now();
-            // ZTH-IMPL-020: Prevent memory exhaustion (DoS) from spoofed IPs
-            if attempts.len() > 10_000 {
-                attempts.retain(|_, v| {
-                    v.retain(|t| now.duration_since(*t).as_secs() < WINDOW_SECS);
-                    !v.is_empty()
-                });
-            }
-            let entry = attempts.entry(ip).or_default();
-            entry.push(now);
-            entry.len()
-        };
+        let count =
+            record_implausible_proof_attempt(&mut self.unearned_pow_strikes.lock(), ip, Instant::now(), WINDOW_SECS, THRESHOLD);
         if count < THRESHOLD {
-            warn!("Peer IP {} sent an implausible RandomZ epoch proof ({}/{}): {}", ip, count, THRESHOLD, err);
+            warn!("Peer IP {} sent unearned proof of work ({}/{}): {}", ip, count, THRESHOLD, err);
             return;
         }
 
-        warn!("Banning peer IP {} for {} implausible RandomZ epoch proofs in {}s: {}", ip, count, WINDOW_SECS, err);
-        self.implausible_pow_epoch_attempts.lock().remove(&ip);
+        warn!("Banning peer IP {} for {} unearned proof-of-work strikes in {}s: {}", ip, count, WINDOW_SECS, err);
+        self.unearned_pow_strikes.lock().remove(&ip);
         if let Some(connection_manager) = self.connection_manager() {
             connection_manager.ban(ip).await;
         }
+    }
+
+    /// Seam review P4-1: how many relayed orphan blocks one IP may send per `ORPHAN_BUDGET_WINDOW_SECS`: twice what
+    /// an honest peer could relay at the network's block rate (every block it relays an orphan), and at least 100.
+    pub fn orphan_budget(&self) -> usize {
+        orphan_budget_for(self.bps)
+    }
+
+    /// Seam review P4-1: counts a relayed block from `ip` that turned out to be an orphan. Returns an error (the flow
+    /// disconnects the peer, no ban) once the IP has sent more than `orphan_budget()` orphans in the current window.
+    /// An honest peer relays at most one block per network block, so it stays under the budget.
+    pub fn note_relayed_orphan(&self, ip: IpAddr) -> Result<(), ProtocolError> {
+        let budget = self.orphan_budget();
+        let count = count_in_window(&mut self.relayed_orphans.lock(), ip, Instant::now(), ORPHAN_BUDGET_WINDOW_SECS);
+        if count > budget {
+            return Err(ProtocolError::OtherOwned(format!(
+                "sent more than {budget} orphan blocks in {ORPHAN_BUDGET_WINDOW_SECS}s (each one costs a RandomZ check)"
+            )));
+        }
+        Ok(())
     }
 
     pub fn consensus(&self) -> ConsensusInstance {
@@ -571,9 +593,10 @@ impl FlowContext {
                 }
                 Err(e) => {
                     warn!("Validation failed for orphan block {}: {}", block.hash(), e);
-                    // Zethora: the peer that sent this orphan gets banned if it carried a forged private payment
+                    // Zethora: the peer that sent this orphan is banned if it carried a forged private payment, and gets a
+                    // strike if its proof of work was unearned (e.g. it claimed an easy target: seam review P4-1)
                     if let Some(ip) = sender {
-                        self.ban_ip_if_forged_private_payment(ip, &ProtocolError::RuleError(e)).await;
+                        self.penalize_ip_if_misbehaving(ip, &ProtocolError::RuleError(e)).await;
                     }
                 }
             }
@@ -936,5 +959,158 @@ impl ConnectionInitializer for FlowContext {
         // it is considered a protocol error and the connection will disconnect
 
         Ok(())
+    }
+}
+
+/// Zethora (ZTH-IMPL-020 D4, seam review pack 1, #16): records one implausible-proof attempt by `ip` at `now` and
+/// returns how many attempts by `ip` fall inside the last `window_secs` (at most `threshold`). The map never holds more
+/// than `MAX_TRACKED_IPS` + 1 addresses: past the cap, expired entries are dropped first, then the least recently seen
+/// addresses, down to half the cap.
+/// Seam review P4-1: the window of the per-IP orphan budget.
+pub(crate) const ORPHAN_BUDGET_WINDOW_SECS: u64 = 10 * 60;
+
+/// Seam review P4-1: twice the blocks the network makes in one window, at least 100.
+pub(crate) fn orphan_budget_for(bps: usize) -> usize {
+    (bps.saturating_mul(ORPHAN_BUDGET_WINDOW_SECS as usize).saturating_mul(2)).max(100)
+}
+
+/// Seam review P4-1: adds one event for `ip` in fixed windows of `window_secs` and returns the count in the current
+/// window. One (window start, count) pair per IP; the map is capped like the strike map (old windows dropped first).
+pub(crate) fn count_in_window(counts: &mut HashMap<IpAddr, (Instant, usize)>, ip: IpAddr, now: Instant, window_secs: u64) -> usize {
+    const MAX_TRACKED_IPS: usize = 10_000;
+    if counts.len() > MAX_TRACKED_IPS {
+        counts.retain(|_, (start, _)| now.duration_since(*start).as_secs() < window_secs);
+        if counts.len() > MAX_TRACKED_IPS {
+            let mut by_start: Vec<_> = counts.iter().map(|(ip, (start, _))| (*start, *ip)).collect();
+            by_start.sort_unstable();
+            let excess = counts.len().saturating_sub(MAX_TRACKED_IPS / 2);
+            for (_, old_ip) in by_start.into_iter().take(excess) {
+                counts.remove(&old_ip);
+            }
+        }
+    }
+    let entry = counts.entry(ip).or_insert((now, 0));
+    if now.duration_since(entry.0).as_secs() >= window_secs {
+        *entry = (now, 0);
+    }
+    entry.1 = entry.1.saturating_add(1);
+    entry.1
+}
+
+pub(crate) fn record_implausible_proof_attempt(
+    attempts: &mut HashMap<IpAddr, Vec<Instant>>,
+    ip: IpAddr,
+    now: Instant,
+    window_secs: u64,
+    threshold: usize,
+) -> usize {
+    const MAX_TRACKED_IPS: usize = 10_000;
+    if attempts.len() > MAX_TRACKED_IPS {
+        attempts.retain(|_, v| {
+            v.retain(|t| now.duration_since(*t).as_secs() < window_secs);
+            !v.is_empty()
+        });
+        if attempts.len() > MAX_TRACKED_IPS {
+            let mut by_last_seen: Vec<_> = attempts.iter().map(|(ip, v)| (*v.last().unwrap(), *ip)).collect();
+            by_last_seen.sort_unstable();
+            let excess = attempts.len().saturating_sub(MAX_TRACKED_IPS / 2);
+            for (_, old_ip) in by_last_seen.into_iter().take(excess) {
+                attempts.remove(&old_ip);
+            }
+        }
+    }
+    let entry = attempts.entry(ip).or_default();
+    // Only attempts inside the window count (before, old attempts were dropped only when the map passed the cap, so
+    // attempts spread over days could still ban)
+    entry.retain(|t| now.duration_since(*t).as_secs() < window_secs);
+    entry.push(now);
+    if entry.len() > threshold {
+        entry.drain(..entry.len().saturating_sub(threshold));
+    }
+    entry.len()
+}
+
+#[cfg(test)]
+mod zethora_attempt_tests {
+    use super::{ORPHAN_BUDGET_WINDOW_SECS, count_in_window, orphan_budget_for, record_implausible_proof_attempt};
+    use std::{
+        collections::HashMap,
+        net::{IpAddr, Ipv4Addr},
+        time::{Duration, Instant},
+    };
+
+    fn ip(n: u32) -> IpAddr {
+        IpAddr::V4(Ipv4Addr::from(n))
+    }
+
+    #[test]
+    fn attempts_count_only_inside_the_window() {
+        let mut map = HashMap::new();
+        let t0 = Instant::now();
+        // Positive control: 3 attempts within 10 minutes reach the threshold
+        assert_eq!(record_implausible_proof_attempt(&mut map, ip(1), t0, 600, 3), 1);
+        assert_eq!(record_implausible_proof_attempt(&mut map, ip(1), t0 + Duration::from_secs(60), 600, 3), 2);
+        assert_eq!(record_implausible_proof_attempt(&mut map, ip(1), t0 + Duration::from_secs(120), 600, 3), 3);
+        // Spread over hours, the count never reaches 3 (before the fix it did)
+        let t1 = t0 + Duration::from_secs(10_000);
+        assert_eq!(record_implausible_proof_attempt(&mut map, ip(2), t1, 600, 3), 1);
+        assert_eq!(record_implausible_proof_attempt(&mut map, ip(2), t1 + Duration::from_secs(700), 600, 3), 1);
+        assert_eq!(record_implausible_proof_attempt(&mut map, ip(2), t1 + Duration::from_secs(1_400), 600, 3), 1);
+        // At most `threshold` timestamps are kept per address
+        for i in 0..10 {
+            record_implausible_proof_attempt(&mut map, ip(3), t0 + Duration::from_secs(i), 600, 3);
+        }
+        assert_eq!(map[&ip(3)].len(), 3);
+    }
+
+    #[test]
+    fn the_map_never_grows_without_bound() {
+        let mut map = HashMap::new();
+        let t0 = Instant::now();
+        // 25,000 distinct addresses, all inside the window (nothing expires): the map stays bounded
+        for n in 0..25_000u32 {
+            record_implausible_proof_attempt(&mut map, ip(n), t0 + Duration::from_millis(n as u64), 600, 3);
+            assert!(map.len() <= 10_001, "map grew to {}", map.len());
+        }
+        // The most recently seen address is still tracked; the oldest ones were dropped
+        assert!(map.contains_key(&ip(24_999)));
+        assert!(!map.contains_key(&ip(0)));
+    }
+
+    /// Seam review P4-1: the orphan budget is twice the blocks the network makes in one window (at least 100).
+    #[test]
+    fn orphan_budget_scales_with_the_block_rate() {
+        assert_eq!(ORPHAN_BUDGET_WINDOW_SECS, 600);
+        assert_eq!(orphan_budget_for(1), 1_200);
+        assert_eq!(orphan_budget_for(10), 12_000);
+        assert_eq!(orphan_budget_for(0), 100);
+    }
+
+    /// Seam review P4-1: orphans are counted per IP in fixed windows; a new window starts from zero.
+    #[test]
+    fn orphan_counts_are_per_ip_and_per_window() {
+        let mut map = HashMap::new();
+        let t0 = Instant::now();
+        let budget = orphan_budget_for(1);
+        // An honest peer at 1 block per second, every relayed block an orphan, for a whole window: under budget
+        for i in 0..600u64 {
+            assert!(count_in_window(&mut map, ip(1), t0 + Duration::from_secs(i), 600) <= budget);
+        }
+        assert_eq!(count_in_window(&mut map, ip(1), t0 + Duration::from_secs(599), 600), 601);
+        // Another IP has its own count
+        assert_eq!(count_in_window(&mut map, ip(2), t0, 600), 1);
+        // The next window starts over
+        assert_eq!(count_in_window(&mut map, ip(1), t0 + Duration::from_secs(600), 600), 1);
+        // A flood goes over the budget exactly at budget + 1
+        let t1 = t0 + Duration::from_secs(5_000);
+        for n in 1..=budget {
+            assert_eq!(count_in_window(&mut map, ip(3), t1, 600), n);
+        }
+        assert_eq!(count_in_window(&mut map, ip(3), t1, 600), budget + 1);
+        // Bounded memory
+        for n in 0..25_000u32 {
+            count_in_window(&mut map, ip(100 + n), t1 + Duration::from_millis(n as u64), 600);
+            assert!(map.len() <= 10_001, "map grew to {}", map.len());
+        }
     }
 }

@@ -102,7 +102,7 @@ jobs:
         run: cargo build --features devnet-prealloc --workspace --all --tests --benches
 
       - name: Run cargo test regular features
-        run: cargo nextest run --workspace
+        run: cargo nextest run --workspace --no-fail-fast
 
       - name: Run cargo doc tests
         run: cargo test --doc --workspace

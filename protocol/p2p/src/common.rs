@@ -103,6 +103,29 @@ impl ProtocolError {
         matches!(self, Self::PruningImportError(PruningImportError::ZethoraPowEpochImplausible(..)))
     }
 
+    /// Zethora (seam review P4-1): the peer sent a header whose proof of work was not earned: a nonce that fails
+    /// RandomZ, a difficulty or DAA score that the header's own parents contradict, a RandomZ epoch no valid header can
+    /// have, or a pruning proof with an implausible epoch or a header whose work fails or is below its level (P4-5). Honest nodes check every one of these before they relay or
+    /// serve a header, so each counts as a strike against the sender (3 in 10 minutes get its IP banned).
+    pub fn is_unearned_pow(&self) -> bool {
+        self.is_implausible_pow_epoch()
+            || matches!(
+                self,
+                Self::PruningImportError(
+                    PruningImportError::ProofOfWorkFailed(..) | PruningImportError::PruningProofWrongBlockLevel(..)
+                )
+            )
+            || matches!(
+                self,
+                Self::RuleError(
+                    RuleError::InvalidPoW
+                        | RuleError::UnexpectedDifficulty(..)
+                        | RuleError::UnexpectedHeaderDaaScore(..)
+                        | RuleError::ZethoraPowEpochOutOfRange(..)
+                )
+            )
+    }
+
     pub fn is_connection_closed_error(&self) -> bool {
         matches!(self, Self::ConnectionClosed)
     }
@@ -276,5 +299,35 @@ mod zethora_ban_tests {
         assert!(!other_pruning.is_implausible_pow_epoch());
         assert!(!ProtocolError::RuleError(RuleError::InvalidPoW).is_implausible_pow_epoch());
         assert!(!ProtocolError::Timeout(DEFAULT_TIMEOUT).is_implausible_pow_epoch());
+    }
+
+    /// Seam review P4-1: exactly these errors are strikes for unearned proof of work.
+    #[test]
+    fn unearned_pow_errors_are_strikes() {
+        let strikes = [
+            ProtocolError::RuleError(RuleError::InvalidPoW),
+            ProtocolError::RuleError(RuleError::UnexpectedDifficulty(Hash::default(), 0x0300_0001, 0x207f_ffff)),
+            ProtocolError::RuleError(RuleError::UnexpectedHeaderDaaScore(5, 6)),
+            ProtocolError::RuleError(RuleError::ZethoraPowEpochOutOfRange(1 << 22, 4, 0, 1)),
+            ProtocolError::PruningImportError(PruningImportError::ZethoraPowEpochImplausible(Hash::default(), 42, 1, 2)),
+            ProtocolError::PruningImportError(PruningImportError::ProofOfWorkFailed(Hash::default(), 3)),
+            ProtocolError::PruningImportError(PruningImportError::PruningProofWrongBlockLevel(Hash::default(), 1, 3)),
+        ];
+        for err in &strikes {
+            assert!(err.is_unearned_pow(), "{err} must be a strike");
+        }
+
+        // Not strikes: an honest peer can cause these (orphans, pruning races, timeouts, chain-dependent refusals)
+        let not_strikes = [
+            ProtocolError::RuleError(RuleError::MissingParents(vec![Hash::default()])),
+            ProtocolError::RuleError(RuleError::PruningViolation(Hash::default())),
+            ProtocolError::RuleError(RuleError::KnownInvalid),
+            ProtocolError::PruningImportError(PruningImportError::ZethoraPrivateStateMismatch(Hash::default(), "test".into())),
+            ProtocolError::Timeout(DEFAULT_TIMEOUT),
+            ProtocolError::Other("anything else"),
+        ];
+        for err in &not_strikes {
+            assert!(!err.is_unearned_pow(), "{err} must not be a strike");
+        }
     }
 }

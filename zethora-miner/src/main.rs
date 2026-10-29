@@ -34,17 +34,50 @@ const TESTNET_KEY_FILE: &str = "zethora-miner-key-testnet.txt";
 const TEMPLATE_REFRESH: Duration = Duration::from_millis(1000);
 const ZETS_PER_ZTHR: f64 = 10_000_000_000.0;
 
+/// Seam review P4-10: reads a key file's 64 hex characters, with a clear error instead of a crash on a short or damaged
+/// file.
+fn parse_key_hex(text: &str) -> Result<SecretKey, String> {
+    let hex = text.trim();
+    if hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(format!("expected 64 hex characters, found {} characters", hex.len()));
+    }
+    let bytes: Vec<u8> = (0..64).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("checked hex")).collect();
+    SecretKey::from_slice(&bytes).map_err(|e| format!("not a valid secret key ({e})"))
+}
+
 fn load_or_create_key(key_file: &str) -> Keypair {
-    if let Ok(hex) = std::fs::read_to_string(key_file) {
-        let bytes: Vec<u8> = (0..64).step_by(2).map(|i| u8::from_str_radix(&hex.trim()[i..i + 2], 16).unwrap()).collect();
-        let sk = SecretKey::from_slice(&bytes).expect("bad key file");
-        return Keypair::from_secret_key(SECP256K1, &sk);
+    if let Ok(text) = std::fs::read_to_string(key_file) {
+        match parse_key_hex(&text) {
+            Ok(sk) => return Keypair::from_secret_key(SECP256K1, &sk),
+            Err(e) => {
+                eprintln!("The mining key file {key_file} is damaged: {e}.");
+                eprintln!("It holds the key to your mined coins, so the miner will not replace it. Restore it from a backup.");
+                std::process::exit(5);
+            }
+        }
     }
     let kp = Keypair::new(SECP256K1, &mut secp256k1::rand::thread_rng());
     let hex: String = kp.secret_key().secret_bytes().iter().map(|b| format!("{b:02x}")).collect();
-    std::fs::write(key_file, hex).expect("cannot write key file");
+    write_private_file(key_file, &hex).unwrap_or_else(|e| {
+        eprintln!("Cannot write the key file {key_file}: {e}");
+        std::process::exit(5);
+    });
     println!("Created new mining key in {key_file}");
     kp
+}
+
+/// Seam review P4-10: creates the key file readable by its owner only (Unix mode 0600; on Windows the file gets the
+/// folder's permissions, which for a folder under the user's profile means that user only). Never overwrites a file.
+fn write_private_file(path: &str, contents: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)?.write_all(contents.as_bytes())
 }
 
 /// RandomZ speed test (step 6): what checking mining work costs a node, and how fast this PC mines.
@@ -212,6 +245,7 @@ async fn main() {
     let mut next_dataset: Option<(u64, kaspa_pow::randomz::SharedDataset)> = None;
     let mut prebuild_task: Option<tokio::task::JoinHandle<(u64, Option<kaspa_pow::randomz::SharedDataset>)>> = None;
 
+    let mut warned_unsynced: Option<Instant> = None;
     loop {
         let template = match client.get_block_template(address.clone(), b"zethora-miner".to_vec()).await {
             Ok(t) => t,
@@ -221,6 +255,12 @@ async fn main() {
                 continue;
             }
         };
+        // Seam review P4-10: say so when the node is not synced (mining then builds on a chain that may be stale). The
+        // miner still mines: a brand-new network starts "not synced" until its first blocks, and refusing would stall it.
+        if !template.is_synced && warned_unsynced.is_none_or(|t| t.elapsed() > Duration::from_secs(60)) {
+            println!("Warning: the node says it is not synced; blocks mined now may build on an old chain.");
+            warned_unsynced = Some(Instant::now());
+        }
         let header: Header = (&template.block.header).try_into().expect("bad template header");
         let state = Arc::new(kaspa_pow::State::new(&header));
         let epoch = state.epoch();
@@ -365,4 +405,44 @@ fn header_reward_hint(daa_score: u64) -> u64 {
         remaining -= remaining / D;
     }
     remaining / D
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Seam review P4-10: a damaged key file gives an error, not a crash; a good one still loads.
+    #[test]
+    fn key_files_are_parsed_without_panicking() {
+        let good = "11".repeat(32);
+        assert!(parse_key_hex(&good).is_ok());
+        assert!(parse_key_hex(&format!("  {good}\n")).is_ok());
+        assert!(parse_key_hex("").is_err());
+        assert!(parse_key_hex("abc").is_err());
+        assert!(parse_key_hex(&"1".repeat(63)).is_err());
+        assert!(parse_key_hex(&format!("{}zz", "1".repeat(62))).is_err());
+        // Multi-byte characters must not panic the slicing either
+        assert!(parse_key_hex(&"é".repeat(32)).is_err());
+        // All zeros is not a valid secp256k1 key
+        assert!(parse_key_hex(&"0".repeat(64)).is_err());
+    }
+
+    /// Seam review P4-10: the key file is created owner-only and never overwritten.
+    #[test]
+    fn key_file_is_private_and_never_overwritten() {
+        let dir = std::env::temp_dir().join(format!("zethora-miner-key-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("key.txt");
+        let path = path.to_str().unwrap();
+        let _ = std::fs::remove_file(path);
+        write_private_file(path, "first").unwrap();
+        assert!(write_private_file(path, "second").is_err());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "first");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

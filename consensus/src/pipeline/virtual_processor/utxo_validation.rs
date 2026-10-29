@@ -202,7 +202,9 @@ impl VirtualStateProcessor {
                 let compute_mass = self.transaction_validator.mass_calculator.calc_non_contextual_masses(validated_tx.tx).compute_mass;
                 block_base_fee += crate::processes::zethora_fees::base_fee(validated_tx.calculated_fee, compute_mass);
                 // Already validated, so the value balance is readable
-                if let Ok(Some((value_in, value_out))) = kaspa_consensus_core::zethora_private::pool_flows(&validated_tx.tx.payload) {
+                if let Ok(Some((value_in, value_out))) =
+                    kaspa_consensus_core::zethora_private::pool_flows(zethora_private::private_payload(validated_tx.tx))
+                {
                     block_pool_in += value_in;
                     block_pool_out += value_out;
                 }
@@ -211,7 +213,7 @@ impl VirtualStateProcessor {
             // Zethora: remember the private coin tags this block's accepted transactions spent, so a later block in
             // the same mergeset can't spend them again (ZTH-SPEC-006 §6.3). Within one block they are unique (body rule).
             for (vtx, _) in validated_transactions.iter() {
-                for nf in zethora_private::nullifiers(&vtx.tx.payload) {
+                for nf in zethora_private::nullifiers(zethora_private::private_payload(vtx.tx)) {
                     if ctx.nullifiers.insert(nf) {
                         ctx.nullifier_list.push(nf);
                         ctx.private_state.add_element(&zethora_private::private_state_spent_element(&nf));
@@ -223,12 +225,12 @@ impl VirtualStateProcessor {
             // Every node walks the mergeset in the same consensus order, so every node builds the same list.
             let mut private_txs: Vec<_> = validated_transactions
                 .iter()
-                .filter(|(vtx, _)| kaspa_consensus_core::zethora_private::private_payment_bytes(&vtx.tx.payload).is_some())
+                .filter(|(vtx, _)| zethora_private::private_payment_bytes(zethora_private::private_payload(vtx.tx)).is_some())
                 .map(|(vtx, idx)| (*idx, vtx.tx))
                 .collect();
             private_txs.sort_by_key(|(idx, _)| *idx);
             for (_, tx) in private_txs {
-                let encoded = kaspa_consensus_core::zethora_private::private_payment_bytes(&tx.payload).expect("filtered above");
+                let encoded = zethora_private::private_payment_bytes(zethora_private::private_payload(tx)).expect("filtered above");
                 for cmx in zethora_shielded::codec::note_commitments(encoded).expect("accepted private payments are well-formed") {
                     ctx.note_tree.append(&cmx).expect("private coin list is full: migrate to a new pool version");
                     ctx.note_tree_grew = true;
@@ -355,7 +357,7 @@ impl VirtualStateProcessor {
         let valid = validated_transactions
             .iter()
             .filter(|(vtx, _)| {
-                !zethora_private::nullifiers(&vtx.tx.payload).iter().any(|nf| ctx.nullifiers.contains(nf))
+                !zethora_private::nullifiers(zethora_private::private_payload(vtx.tx)).iter().any(|nf| ctx.nullifiers.contains(nf))
                     && zethora_supply::turnstile_accepts(&mut shielded_balance, &vtx.tx.payload)
             })
             .count();
@@ -438,7 +440,7 @@ impl VirtualStateProcessor {
     /// Zethora: does this transaction spend a private coin tag that is already spent, either on the chain of
     /// `selected_parent` or in `pending` (tags accepted earlier in the same mergeset / block template)?
     pub(crate) fn private_double_spend(&self, tx: &Transaction, selected_parent: Hash, pending: &HashSet<[u8; 32]>) -> bool {
-        zethora_private::nullifiers(&tx.payload)
+        zethora_private::nullifiers(zethora_private::private_payload(tx))
             .iter()
             .any(|nf| pending.contains(nf) || self.nullifier_spent_on_chain(nf, selected_parent))
     }
@@ -475,7 +477,7 @@ impl VirtualStateProcessor {
         if self.private_double_spend(tx, selected_parent, pending) {
             return Err(TxRuleError::InvalidPrivatePayment("private coin already spent".to_string()));
         }
-        if let Some(anchor) = zethora_private::spend_anchor(&tx.payload)
+        if let Some(anchor) = zethora_private::spend_anchor(zethora_private::private_payload(tx))
             && !self.anchor_matured_on_chain(&anchor, selected_parent)
         {
             return Err(TxRuleError::InvalidPrivatePayment(format!(
@@ -491,7 +493,7 @@ impl VirtualStateProcessor {
     /// virtual's mergeset. Value it brings in is not counted. Such a payment could never be accepted on top of the
     /// current chain, so keeping it would only waste mempool space and template slots. Chain-dependent: never a ban.
     pub(crate) fn check_private_payment_fits_pool(&self, tx: &Transaction, pool_left: u64) -> TxResult<()> {
-        match zethora_private::pool_flows(&tx.payload) {
+        match zethora_private::pool_flows(zethora_private::private_payload(tx)) {
             Ok(Some((_, value_out))) if value_out > pool_left => Err(TxRuleError::InvalidPrivatePayment(format!(
                 "would take {value_out} zets out of the private pool, which holds {pool_left}"
             ))),
@@ -556,7 +558,7 @@ impl VirtualStateProcessor {
                 .enumerate()
                 .skip(1) // Skip the coinbase tx.
                 // Zethora: a private coin tag already spent earlier in this mergeset makes the transaction not accepted
-                .filter(|(_, tx)| !zethora_private::nullifiers(&tx.payload).iter().any(|nf| pending_nullifiers.contains(nf)))
+                .filter(|(_, tx)| !zethora_private::nullifiers(zethora_private::private_payload(tx)).iter().any(|nf| pending_nullifiers.contains(nf)))
                 .filter_map(|(i, tx)| self.validate_transaction_in_utxo_context(tx, &utxo_view, pov_daa_score, block_daa_score, flags, selected_parent).ok().map(|vtx| (vtx, i as u32)))
                 .collect();
             // Zethora: the turnstile depends on order, so it runs sequentially in block order, before any effect

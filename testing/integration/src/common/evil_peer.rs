@@ -5,7 +5,7 @@
 //! a genuine IBD until the node requests a pruning-point proof, then answers with a bogus proof whose
 //! RandomZ key epoch is impossible. That is the exact `PruningImportError::ZethoraPowEpochImplausible`
 //! path classified as a hard error by `ProtocolError::is_implausible_pow_epoch` and banned (after the
-//! 3-in-10-minutes threshold) by `FlowContext::ban_if_implausible_pow_epoch`.
+//! 3-in-10-minutes threshold) by `FlowContext::strike_ip_if_unearned_pow`.
 //!
 //! Nothing here mocks the ban logic: the peer only sends bytes over a socket. The node is the real
 //! kaspad under test, and every decision (classify, count, ban, refuse) is made by production code.

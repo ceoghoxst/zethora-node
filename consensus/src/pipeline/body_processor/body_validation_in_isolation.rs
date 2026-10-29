@@ -137,7 +137,9 @@ impl BlockBodyProcessor {
     /// Zethora (ZTH-SPEC-006 §6.3): a private coin tag (nullifier) may appear only once per block.
     fn check_block_nullifier_reuse(block: &Block) -> BlockProcessResult<()> {
         let mut existing = HashSet::new();
-        for nf in block.transactions.iter().skip(1).flat_map(|tx| kaspa_consensus_core::zethora_private::nullifiers(&tx.payload)) {
+        for nf in block.transactions.iter().skip(1).flat_map(|tx| {
+            kaspa_consensus_core::zethora_private::nullifiers(kaspa_consensus_core::zethora_private::private_payload(tx))
+        }) {
             if !existing.insert(nf) {
                 return Err(RuleError::NullifierReusedInSameBlock(kaspa_hashes::Hash::from_bytes(nf)));
             }

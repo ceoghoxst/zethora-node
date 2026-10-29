@@ -94,6 +94,37 @@ impl ProofLevelContext<'_> {
     }
 }
 
+/// Seam review P4-5: checks the proof of work (and claimed level) of the few headers that decide whether a peer's
+/// pruning proof can be valid: the pruning point header, then the first and last header of the highest non-empty level.
+/// Each costs at most one light setup, so a proof with bogus work is refused after a few hashes instead of after a setup
+/// for every epoch since genesis. Honest proofs pass (every header in them passes the same check later).
+pub(crate) fn zethora_spot_check_proof_pow(proof: &PruningPointProof, max_block_level: BlockLevel) -> Result<(), PruningImportError> {
+    let pruning_point = proof[0].last().ok_or(PruningImportError::PruningProofNotEnoughHeaders)?;
+    let mut deciding: Vec<(&Header, BlockLevel)> = vec![(pruning_point.as_ref(), 0)];
+    if let Some((level, headers)) = proof.iter().enumerate().rev().find(|(_, headers)| !headers.is_empty()) {
+        let level = level as BlockLevel;
+        if let Some(first) = headers.first() {
+            deciding.push((first.as_ref(), level));
+        }
+        if let Some(last) = headers.last() {
+            deciding.push((last.as_ref(), level));
+        }
+    }
+    for (header, level) in deciding {
+        if header.parents_by_level.is_empty() {
+            continue; // genesis has no proof of work (it is checked against our own genesis later)
+        }
+        let (header_level, passes) = calc_block_level_check_pow(header, max_block_level);
+        if !passes {
+            return Err(PruningImportError::ProofOfWorkFailed(header.hash, level));
+        }
+        if header_level < level {
+            return Err(PruningImportError::PruningProofWrongBlockLevel(header.hash, header_level, level));
+        }
+    }
+    Ok(())
+}
+
 impl ProofContext {
     /// Build the full context from the proof
     fn from_proof(
@@ -120,6 +151,10 @@ impl ProofContext {
             let proof_pp_daa_score = proof[0].last().expect("checked if empty").daa_score;
             ppm.zethora_check_pow_epochs(proof_pp_daa_score, proof.iter().flatten().map(|header| header.as_ref()))?;
             if !ppm.skip_proof_of_work {
+                // Seam review P4-5: before computing the work of every header (one 256 MiB setup per epoch, up to 4 at a
+                // time), check the headers that decide the outcome one at a time and stop at the first failure: the
+                // pruning point, and the first and last header of the highest level (the hardest work to fake).
+                zethora_spot_check_proof_pow(proof, ppm.max_block_level)?;
                 kaspa_pow::precompute_pow(proof.iter().flatten().map(|header| header.as_ref()));
             }
         }
@@ -464,5 +499,56 @@ impl PruningProofManager {
             defender_relay_blue_work,
             challenger_relay_blue_work,
         ))
+    }
+}
+
+#[cfg(test)]
+mod zethora_tests {
+    use super::zethora_spot_check_proof_pow;
+    use kaspa_consensus_core::{errors::pruning::PruningImportError, header::Header};
+    use kaspa_hashes::Hash;
+    use std::sync::Arc;
+
+    const MAX_LEVEL: u8 = 225;
+    const EASY_BITS: u32 = 0x207f_ffff; // about half of all nonces pass
+    const HARDEST_BITS: u32 = 0x0300_0001; // target 1: no nonce passes
+
+    fn header(hash: u64, bits: u32) -> Header {
+        let mut header = Header::from_precomputed_hash(hash.into(), vec![Hash::from(1000 + hash)]);
+        header.bits = bits;
+        header.nonce = (0..10_000u64).find(|&n| kaspa_pow::State::new(&header).check_pow(n).0).unwrap_or(0);
+        header
+    }
+
+    fn proof_with(level: usize, header: Header) -> Vec<Vec<Arc<Header>>> {
+        let mut proof = vec![Vec::new(); MAX_LEVEL as usize + 1];
+        proof[0].push(Arc::new(header.clone()));
+        proof[level].push(Arc::new(header));
+        proof
+    }
+
+    /// Seam review P4-5: the headers that decide a peer's proof (pruning point, then the highest level) are checked one
+    /// at a time before the work of every header is computed, and a failure stops the check right there.
+    #[test]
+    fn deciding_proof_headers_are_checked_first() {
+        // Positive control: a mined pruning point (level 0 only) passes
+        let good = header(1, EASY_BITS);
+        assert!(kaspa_pow::State::new(&good).check_pow(good.nonce).0);
+        assert!(zethora_spot_check_proof_pow(&proof_with(0, good.clone()), MAX_LEVEL).is_ok());
+
+        // A pruning point whose work fails is refused at once
+        let mut bad = header(2, EASY_BITS);
+        bad.bits = HARDEST_BITS;
+        let result = zethora_spot_check_proof_pow(&proof_with(0, bad), MAX_LEVEL);
+        assert!(matches!(result, Err(PruningImportError::ProofOfWorkFailed(hash, 0)) if hash == Hash::from(2)), "{result:?}");
+
+        // A header claimed at a level its work does not reach (an ordinary hash at level 200) is refused
+        let level = kaspa_pow::calc_block_level(&good, MAX_LEVEL);
+        assert!(level < 200);
+        let result = zethora_spot_check_proof_pow(&proof_with(200, good), MAX_LEVEL);
+        assert!(
+            matches!(result, Err(PruningImportError::PruningProofWrongBlockLevel(hash, l, 200)) if hash == Hash::from(1) && l == level),
+            "{result:?}"
+        );
     }
 }

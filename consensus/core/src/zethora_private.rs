@@ -17,6 +17,14 @@ pub use zethora_payment_layout as layout;
 /// Marks a transaction payload as a private payment.
 pub const PRIVATE_PAYMENT_MAGIC: [u8; 4] = *b"ZSHP";
 
+/// The payload to read private payment fields from: the transaction's payload, or nothing for a coinbase.
+/// A coinbase is never a private payment, but its payload starts with the blue score (u64 LE), which equals
+/// "ZSHP" once every 2^32 blocks (first after ~42.7 years at 1 block per second). Every consensus and mempool
+/// reader goes through this so a coinbase can never be read as a private payment (seam review pack 1, #12).
+pub fn private_payload(tx: &crate::tx::Transaction) -> &[u8] {
+    if tx.is_coinbase() { &[] } else { &tx.payload }
+}
+
 /// Bytes per action in the encoded payment (from the shared layout; `zethora_shielded::codec::ACTION_SIZE` is the same).
 pub const ACTION_SIZE: usize = layout::ACTION_SIZE;
 
@@ -70,15 +78,20 @@ pub fn pays_from_private_pool(payload: &[u8]) -> bool {
 /// Empty for ordinary transactions. Every nullifier may appear on the chain only once (ZTH-SPEC-006 §6.3):
 /// that is the double-spend guard. Never panics on any payload; the tags are only trustworthy for payments already
 /// checked in isolation (the mempool also reads unchecked payloads, only to refuse conflicts early).
+///
+/// All or nothing (seam review pack 1, #13): if any declared action's tag can't be read (a truncated payload), the
+/// result is empty, never a partial list, so no caller can mistake "some tags" for "all tags". Such a payload also
+/// fails the in-isolation decode, which runs before anything relies on these tags.
 pub fn nullifiers(payload: &[u8]) -> Vec<[u8; 32]> {
     let Some(encoded) = private_payment_bytes(payload) else { return Vec::new() };
     let Some(n) = action_count(encoded) else { return Vec::new() };
     (0..n)
-        .filter_map(|i| {
+        .map(|i| {
             let at = layout::action_offset(i)? + layout::NULLIFIER_OFFSET;
-            encoded.get(at..at + 32).map(|b| b.try_into().expect("32 bytes"))
+            encoded.get(at..at + 32).map(|b| <[u8; 32]>::try_from(b).expect("32 bytes"))
         })
-        .collect()
+        .collect::<Option<Vec<_>>>()
+        .unwrap_or_default()
 }
 
 /// The private state fingerprint (ZTH-SPEC-006 §6.4): a MuHash set hash, sealed in every coinbase, over every private
@@ -176,6 +189,41 @@ mod tests {
         p[base + ACTION_SIZE + 32..base + ACTION_SIZE + 64].copy_from_slice(&[0xBB; 32]);
         assert_eq!(nullifiers(&p), vec![[0xAA; 32], [0xBB; 32]]);
         assert!(nullifiers(b"ordinary payload").is_empty());
+    }
+
+    #[test]
+    fn a_truncated_payment_gives_no_tags_at_all_never_some() {
+        // Seam review pack 1, #13. Positive control: the full 2-action payment gives both tags
+        let mut p = fake(2, -5_000);
+        let base = 4 + 3;
+        p[base + 32..base + 64].copy_from_slice(&[0xAA; 32]);
+        p[base + ACTION_SIZE + 32..base + ACTION_SIZE + 64].copy_from_slice(&[0xBB; 32]);
+        assert_eq!(nullifiers(&p), vec![[0xAA; 32], [0xBB; 32]]);
+        // Cut inside the second action's tag: before the fix this returned [0xAA] (a partial list)
+        let cut = &p[..base + ACTION_SIZE + 40];
+        assert_eq!(nullifiers(cut), Vec::<[u8; 32]>::new());
+        // Cut right after the first tag: still nothing, not one tag
+        let cut = &p[..base + 64];
+        assert_eq!(nullifiers(cut), Vec::<[u8; 32]>::new());
+    }
+
+    #[test]
+    fn a_coinbase_is_never_read_as_a_private_payment() {
+        // Seam review pack 1, #12: a coinbase payload starting with the blue score 0x5048535A reads "ZSHP"
+        use crate::{subnets::SUBNETWORK_ID_COINBASE, subnets::SUBNETWORK_ID_NATIVE, tx::Transaction};
+        // (the blue score's low 4 bytes, then bytes that look like a payment)
+        let mut payload = 0x5048535A_u64.to_le_bytes()[..4].to_vec();
+        payload.extend(fake(2, 1_000)[4..].iter().copied());
+        assert_eq!(&payload[..4], &PRIVATE_PAYMENT_MAGIC[..]);
+        assert_eq!(pool_flows(&payload), Ok(Some((0, 1_000)))); // the raw readers alone would be fooled
+        let coinbase = Transaction::new(0, vec![], vec![], 0, SUBNETWORK_ID_COINBASE, 0, payload.clone());
+        assert!(coinbase.is_coinbase());
+        assert!(private_payload(&coinbase).is_empty());
+        assert_eq!(pool_flows(private_payload(&coinbase)), Ok(None));
+        assert!(nullifiers(private_payload(&coinbase)).is_empty());
+        // Positive control: the same bytes in an ordinary transaction are read as a private payment
+        let ordinary = Transaction::new(0, vec![], vec![], 0, SUBNETWORK_ID_NATIVE, 0, payload);
+        assert_eq!(pool_flows(private_payload(&ordinary)), Ok(Some((0, 1_000))));
     }
 
     #[test]

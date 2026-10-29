@@ -232,9 +232,10 @@ impl RelayTransactionsFlow {
         // Zethora (ZTH-SPEC-006 §8.3): private payments cost a proof check each, so check them in small groups after the
         // ordinary transactions, and stop at the first forged one. That bounds the work a lying peer can cause to one
         // small group before it is banned.
-        let (private, ordinary): (Vec<Transaction>, Vec<Transaction>) = transactions
-            .into_iter()
-            .partition(|tx| kaspa_consensus_core::zethora_private::private_payment_bytes(&tx.payload).is_some());
+        let (private, ordinary): (Vec<Transaction>, Vec<Transaction>) = transactions.into_iter().partition(|tx| {
+            kaspa_consensus_core::zethora_private::private_payment_bytes(kaspa_consensus_core::zethora_private::private_payload(tx))
+                .is_some()
+        });
         let mut insert_results = self
             .ctx
             .mining_manager()

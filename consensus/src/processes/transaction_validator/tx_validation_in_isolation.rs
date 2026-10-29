@@ -70,7 +70,7 @@ impl TransactionValidator {
             return Ok(());
         }
         if tx.outputs.len() > self.max_tx_outputs {
-            return Err(TxRuleError::TooManyOutputs(tx.outputs.len(), self.max_tx_inputs));
+            return Err(TxRuleError::TooManyOutputs(tx.outputs.len(), self.max_tx_outputs));
         }
 
         Ok(())
@@ -150,7 +150,9 @@ fn check_private_payment(tx: &Transaction, spends_enabled: bool) -> TxResult<()>
     if tx.is_coinbase() {
         return Ok(());
     }
-    let Some(encoded) = kaspa_consensus_core::zethora_private::private_payment_bytes(&tx.payload) else {
+    let Some(encoded) =
+        kaspa_consensus_core::zethora_private::private_payment_bytes(kaspa_consensus_core::zethora_private::private_payload(tx))
+    else {
         return Ok(());
     };
     let invalid = TxRuleError::InvalidPrivatePayment;
@@ -175,8 +177,11 @@ fn check_private_payment(tx: &Transaction, spends_enabled: bool) -> TxResult<()>
         return Err(forged("the same private coin tag appears twice in one payment".to_string()));
     }
     let digest = kaspa_consensus_core::hashing::tx::zethora_private_payment_digest(tx);
-    zethora_shielded::verify_payment(&bundle, private_payment_verifying_key(), &digest.as_bytes())
-        .map_err(|e| forged(format!("{e:?}")))
+    zethora_shielded::verify_payment(&bundle, private_payment_verifying_key(), &digest.as_bytes()).map_err(|e| match e {
+        // Not proof of forgery (seam review pack 1, #7): refuse without banning
+        zethora_shielded::VerifyError::Commitment => invalid(format!("{e:?}")),
+        _ => forged(format!("{e:?}")),
+    })
 }
 
 fn check_gas(tx: &Transaction) -> TxResult<()> {
