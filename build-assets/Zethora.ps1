@@ -168,7 +168,7 @@ $timer.Add_Tick({
       if ($l -match 'Paying rewards to:\s+(\S+)') { $addr.Text = "Address: $($matches[1])" }
       if ($l -match 'Preparing') { $tiles['Status'].Text = 'Preparing' }
       if ($l -match '([\d,\.]+)\s*H/s') { $tiles['Speed'].Text = "$($matches[1]) H/s"; if (-not $script:unbalanced) { $tiles['Status'].Text = 'Mining'; $tiles['Status'].ForeColor = $green } }
-      if ($l -match 'Block #(\d+)') { $tiles['Blocks found'].Text = $matches[1]; $script:balDue = (Get-Date).AddSeconds(3) }
+      if ($l -match 'Block #(\d+)') { $tiles['Blocks found'].Text = $matches[1]; $script:balDue = (Get-Date).AddSeconds(1) }
       if ($l -match 'Supply check') {
         if ($l -match 'BALANCED') {
           if (-not $script:unbalanced) { $supply.Text = 'Supply check: BALANCED  (no coins created out of thin air)'; $supply.ForeColor = $green }
@@ -179,13 +179,13 @@ $timer.Add_Tick({
         }
       }
     }
-    # balance: 3 s after each block found, else every 20 s (one tiny local query, no mining cost)
+    # balance: 1 s after each block found, else every 10 s (one tiny local query to your own node, no mining cost)
     if ($script:bal -and $script:bal.HasExited) {
       $out = Get-Content $balLog -Raw -ErrorAction SilentlyContinue
       if ($out -match 'Balance:\s+([\d\.]+)\s+ZTHR') { $tiles['Balance'].Text = ('{0:N4}' -f [double]$matches[1]) }
       $script:bal = $null
     }
-    if (-not $script:bal -and $age -ge 30 -and (((Get-Date) -ge $script:balDue -and $script:balDue -gt $script:lastBal) -or ((Get-Date) - $script:lastBal).TotalSeconds -ge 20)) {
+    if (-not $script:bal -and $age -ge 25 -and (((Get-Date) -ge $script:balDue -and $script:balDue -gt $script:lastBal) -or ((Get-Date) - $script:lastBal).TotalSeconds -ge 10)) {
       $script:lastBal = Get-Date
       $script:bal = Start-Process -FilePath $minerExe -ArgumentList '--testnet','balance' `
           -WorkingDirectory $here -WindowStyle Hidden -RedirectStandardOutput $balLog -RedirectStandardError "$balLog.err" -PassThru

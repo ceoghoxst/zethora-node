@@ -4,6 +4,27 @@
 **Status: LOCKED (Oct 2, 2026).**
 **Depends on:** all prior specs.
 
+> **AMENDED 2026-10-28 (CEO decision, published openly).** Zethora is a
+> bootstrapped project with no funding. Some gates below cannot be met
+> without money, so they changed. Original text is kept below for the record.
+>
+> - **Gate 1 (paid audits) and gate 2 (formal verification): replaced.**
+>   Mainnet launches without a paid audit and says so plainly ("not
+>   audited"). Instead: public testnet, published threat model
+>   (docs/THREAT-MODEL.md), internal AI-assisted red-team rounds turned into
+>   tests, and open review invited through SECURITY.md.
+> - **Privacy on mainnet:** private payments stay OFF at mainnet launch and
+>   turn on only after an independent review of the private-pool integration
+>   (by volunteers, or paid later from grants or donations if they come).
+> - **Gate 4 and 3.4 (bug bounty in dollars):** credit and public thanks now;
+>   a paid bounty only if funding exists. We will not promise money we do not have.
+> - **Gate 6(c) (object engine):** not applicable; smart contracts are not built.
+> - **Unchanged:** at least 6 months of public testnet (3.1), testnet attack
+>   drills (gate 5), supply checks verified on testnet (gate 3), the
+>   home-computer test (gate 7), wallet recovery testing (gate 8), and
+>   testnet coins never converting to mainnet coins (3.3).
+> - Why: an honest smaller promise we can keep beats a bigger one we cannot.
+
 ## 1. Purpose
 Nothing reaches mainnet until it has been attacked, audited, and proven on a public testnet.
 
