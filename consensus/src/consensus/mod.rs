@@ -7,6 +7,8 @@ pub mod test_consensus;
 
 #[cfg(feature = "devnet-prealloc")]
 mod utxo_set_override;
+#[cfg(test)]
+mod zethora_import_tests;
 
 use crate::{
     config::Config,
@@ -330,6 +332,16 @@ impl Consensus {
         // Upgrade to initialize the new retention root field correctly
         self.retention_root_database_upgrade();
         self.consensus_transitional_flags_upgrade();
+        self.zethora_clear_unfinished_private_state_import();
+    }
+
+    /// Zethora (seam review pack 1 #8): the private state is imported while the pruning point UTXO set is not stable (it
+    /// becomes stable only after the whole sync). A node stopped in the middle restarts with that flag still down, so any
+    /// for-good records written by the unfinished import are cleared here; IBD then syncs the state again.
+    fn zethora_clear_unfinished_private_state_import(&self) {
+        if !self.pruning_meta_stores.read().pruning_utxoset_stable_flag() {
+            self.virtual_processor.clear_zethora_for_good_records();
+        }
     }
 
     fn retention_root_database_upgrade(&self) {
@@ -419,6 +431,26 @@ impl Consensus {
         )
         .map_err(|e| ConsensusError::GeneralOwned(format!("Zethora: reading the private state failed: {e}")))?;
         Ok(kaspa_consensus_core::api::ZethoraPrivateState { note_tree: note_tree.to_bytes(), spent, anchors })
+    }
+
+    /// Zethora: what pruning point `pruning_point` seals in its coinbase: its coin list root and private state
+    /// fingerprint. Genesis seals neither (its payload is fixed), but its private state is known: no spent tags, the
+    /// empty list as the only snapshot.
+    fn zethora_sealed_private_state(&self, pruning_point: Hash) -> PruningImportResult<([u8; 32], [u8; 32])> {
+        use crate::processes::zethora_private_state::genesis_private_state;
+        // Problems with this node's own copy of the pruning point, not with what the peer sent (no strike: P3-4)
+        let mismatch = |why: String| PruningImportError::ZethoraPruningPointUnreadable(pruning_point, why);
+        if pruning_point == self.config.genesis.hash {
+            return Ok((zethora_shielded::NoteCommitmentTree::new().root().to_bytes(), genesis_private_state().finalize().as_bytes()));
+        }
+        let txs = self.block_transactions_store.get(pruning_point).map_err(|e| mismatch(format!("its body is missing: {e}")))?;
+        let coinbase = txs.first().ok_or_else(|| mismatch("its body has no coinbase".to_string()))?;
+        let data = self
+            .services
+            .coinbase_manager
+            .deserialize_coinbase_payload(&coinbase.payload)
+            .map_err(|e| mismatch(format!("its coinbase is unreadable: {e}")))?;
+        Ok((data.note_root, data.private_state))
     }
 
     pub fn block_status(&self, hash: Hash) -> BlockStatus {
@@ -1192,38 +1224,77 @@ impl ConsensusApi for Consensus {
         new_pruning_point: Hash,
         state: kaspa_consensus_core::api::ZethoraPrivateState,
     ) -> PruningImportResult<()> {
-        use crate::processes::zethora_private_state::{check_downloaded_private_state, genesis_private_state};
+        use crate::processes::zethora_private_state::check_coin_list;
+        // The coin list is checked before anything is written (a cheap refusal); the sets are checked as a whole
+        let (expected_note_root, _) = self.zethora_sealed_private_state(new_pruning_point)?;
+        check_coin_list(&state.note_tree, &expected_note_root)
+            .map_err(|why| PruningImportError::ZethoraPrivateStateMismatch(new_pruning_point, why))?;
+        self.begin_zethora_private_state_import();
+        let mut fingerprint = MuHash::new();
+        self.append_imported_zethora_private_state(&state.spent, &state.anchors, &mut fingerprint);
+        self.finish_zethora_private_state_import(new_pruning_point, &state.note_tree, fingerprint)
+    }
+
+    fn zethora_private_state_limits(&self, pruning_point: Hash) -> ConsensusResult<(u64, u64)> {
+        let blue_score =
+            self.headers_store.get_blue_score(pruning_point).map_err(|_| ConsensusError::HeaderNotFound(pruning_point))?;
+        Ok(private_state_limits(blue_score, self.config.params.mergeset_size_limit(), self.config.params.block_mass_limits.compute))
+    }
+
+    fn begin_zethora_private_state_import(&self) {
+        self.virtual_processor.clear_zethora_for_good_records();
+    }
+
+    fn append_imported_zethora_private_state(
+        &self,
+        spent: &[[u8; 32]],
+        anchors: &[([u8; 32], u64)],
+        current_fingerprint: &mut MuHash,
+    ) {
+        use kaspa_consensus_core::zethora_private::{private_state_anchor_element, private_state_spent_element};
+        self.virtual_processor.append_zethora_for_good_records(spent, anchors);
+        // Every element counts, also a repeated one (the fingerprint is a set hash, so a repeat can never match it)
+        for nf in spent {
+            current_fingerprint.add_element(&private_state_spent_element(nf));
+        }
+        for (root, blue_score) in anchors {
+            current_fingerprint.add_element(&private_state_anchor_element(root, *blue_score));
+        }
+    }
+
+    fn finish_zethora_private_state_import(
+        &self,
+        new_pruning_point: Hash,
+        note_tree: &[u8],
+        fingerprint: MuHash,
+    ) -> PruningImportResult<()> {
+        use crate::processes::zethora_private_state::check_coin_list;
         let mismatch = |why: String| PruningImportError::ZethoraPrivateStateMismatch(new_pruning_point, why);
-
-        // What the pruning point seals in its coinbase: its coin list root and private state fingerprint. Genesis seals
-        // neither (its payload is fixed), but its private state is known: no spent tags, the empty list as the only snapshot.
-        let (expected_note_root, expected_fingerprint) = if new_pruning_point == self.config.genesis.hash {
-            (zethora_shielded::NoteCommitmentTree::new().root().to_bytes(), genesis_private_state().finalize().as_bytes())
-        } else {
-            let txs =
-                self.block_transactions_store.get(new_pruning_point).map_err(|e| mismatch(format!("its body is missing: {e}")))?;
-            let coinbase = txs.first().ok_or_else(|| mismatch("its body has no coinbase".to_string()))?;
-            let data = self
-                .services
-                .coinbase_manager
-                .deserialize_coinbase_payload(&coinbase.payload)
-                .map_err(|e| mismatch(format!("its coinbase is unreadable: {e}")))?;
-            (data.note_root, data.private_state)
-        };
-
-        // Check everything before writing anything, so a lying peer leaves no trace
-        let (tree, fingerprint) =
-            check_downloaded_private_state(&state, &expected_note_root, &expected_fingerprint).map_err(mismatch)?;
-
-        self.virtual_processor.store_zethora_private_state(new_pruning_point, &tree, fingerprint, &state.spent, &state.anchors);
-
-        info!(
-            "Zethora: imported and checked the private state of pruning point {}: {} spent private coin tags, {} coin list snapshots",
-            new_pruning_point,
-            state.spent.len(),
-            state.anchors.len()
-        );
-        Ok(())
+        let checked = (|| {
+            let (expected_note_root, expected_fingerprint) = self.zethora_sealed_private_state(new_pruning_point)?;
+            let tree = check_coin_list(note_tree, &expected_note_root).map_err(mismatch)?;
+            if !self.virtual_processor.zethora_root_anchored_for_good(&expected_note_root) {
+                return Err(mismatch("the current private coin list is missing from the snapshots".to_string()));
+            }
+            if fingerprint.clone().finalize().as_bytes() != expected_fingerprint {
+                return Err(mismatch(
+                    "the spent coin tags and snapshots do not match the fingerprint sealed in the pruning point".to_string(),
+                ));
+            }
+            Ok(tree)
+        })();
+        match checked {
+            Ok(tree) => {
+                self.virtual_processor.set_zethora_pruning_point_private_state(new_pruning_point, &tree, fingerprint);
+                info!("Zethora: imported and checked the private state of pruning point {}", new_pruning_point);
+                Ok(())
+            }
+            Err(e) => {
+                // A lying peer leaves no trace: everything appended for this import is cleared again
+                self.virtual_processor.clear_zethora_for_good_records();
+                Err(e)
+            }
+        }
     }
 
     fn import_pruning_point_smt(
@@ -1737,6 +1808,9 @@ impl ConsensusApi for Consensus {
         pruning_meta_write.set_pruning_utxoset_stable_flag(&mut batch, false).unwrap();
         self.db.write(batch).unwrap();
         pruning_meta_write.utxo_set.clear().unwrap();
+        drop(pruning_meta_write);
+        // Zethora (seam review P3-2): the private state belongs to the pruning point's UTXO set; clear it in the same step
+        self.virtual_processor.clear_zethora_for_good_records();
     }
 
     fn clear_pruning_smt_stores(&self) {
@@ -1796,4 +1870,14 @@ impl ConsensusApi for Consensus {
         let (_pruning_point, pruning_index) = self.pruning_point_store.read().pruning_point_and_index().unwrap();
         (0..=pruning_index).rev().take(n).map(|ind| self.past_pruning_points_store.get(ind).unwrap()).collect_vec()
     }
+}
+
+/// Seam review P3-3: the most spent coin tags and snapshots a chain up to a pruning point with this blue score can hold.
+/// Snapshots: each chain block produces at most one, and the chain has at most `blue_score + 1` blocks. Coin tags: every
+/// block in the pruning point's past is in some chain block's mergeset (at most `mergeset_size_limit` each), and a
+/// block's private payments carry at most `compute_mass_limit / PROOF_MASS_PER_ACTION` actions, one tag each.
+pub(crate) fn private_state_limits(blue_score: u64, mergeset_size_limit: u64, compute_mass_limit: u64) -> (u64, u64) {
+    let chain_blocks = blue_score.saturating_add(1);
+    let actions_per_block = compute_mass_limit / kaspa_consensus_core::zethora_private::PROOF_MASS_PER_ACTION;
+    (chain_blocks.saturating_mul(mergeset_size_limit).saturating_mul(actions_per_block), chain_blocks)
 }

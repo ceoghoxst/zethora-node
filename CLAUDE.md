@@ -629,6 +629,24 @@ P5-3 table + recommendation (C = 10^13): docs/decisions/P5-3-storage-mass.md (on
 F3e branch), pending CEO/VP decision. VP notes: merges at most once a day, no night
 messages; P4-4 high priority for the release.
 
+2026-10-29 - F3c (sync robustness; branch f3c-sync-robustness). P3-2/#8: every
+for-good coin tag/snapshot mark is cleared when the pruning point UTXO set is
+cleared (start of every state sync), at startup while the UTXO set is not stable
+(that flag is the import-in-progress marker), at the start of every import and
+after a refused one. P3-3: private state import is streamed like the UTXO set
+(append chunk + running MuHash, finish checks coin list + fingerprint, clears on
+refusal); header refused if counts exceed physical limits (snapshots <= chain
+blocks, tags <= chain blocks x mergeset limit x actions/block) or the coin list
+> 1,066 bytes (P3-7). P3-4: ZethoraPrivateStateMismatch is a strike; local
+problems are ZethoraPruningPointUnreadable (no strike). P3-1: served state built
+once per pruning point (cache), <= 3 requests per pruning point per connection.
+#2: verify_payment caches passed proofs by proof + public inputs (signatures
+always checked). #9: forged payments are strikes (3 in 10 min), not instant bans.
+RULE (#9): any change to how private payments are encoded or signed must bump
+the pool version, so old nodes refuse new payments as unreadable, never forged.
+One strike system: ProtocolError::is_strike / FlowContext::penalize_if_misbehaving.
+P3-5 clear panic message; P3-6 iter_all session rule documented; P3-8 Default
+removed. No stored-state format change, no devnet reset.
 2026-10-29 - CTO session (Ryzen-linked, compiled in the cloud sandbox). P5-3 DECIDED: storage mass
 C = 10^13 (CEO + VP); rule: revisit if 0.01 ZTHR becomes meaningful money, lowering it is a planned
 upgrade with an activation height (docs/decisions/P5-3-storage-mass.md). F3f + F3d batched on branch

@@ -4,6 +4,7 @@
 //! the block that produced it), in chunks. The joining node checks all of it against the fingerprint sealed in the
 //! pruning point's coinbase, so a wrong answer from this node only costs it the peer, never the joiner's safety.
 
+use crate::flowcontext::zethora_state_cache::RequestLimiter;
 use crate::{
     flow_context::FlowContext,
     flow_trait::Flow,
@@ -24,7 +25,12 @@ pub struct RequestZethoraPrivateStateFlow {
     ctx: FlowContext,
     router: Arc<Router>,
     incoming_route: IncomingRoute,
+    /// Seam review P3-1: how often this connection asked for each pruning point's state
+    requests: RequestLimiter<Hash>,
 }
+
+/// Seam review P3-1: an honest joiner asks once per sync attempt; a few retries on one connection are fine.
+const MAX_REQUESTS_PER_PRUNING_POINT: usize = 3;
 
 #[async_trait::async_trait]
 impl Flow for RequestZethoraPrivateStateFlow {
@@ -39,7 +45,7 @@ impl Flow for RequestZethoraPrivateStateFlow {
 
 impl RequestZethoraPrivateStateFlow {
     pub fn new(ctx: FlowContext, router: Arc<Router>, incoming_route: IncomingRoute) -> Self {
-        Self { ctx, router, incoming_route }
+        Self { ctx, router, incoming_route, requests: RequestLimiter::new(MAX_REQUESTS_PER_PRUNING_POINT) }
     }
 
     async fn start_impl(&mut self) -> Result<(), ProtocolError> {
@@ -50,23 +56,41 @@ impl RequestZethoraPrivateStateFlow {
     }
 
     async fn handle_request(&mut self, expected_pp: Hash) -> Result<(), ProtocolError> {
-        // Read the whole state under one consensus session (pruning cannot rewrite the records meanwhile), then send it
-        // without holding the session
-        let session = self.ctx.consensus().session().await;
-        let state = match session.async_get_zethora_private_state(expected_pp).await {
+        if !self.requests.allow(expected_pp) {
+            return Err(ProtocolError::OtherOwned(format!(
+                "asked for the private state of pruning point {expected_pp} more than {MAX_REQUESTS_PER_PRUNING_POINT} times"
+            )));
+        }
+        // Seam review P3-1: built once per pruning point (under one consensus session, so pruning cannot rewrite the
+        // records meanwhile) and kept; every later request is answered from the kept copy without a session. The
+        // pruning point is checked on every request, so a moved pruning point is answered as before.
+        let session = self.ctx.consensus().unguarded_session();
+        if session.async_pruning_point().await != expected_pp {
+            self.router.enqueue(make_message!(Payload::UnexpectedPruningPoint, UnexpectedPruningPointMessage {})).await?;
+            return Ok(());
+        }
+        let ctx = self.ctx.clone();
+        let built = self
+            .ctx
+            .zethora_private_state_cache
+            .get_or_build(expected_pp, || async move {
+                let session = ctx.consensus().session().await;
+                session.async_get_zethora_private_state(expected_pp).await
+            })
+            .await;
+        let state = match built {
             Err(ConsensusError::UnexpectedPruningPoint) => {
                 self.router.enqueue(make_message!(Payload::UnexpectedPruningPoint, UnexpectedPruningPointMessage {})).await?;
                 return Ok(());
             }
             res => res,
         }?;
-        drop(session);
 
         self.router
             .enqueue(make_message!(
                 Payload::ZethoraPrivateStateHeader,
                 ZethoraPrivateStateHeaderMessage {
-                    note_tree: state.note_tree,
+                    note_tree: state.note_tree.clone(),
                     spent_count: state.spent.len() as u64,
                     anchor_count: state.anchors.len() as u64,
                 }

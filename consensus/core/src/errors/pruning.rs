@@ -113,6 +113,11 @@ pub enum PruningImportError {
 
     #[error("Zethora: pruning point sync header {0} claims mining key epoch {1}, outside the plausible ones ({2} to {3})")]
     ZethoraPowEpochImplausible(Hash, u64, u64, u64),
+
+    /// Seam review P3-4: this node cannot read what pruning point {0} seals (a local problem, never the peer's fault, so
+    /// unlike `ZethoraPrivateStateMismatch` it is no strike against the peer).
+    #[error("Zethora: cannot read what pruning point {0} seals: {1}")]
+    ZethoraPruningPointUnreadable(Hash, String),
 }
 
 #[derive(Error, Debug, Clone)]

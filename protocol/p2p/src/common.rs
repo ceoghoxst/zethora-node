@@ -85,8 +85,11 @@ const MAX_REJECT_REASON_LEN: usize = 2048;
 
 impl ProtocolError {
     /// Zethora (ZTH-SPEC-006 §8.3): the peer sent a transaction, or a block containing one, whose private payment fails
-    /// its own proof or signatures. Every honest node checks this before relaying anything, so the peer gets banned.
-    /// Format errors and chain-dependent refusals are not included (an honest peer can hit those).
+    /// its own proof or signatures. Every honest node checks this before relaying anything, so it is a strike (seam
+    /// review pack 1 #9: a strike, not an instant ban, so one bug or a shared IP never cuts peers off at once).
+    /// Format errors and chain-dependent refusals are not included (an honest peer can hit those). Version rule (#9):
+    /// a payment in a newer format than this node knows is refused as unreadable ("unknown pool version"), never as
+    /// forged, so any change to how payments are encoded or signed must come with a new pool version.
     pub fn is_forged_private_payment(&self) -> bool {
         use kaspa_consensus_core::errors::tx::TxRuleError::InvalidPrivatePaymentProof;
         match self {
@@ -107,6 +110,18 @@ impl ProtocolError {
     /// RandomZ, a difficulty or DAA score that the header's own parents contradict, a RandomZ epoch no valid header can
     /// have, or a pruning proof with an implausible epoch or a header whose work fails or is below its level (P4-5). Honest nodes check every one of these before they relay or
     /// serve a header, so each counts as a strike against the sender (3 in 10 minutes get its IP banned).
+    /// Zethora (seam review P3-4): the peer served a pruning point private state that does not match what the pruning
+    /// point seals. Honest nodes compute it exactly, so this is a strike. (A local problem reading our own copy of the
+    /// pruning point is a different error, `ZethoraPruningPointUnreadable`, and no strike.)
+    pub fn is_bad_private_state(&self) -> bool {
+        matches!(self, Self::PruningImportError(PruningImportError::ZethoraPrivateStateMismatch(..)))
+    }
+
+    /// Zethora: everything that counts as a strike against the sender (3 strikes in 10 minutes ban its IP).
+    pub fn is_strike(&self) -> bool {
+        self.is_forged_private_payment() || self.is_unearned_pow() || self.is_bad_private_state()
+    }
+
     pub fn is_unearned_pow(&self) -> bool {
         self.is_implausible_pow_epoch()
             || matches!(
@@ -329,5 +344,33 @@ mod zethora_ban_tests {
         for err in &not_strikes {
             assert!(!err.is_unearned_pow(), "{err} must not be a strike");
         }
+    }
+
+    /// Seam review P3-4 and pack 1 #9: a bad private state and a forged payment are strikes; a local problem and an
+    /// unreadable (newer-format) payment are not.
+    #[test]
+    fn bad_private_states_and_forged_payments_are_strikes() {
+        let forged = TxRuleError::InvalidPrivatePaymentProof("bad proof".to_string());
+        let strikes = [
+            ProtocolError::PruningImportError(PruningImportError::ZethoraPrivateStateMismatch(Hash::default(), "extra tag".into())),
+            ProtocolError::RuleError(RuleError::TxInIsolationValidationFailed(Hash::default(), forged)),
+            ProtocolError::RuleError(RuleError::InvalidPoW),
+        ];
+        for err in &strikes {
+            assert!(err.is_strike(), "{err} must be a strike");
+        }
+        let unreadable = TxRuleError::InvalidPrivatePayment("unknown pool version".to_string());
+        let not_strikes = [
+            ProtocolError::PruningImportError(PruningImportError::ZethoraPruningPointUnreadable(
+                Hash::default(),
+                "body missing".into(),
+            )),
+            ProtocolError::RuleError(RuleError::TxInIsolationValidationFailed(Hash::default(), unreadable)),
+            ProtocolError::Timeout(DEFAULT_TIMEOUT),
+        ];
+        for err in &not_strikes {
+            assert!(!err.is_strike(), "{err} must not be a strike");
+        }
+        assert!(strikes[0].is_bad_private_state() && !strikes[0].is_unearned_pow());
     }
 }

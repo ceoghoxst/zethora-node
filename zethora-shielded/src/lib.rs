@@ -77,6 +77,12 @@ pub enum VerifyError {
 }
 
 /// Checks a private payment the way a node will: signatures first (cheap), then the proof (expensive).
+///
+/// Seam review pack 1 #2: the proof's public inputs do not include the transaction digest, so one valid proof can be
+/// re-signed over any number of different transactions, each costing a full proof check. Proofs that already passed
+/// are remembered by `proof_key` (the proof and every public input of the circuit), and a remembered one is not checked
+/// again. The signatures, which do cover the digest, are always checked. Only successes are remembered, so nothing an
+/// attacker sends can make a bad proof pass.
 pub fn verify_payment(bundle: &Bundle<Authorized, i64>, vk: &VerifyingKey, tx_digest: &[u8; 32]) -> Result<(), VerifyError> {
     let commitment = bundle.commitment(TxVersion::V5).map_err(|_| VerifyError::Commitment)?;
     let sighash = sighash(tx_digest, commitment.into());
@@ -87,8 +93,75 @@ pub fn verify_payment(bundle: &Bundle<Authorized, i64>, vk: &VerifyingKey, tx_di
         .binding_validating_key()
         .verify(&sighash, bundle.authorization().binding_signature())
         .map_err(|_| VerifyError::BindingSignature)?;
-    bundle.verify_proof(vk).map_err(|_| VerifyError::Proof)
+    let key = proof_key(bundle);
+    if verified_proofs().contains(&key) {
+        return Ok(());
+    }
+    PROOF_CHECKS_RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    bundle.verify_proof(vk).map_err(|_| VerifyError::Proof)?;
+    verified_proofs().insert(key);
+    Ok(())
 }
+
+/// Seam review pack 1 #2: what a proof check depends on, hashed: the proof bytes and every public input of the circuit
+/// (the anchor, the flags, and each action's value commitment, coin tag, spend key and new coin). Two payments with the
+/// same key get the same proof check result (Zethora has one circuit, so one verifying key).
+pub fn proof_key(bundle: &Bundle<Authorized, i64>) -> [u8; 32] {
+    let mut h = blake2b_simd::Params::new().hash_length(32).personal(b"ZethoraProofKey1").to_state();
+    let proof = bundle.authorization().proof().as_ref();
+    h.update(&(proof.len() as u64).to_le_bytes());
+    h.update(proof);
+    h.update(&bundle.anchor().to_bytes());
+    let flags = bundle.flags();
+    h.update(&[u8::from(flags.spends_enabled()), u8::from(flags.outputs_enabled()), u8::from(flags.cross_address_enabled())]);
+    h.update(&(bundle.actions().len() as u64).to_le_bytes());
+    for action in bundle.actions() {
+        h.update(&action.cv_net().to_bytes());
+        h.update(&action.nullifier().to_bytes());
+        h.update(&<[u8; 32]>::from(action.rk()));
+        h.update(&action.cmx().to_bytes());
+    }
+    h.finalize().as_bytes().try_into().expect("32-byte hash")
+}
+
+/// The keys of proofs that passed, most recent `VERIFIED_PROOFS_KEPT` of them.
+struct VerifiedProofs {
+    keys: std::collections::HashSet<[u8; 32]>,
+    order: std::collections::VecDeque<[u8; 32]>,
+}
+
+const VERIFIED_PROOFS_KEPT: usize = 50_000;
+
+impl VerifiedProofs {
+    fn contains(&self, key: &[u8; 32]) -> bool {
+        self.keys.contains(key)
+    }
+
+    fn insert(&mut self, key: [u8; 32]) {
+        if self.keys.insert(key) {
+            self.order.push_back(key);
+            if self.order.len() > VERIFIED_PROOFS_KEPT
+                && let Some(oldest) = self.order.pop_front()
+            {
+                self.keys.remove(&oldest);
+            }
+        }
+    }
+}
+
+fn verified_proofs() -> std::sync::MutexGuard<'static, VerifiedProofs> {
+    static VERIFIED: std::sync::OnceLock<std::sync::Mutex<VerifiedProofs>> = std::sync::OnceLock::new();
+    let lock = VERIFIED.get_or_init(|| std::sync::Mutex::new(VerifiedProofs { keys: Default::default(), order: Default::default() }));
+    // A panic elsewhere while holding the lock leaves the set itself intact (it only ever holds passed proofs)
+    lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// How many proof checks `verify_payment` has actually run (cache misses) in this process. For tests and metrics.
+pub fn proof_checks_run() -> u64 {
+    PROOF_CHECKS_RUN.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+static PROOF_CHECKS_RUN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Checks many private payments together with Orchard's batch check, which combines their proofs and signatures and is
 /// much cheaper per payment than checking them one by one. `payments` pairs each payment with the digest of the

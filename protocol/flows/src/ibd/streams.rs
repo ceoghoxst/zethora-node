@@ -377,50 +377,81 @@ pub const ZETHORA_PRIVATE_STATE_CHUNK_SIZE: usize = 4096;
 /// Zethora: after every this many private state chunks, the receiver asks for more (as with the SMT state).
 pub const ZETHORA_PRIVATE_STATE_FLOW_CONTROL_WINDOW: usize = 10;
 
-/// Zethora: how many private state items (spent coin tags and snapshots) have arrived so far.
-#[allow(clippy::arithmetic_side_effects, reason = "ARITH-SAFETY(LENGTH)")]
-fn items_received(spent: &[[u8; 32]], anchors: &[([u8; 32], u64)]) -> usize {
-    spent.len() + anchors.len()
-}
+/// Seam review P3-7: the longest a valid private coin list (note commitment tree frontier) can be: 42 + 32 x 32 bytes.
+pub const ZETHORA_MAX_NOTE_TREE_BYTES: usize = 42 + 32 * 32;
+
+/// One chunk of a downloaded private state: spent coin tags, and coin list snapshots with their blue scores.
+pub type ZethoraPrivateStateChunk = (Vec<[u8; 32]>, Vec<([u8; 32], u64)>);
 
 /// Zethora: receives the private state at the pruning point (ZTH-SPEC-006 §6.4) after a `RequestZethoraPrivateState`
 /// was sent: a header with the private coin list and the counts, then chunks of spent coin tags and coin list
-/// snapshots. Only checks the shape here; consensus checks the contents against the pruning point's fingerprint.
-pub async fn receive_zethora_private_state(
-    router: &Router,
-    incoming_route: &mut IncomingRoute,
-) -> Result<kaspa_consensus_core::api::ZethoraPrivateState, ProtocolError> {
-    use kaspa_p2p_lib::pb::RequestNextZethoraPrivateStateChunkMessage;
+/// snapshots. Only checks the shape and the limits here; consensus checks the contents against the pruning point's
+/// fingerprint. Seam review P3-3: the chunks are handed out one at a time (consensus stores each), so memory stays
+/// flat, and the announced counts are refused at once when the chain could not physically hold that many.
+pub struct ZethoraPrivateStateStream<'a, 'b> {
+    router: &'a Router,
+    incoming_route: &'b mut IncomingRoute,
+    /// The private coin list from the header
+    pub note_tree: Vec<u8>,
+    spent_count: usize,
+    anchor_count: usize,
+    spent_received: usize,
+    anchors_received: usize,
+    chunks_received: usize,
+}
 
-    let header = match timeout(DEFAULT_TIMEOUT, incoming_route.recv()).await {
-        Ok(Some(msg)) => match msg.payload {
-            Some(Payload::ZethoraPrivateStateHeader(header)) => header,
-            Some(Payload::UnexpectedPruningPoint(_)) => {
-                return Err(ProtocolError::ConsensusError(ConsensusError::UnexpectedPruningPoint));
-            }
-            _ => {
-                return Err(ProtocolError::UnexpectedMessage(
-                    stringify!(Payload::ZethoraPrivateStateHeader),
-                    msg.payload.as_ref().map(|v| v.into()),
-                ));
-            }
-        },
-        Ok(None) => return Err(ProtocolError::ConnectionClosed),
-        Err(_) => return Err(ProtocolError::Timeout(DEFAULT_TIMEOUT)),
-    };
-    let spent_count =
-        usize::try_from(header.spent_count).map_err(|_| ProtocolError::Other("Zethora private state: too many spent tags"))?;
-    let anchor_count =
-        usize::try_from(header.anchor_count).map_err(|_| ProtocolError::Other("Zethora private state: too many snapshots"))?;
-    let total = spent_count.checked_add(anchor_count).ok_or(ProtocolError::Other("Zethora private state: counts overflow"))?;
+impl<'a, 'b> ZethoraPrivateStateStream<'a, 'b> {
+    /// Reads the header. `max_spent` / `max_anchors`: what the pruning point's chain can physically hold.
+    pub async fn start(
+        router: &'a Router,
+        incoming_route: &'b mut IncomingRoute,
+        max_spent: u64,
+        max_anchors: u64,
+    ) -> Result<Self, ProtocolError> {
+        let header = match timeout(DEFAULT_TIMEOUT, incoming_route.recv()).await {
+            Ok(Some(msg)) => match msg.payload {
+                Some(Payload::ZethoraPrivateStateHeader(header)) => header,
+                Some(Payload::UnexpectedPruningPoint(_)) => {
+                    return Err(ProtocolError::ConsensusError(ConsensusError::UnexpectedPruningPoint));
+                }
+                _ => {
+                    return Err(ProtocolError::UnexpectedMessage(
+                        stringify!(Payload::ZethoraPrivateStateHeader),
+                        msg.payload.as_ref().map(|v| v.into()),
+                    ));
+                }
+            },
+            Ok(None) => return Err(ProtocolError::ConnectionClosed),
+            Err(_) => return Err(ProtocolError::Timeout(DEFAULT_TIMEOUT)),
+        };
+        check_private_state_header(header.note_tree.len(), header.spent_count, header.anchor_count, max_spent, max_anchors)?;
+        Ok(Self {
+            router,
+            incoming_route,
+            note_tree: header.note_tree,
+            // Checked above against limits that fit in memory addresses on every supported (64-bit) platform
+            spent_count: usize::try_from(header.spent_count)
+                .map_err(|_| ProtocolError::Other("Zethora private state: too many spent tags"))?,
+            anchor_count: usize::try_from(header.anchor_count)
+                .map_err(|_| ProtocolError::Other("Zethora private state: too many snapshots"))?,
+            spent_received: 0,
+            anchors_received: 0,
+            chunks_received: 0,
+        })
+    }
 
-    // Never trust the announced counts for memory: grow as data actually arrives
-    let mut spent: Vec<[u8; 32]> = Vec::with_capacity(spent_count.min(1 << 16));
-    let mut anchors: Vec<([u8; 32], u64)> = Vec::with_capacity(anchor_count.min(1 << 16));
-    let mut chunks_received = 0usize;
+    #[allow(clippy::arithmetic_side_effects, reason = "ARITH-SAFETY(LENGTH): counts are bounded by the checked header counts")]
+    fn all_received(&self) -> bool {
+        self.spent_received == self.spent_count && self.anchors_received == self.anchor_count
+    }
 
-    while items_received(&spent, &anchors) < total {
-        let chunk = match timeout(DEFAULT_TIMEOUT, incoming_route.recv()).await {
+    /// The next chunk, or `None` once everything announced has arrived.
+    pub async fn next(&mut self) -> Result<Option<ZethoraPrivateStateChunk>, ProtocolError> {
+        use kaspa_p2p_lib::pb::RequestNextZethoraPrivateStateChunkMessage;
+        if self.all_received() {
+            return Ok(None);
+        }
+        let chunk = match timeout(DEFAULT_TIMEOUT, self.incoming_route.recv()).await {
             Ok(Some(msg)) => match msg.payload {
                 Some(Payload::ZethoraPrivateStateChunk(chunk)) => chunk,
                 _ => {
@@ -448,28 +479,76 @@ pub async fn receive_zethora_private_state(
             return Err(ProtocolError::Other("Zethora private state: chunk is empty or too large"));
         }
         #[allow(clippy::arithmetic_side_effects, reason = "ARITH-SAFETY(LENGTH)")]
-        let (spent_after, anchors_after) = (spent.len() + tags.len(), anchors.len() + snapshots.len());
-        if spent_after > spent_count || anchors_after > anchor_count {
+        let (spent_after, anchors_after) = (self.spent_received + tags.len(), self.anchors_received + snapshots.len());
+        if spent_after > self.spent_count || anchors_after > self.anchor_count {
             return Err(ProtocolError::Other("Zethora private state: more items than announced"));
         }
-        spent.extend(tags.iter().copied());
-        anchors.extend(snapshots.iter().map(|s| {
-            let root: [u8; 32] = s[..32].try_into().expect("40-byte chunk");
-            let blue_score = u64::from_le_bytes(s[32..].try_into().expect("40-byte chunk"));
-            (root, blue_score)
-        }));
+        self.spent_received = spent_after;
+        self.anchors_received = anchors_after;
+        let spent: Vec<[u8; 32]> = tags.to_vec();
+        let anchors: Vec<([u8; 32], u64)> = snapshots
+            .iter()
+            .map(|s| {
+                let root: [u8; 32] = s[..32].try_into().expect("40-byte chunk");
+                let blue_score = u64::from_le_bytes(s[32..].try_into().expect("40-byte chunk"));
+                (root, blue_score)
+            })
+            .collect();
 
         #[allow(clippy::arithmetic_side_effects, reason = "ARITH-SAFETY(COUNTER)")]
         {
-            chunks_received += 1;
+            self.chunks_received += 1;
         }
         // Mirror the sender: ask for more after every window, unless everything has arrived
-        if items_received(&spent, &anchors) < total && chunks_received.is_multiple_of(ZETHORA_PRIVATE_STATE_FLOW_CONTROL_WINDOW) {
-            router
+        if !self.all_received() && self.chunks_received.is_multiple_of(ZETHORA_PRIVATE_STATE_FLOW_CONTROL_WINDOW) {
+            self.router
                 .enqueue(make_message!(Payload::RequestNextZethoraPrivateStateChunk, RequestNextZethoraPrivateStateChunkMessage {}))
                 .await?;
         }
+        Ok(Some((spent, anchors)))
     }
+}
 
-    Ok(kaspa_consensus_core::api::ZethoraPrivateState { note_tree: header.note_tree, spent, anchors })
+/// Seam review P3-3 / P3-7: refuses a private state header before anything else is downloaded when its coin list is
+/// longer than a valid one can be, or it announces more coin tags or snapshots than the chain can physically hold.
+pub fn check_private_state_header(
+    note_tree_len: usize,
+    spent_count: u64,
+    anchor_count: u64,
+    max_spent: u64,
+    max_anchors: u64,
+) -> Result<(), ProtocolError> {
+    if note_tree_len > ZETHORA_MAX_NOTE_TREE_BYTES {
+        return Err(ProtocolError::Other("Zethora private state: the coin list is longer than a valid one can be"));
+    }
+    if spent_count > max_spent {
+        return Err(ProtocolError::Other("Zethora private state: more spent tags announced than the chain can hold"));
+    }
+    if anchor_count > max_anchors {
+        return Err(ProtocolError::Other("Zethora private state: more snapshots announced than the chain can hold"));
+    }
+    if spent_count.checked_add(anchor_count).is_none() {
+        return Err(ProtocolError::Other("Zethora private state: counts overflow"));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod zethora_private_state_stream_tests {
+    use super::{ZETHORA_MAX_NOTE_TREE_BYTES, check_private_state_header};
+
+    /// Seam review P3-3 / P3-7: the header limits, exactly at and one past each bound.
+    #[test]
+    fn private_state_headers_over_the_limits_are_refused_at_once() {
+        // Positive control: at every limit exactly
+        assert!(check_private_state_header(ZETHORA_MAX_NOTE_TREE_BYTES, 1_000, 50, 1_000, 50).is_ok());
+        assert!(check_private_state_header(0, 0, 0, 0, 0).is_ok());
+        // One past each
+        assert!(check_private_state_header(ZETHORA_MAX_NOTE_TREE_BYTES + 1, 1_000, 50, 1_000, 50).is_err());
+        assert!(check_private_state_header(ZETHORA_MAX_NOTE_TREE_BYTES, 1_001, 50, 1_000, 50).is_err());
+        assert!(check_private_state_header(ZETHORA_MAX_NOTE_TREE_BYTES, 1_000, 51, 1_000, 50).is_err());
+        // Absurd announcements (the old code accepted anything up to u64)
+        assert!(check_private_state_header(0, u64::MAX, 0, 1_000, 50).is_err());
+        assert_eq!(ZETHORA_MAX_NOTE_TREE_BYTES, 1_066);
+    }
 }

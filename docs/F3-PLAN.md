@@ -30,8 +30,13 @@ not a bug still gets a permanent test proving it.** Every security test follows 
   known parents; strikes for unearned PoW in relay, IBD and orphan revalidation; per-IP orphan budget = 2x the block rate per 10 min, 1,200 at 1 bps; over it the peer is disconnected, not banned).
 - P5-3 table + recommendation (C = 10^13): docs/decisions/P5-3-storage-mass.md. Waiting for the CEO/VP decision.
 
+## Status update (2026-10-29)
+- F3a (PR #7), F3e (PR #8) and P4-4 (PR #9) MERGED. zethora CI green after the merges (Tests #80, #81, #84).
+- F3c (branch `f3c-sync-robustness`): all pack 3 items and pack 1 #2 #8 #9 done in code and tested locally, with
+  fail-when-removed proofs (PR description). Next: F3f, then F3d, then F3b.
+
 ## Status update (2026-10-29 PT, CTO session)
-- F3a (PR #7), F3e (PR #8), P4-4 (PR #9) merged. F3c = PR #10 (lint fixed, CI rerun; merge planned for the morning of Oct 30).
+- F3a (PR #7), F3e (PR #8), P4-4 (PR #9) merged. F3c = PR #10 MERGED (552bd06). Website PR #11 MERGED.
 - P5-3 DECIDED: C = 10^13 (CEO + VP, Oct 29); recorded in docs/decisions/P5-3-storage-mass.md.
 - F3f + F3d batched into ONE PR (branch `f3f-f3d-supply-dag`, VP: one merge in the morning).
 - Website copy: PR #11 (GitHub Pages, `site/`).

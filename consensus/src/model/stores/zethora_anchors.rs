@@ -94,6 +94,28 @@ impl DbZethoraAnchorsStore {
         }
     }
 
+    /// Seam review P3-2: drops the "anchored for good" mark from this root's record (deleting the record if nothing else
+    /// is left). Used only to clear the state of an earlier pruning-point import before a new one.
+    pub fn remove_for_good_batch(&self, batch: &mut WriteBatch, root: &[u8; 32]) -> Result<(), StoreError> {
+        let mut blocks = self.producing_blocks(root);
+        if !blocks.iter().any(|p| p.block == ANCHORED_FOR_GOOD) {
+            return Ok(());
+        }
+        blocks.retain(|p| p.block != ANCHORED_FOR_GOOD);
+        if blocks.is_empty() {
+            self.access.delete(BatchDbWriter::new(batch), Hash::from_bytes(*root))
+        } else {
+            self.access.write(BatchDbWriter::new(batch), Hash::from_bytes(*root), blocks)
+        }
+    }
+
+    /// Seam review P3-6: callers must hold a consensus session (the pruning lock's read side) or run before the
+    /// processors start, because pruning rewrites these records one block at a time (each block atomically) and
+    /// releases its lock between blocks, so a scan without a session could see some blocks pruned and others not.
+    /// Today's callers: `Consensus::zethora_private_state_at` (via a session; `get_zethora_private_state` also checks
+    /// the pruning point did not move during the scan) and `clear_zethora_for_good_records` (via a session in IBD, or
+    /// at startup).
+    ///
     /// Every coin list root ever recorded, with its producing blocks (read straight from the database).
     pub fn iter_all(&self) -> impl Iterator<Item = Result<([u8; 32], Vec<AnchorProducer>), StoreError>> + '_ {
         self.access.iterator().map(|item| {
