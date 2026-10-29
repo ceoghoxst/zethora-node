@@ -183,6 +183,7 @@ impl From<&VirtualState> for VirtualStateStats {
 /// `Vec<Hash>` touch `UtxoEntry` / `UtxoDiff` / `Transaction`).
 #[derive(Deserialize)]
 #[cfg_attr(test, derive(serde::Serialize))]
+#[allow(dead_code)] // Zethora (P2-5): decoded only to recognise a Kaspa row and refuse it, so no field is read
 struct PreToccataVirtualState {
     parents: Vec<Hash>,
     ghostdag_data: GhostdagData,
