@@ -628,3 +628,19 @@ crates: compile and test locally before pushing (protoc from GitHub releases).
 P5-3 table + recommendation (C = 10^13): docs/decisions/P5-3-storage-mass.md (on the
 F3e branch), pending CEO/VP decision. VP notes: merges at most once a day, no night
 messages; P4-4 high priority for the release.
+
+2026-10-29 - CTO session (Ryzen-linked, compiled in the cloud sandbox). P5-3 DECIDED: storage mass
+C = 10^13 (CEO + VP); rule: revisit if 0.01 ZTHR becomes meaningful money, lowering it is a planned
+upgrade with an activation height (docs/decisions/P5-3-storage-mass.md). F3f + F3d batched on branch
+f3f-f3d-supply-dag: P5-1 dense checkpoints (2^12) + read-lock lookups; P5-2/P5-5 checked sums and
+pool step; P5-3 ZETHORA_STORAGE_MASS_PARAMETER, MAX_SOMPI -> MAX_ZETS (= cap), SOMPI_PER_KASPA ->
+KASPA_SOMPI_PER_KAS; P5-4 payload length checked when building; P5-6 genesis DAA test; P5-7 leftovers
+removed, miner shows the sealed subsidy. P2-2 full coin list = acceptance rule
+(zethora_supply::private_in_order_accepts in merge loop, own txs, template); P2-5 VirtualState manual
+Default + note_tree_size, row version 2, pre-Toccata rows refused, templates refused on the placeholder
+(RuleError::ZethoraVirtualNotReady), LATEST_DB_VERSION 8 (older DBs reset). DEVNET RESET REQUIRED.
+P2-6 saturating sums; P2-7 wording + boundary test; P2-8/P2-9/P2-1 proof tests; P2-10 for-good anchor
+keeps the lowest blue score. All 13 new security tests shown failing with all protections removed
+(one mutant build). Open: P2-3 and P2-4 end-to-end pruning tests (after PR #10, same code).
+Website = GitHub Pages (site/, PR #11). The inherited Kaspa wallet/CLI still use Kaspa's 10^8 unit;
+not shipped (release zip = zethora-node + zethora-miner only); fix before shipping them.
