@@ -60,6 +60,15 @@ pub enum PruningProcessingMessage {
 }
 
 /// A processor dedicated for moving the pruning point and pruning any possible data in its past
+/// Test-only failpoint (seam review P2-3): pruning stops right before it starts on one of these blocks, as if the node
+/// had crashed there. Nothing of that block has been staged yet, so the database holds every earlier block fully pruned
+/// (one atomic batch each) and this one untouched: exactly what a crash leaves behind.
+#[cfg(test)]
+pub(crate) static ZETHORA_CRASH_BEFORE: std::sync::Mutex<Vec<Hash>> = std::sync::Mutex::new(Vec::new());
+/// Blocks at which the failpoint above stopped pruning.
+#[cfg(test)]
+pub(crate) static ZETHORA_CRASHED_AT: std::sync::Mutex<Vec<Hash>> = std::sync::Mutex::new(Vec::new());
+
 pub struct PruningProcessor {
     // Channels
     receiver: CrossbeamReceiver<PruningProcessingMessage>,
@@ -476,6 +485,11 @@ impl PruningProcessor {
             self.block_window_cache_for_past_median_time.remove(&current);
 
             if !keep_blocks.contains(&current) {
+                #[cfg(test)]
+                if ZETHORA_CRASH_BEFORE.lock().unwrap().contains(&current) {
+                    ZETHORA_CRASHED_AT.lock().unwrap().push(current);
+                    return; // the locks are released on return; nothing of this block was written
+                }
                 let mut batch = WriteBatch::default();
                 // Zethora: rewrite private coin tag records that point at this block, before its reachability is deleted
                 // (Every later query has the pruning point on its selected chain, so "chain ancestor of the pruning point"

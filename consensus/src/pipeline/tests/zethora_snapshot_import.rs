@@ -117,6 +117,29 @@ async fn pruning_point_private_state_import_end_to_end() {
     let r2_age = f.node.tc.get_header(accepting).unwrap().blue_score;
     assert!(honest.anchors.contains(&(r2, r2_age)));
 
+    // Seam review P2-4 (test P2-T4): the store also holds records P must NOT serve: a coin tag recorded for a block off
+    // P's chain (what a chain block leaves behind after a reorg) and a coin tag spent ABOVE P. What a peer serves for P
+    // stays exactly P's set (the same filter the fingerprint uses), and the import below checks it against the fingerprint.
+    let side = Hash::from_u64_word(0x51DE_51DE);
+    f.node.insert(side, vec![accepting], vec![]).await;
+    f.node.tc.zethora_insert_nullifiers(side, &[[0x0F; 32]]);
+    f.node.mine(vec![unspent.clone()]).await;
+    let above_p = f.node.mine(vec![]).await;
+    assert_eq!(f.node.accepted_count(above_p, unspent.id()), 1);
+    // Positive controls: both records really are in the store, and the newer tip serves the tag spent above P
+    let stored: Vec<[u8; 32]> = f.node.tc.zethora_nullifiers_store().iter_all().map(|r| r.unwrap().0).collect();
+    assert!(stored.contains(&[0x0F; 32]));
+    assert!(nullifiers(&unspent.payload).iter().all(|nf| stored.contains(nf)));
+    let at_tip: BTreeSet<[u8; 32]> = f.node.tc.zethora_private_state_at(f.node.tip).spent.into_iter().collect();
+    assert!(nullifiers(&unspent.payload).iter().all(|nf| at_tip.contains(nf)));
+    assert!(!at_tip.contains(&[0x0F; 32]));
+    // P still serves exactly what it served before both were added
+    let again: ZethoraPrivateState = f.node.tc.zethora_private_state_at(p);
+    assert_eq!(again.spent.iter().copied().collect::<BTreeSet<_>>(), expected_spent);
+    assert_eq!(again.anchors.iter().copied().collect::<BTreeSet<_>>(), honest.anchors.iter().copied().collect::<BTreeSet<_>>());
+    assert_eq!(again.note_tree, honest.note_tree);
+    let honest = again; // node 2 imports the copy served after the extra records exist
+
     // --- node 2: every header, P's body only, no private records ---
     let node2 = Node::new();
     let chain: Vec<Block> = f.node.inserted.lock().unwrap().clone();
