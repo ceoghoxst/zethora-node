@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+zethora-payment-layout.workspace = true
 # Zcash Orchard 0.16.0, pinned to the exact release commit benchmarked on the reference PC (Oct 3, 2026).
 # Includes the fixed circuit for CVE-2026-54496 (halo2_gadgets >= 0.5.0). MIT OR Apache-2.0.
 orchard = { git = "https://github.com/zcash/orchard", rev = "616a669df8c9a59c33d47064d3ce04b25d026b2e" }
@@ -24,3 +25,5 @@ wallet = ["dep:shardtree"]
 rand = { version = "0.10", features = ["chacha", "std", "std_rng", "sys_rng", "thread_rng"] }
 shardtree = "0.8"
 zcash_note_encryption = "0.5.1"
+# The layout test checks consensus's fixed-offset readers against the codec on real payments
+kaspa-consensus-core.workspace = true

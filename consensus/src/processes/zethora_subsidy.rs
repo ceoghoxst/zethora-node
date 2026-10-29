@@ -18,13 +18,13 @@
 //! counted at most L times, and all the drops together add up to the first reward (they telescope), so the total
 //! extra over the whole schedule is at most L x reward(0) ~ 2,824 x 0.2746 ZTHR ~ 775 ZTHR, below the 1,000 ZTHR
 //! that is never mined. On top of that the supply ledger refuses any block that would bring the total issued above
-//! 100,000,000 ZTHR (`zethora_supply::SupplyError::CapExceeded`), so the hard cap holds no matter what. (That backstop
-//! makes an over-paying block invalid, so if it ever fired the chain would stall rather than pay too much; at
-//! 1 block/sec it cannot fire.)
+//! 100,000,000 ZTHR, and the coinbase pays each merged block min(its subsidy, what is left under the cap)
+//! (`CoinbaseManager::expected_coinbase_transaction`, F2 2026-10-28), so the hard cap holds exactly no matter what and
+//! an honest block is never invalid because of it (`zethora_supply::SupplyError::CapExceeded` stays as a backstop).
 //!
-//! The schedule assumes 1 block per second (it is indexed by DAA score). The devnet runs at 1 block/sec; the
-//! testnet and mainnet parameters are still Kaspa's 10 blocks/sec and must be set to 1 block/sec before either
-//! launches, or rewards would come 10x faster (the cap would still hold).
+//! The schedule assumes 1 block per second (it is indexed by DAA score). Devnet, testnet and mainnet all run at
+//! 1 block/sec (params.rs, checked by `mainnet_and_testnet_run_at_one_block_per_second_with_anchor_depth_600`);
+//! only simnet (tests) runs at 10.
 //!
 //! In the BlockDAG, `n` is the block's DAA score (one step per block in the DAA window, ~1 per second).
 //! Remaining_n is found from a checkpoint every 2^20 scores (~12 days) plus a short walk,
@@ -32,10 +32,8 @@
 
 use std::sync::Mutex;
 
-/// 1 ZTHR = 10^10 zets.
-pub const ZETS_PER_ZTHR: u64 = 10_000_000_000;
-/// 100,000,000 ZTHR in zets.
-pub const CAP_UNITS: u64 = 100_000_000 * ZETS_PER_ZTHR;
+/// 1 ZTHR = 10^10 zets, and the 100,000,000 ZTHR hard cap in zets (defined in consensus-core, also read by the RPC).
+pub use kaspa_consensus_core::constants::{CAP_UNITS, ZETS_PER_ZTHR};
 /// Never mined; guarantees the hard cap under BlockDAG parallelism (see module docs).
 pub const SUPPLY_RESERVE: u64 = 1_000 * ZETS_PER_ZTHR;
 /// Remaining supply at genesis.

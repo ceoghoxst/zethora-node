@@ -5,6 +5,7 @@ members = [
     "zethora-miner",
     "zethora-shield",
     "zethora-shielded",
+    "zethora-shielded/layout",
     "daemon",
     "cli",
     "core",
@@ -104,6 +105,7 @@ kaspa-cli = { version = "2.1.0", path = "cli" }
 kaspa-connectionmanager = { version = "2.1.0", path = "components/connectionmanager" }
 kaspa-consensus = { version = "2.1.0", path = "consensus" }
 kaspa-consensus-core = { version = "2.1.0", path = "consensus/core" }
+zethora-payment-layout = { path = "zethora-shielded/layout" }
 kaspa-consensus-client = { version = "2.1.0", path = "consensus/client" }
 kaspa-consensus-notify = { version = "2.1.0", path = "consensus/notify" }
 kaspa-consensus-wasm = { version = "2.1.0", path = "consensus/wasm" }

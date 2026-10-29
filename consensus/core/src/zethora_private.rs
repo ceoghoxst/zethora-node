@@ -6,16 +6,19 @@
 //! payload = PRIVATE_PAYMENT_MAGIC (4 bytes) || encoded private payment
 //! ```
 //!
-//! The encoded payment format is defined in the `zethora-shielded` crate (`codec`). This module only
-//! reads the few fields consensus needs without decoding the whole payment: the action count (for mass)
-//! and the public value balance (for fees and the turnstile). Full decoding and proof checks happen in
+//! The encoded payment format is written down once, in the `zethora-payment-layout` crate, which the
+//! `zethora-shielded` codec also encodes and decodes with. This module only reads the few fields consensus needs
+//! without decoding the whole payment: the action count (for mass), the public value balance (for fees and the
+//! turnstile), the coin tags (nullifiers) and the snapshot (anchor). Full decoding and proof checks happen in
 //! transaction validation in isolation, before any of these helpers is relied on.
+
+pub use zethora_payment_layout as layout;
 
 /// Marks a transaction payload as a private payment.
 pub const PRIVATE_PAYMENT_MAGIC: [u8; 4] = *b"ZSHP";
 
-/// Bytes per action in the encoded payment (must equal `zethora_shielded::codec::ACTION_SIZE`).
-pub const ACTION_SIZE: usize = 820;
+/// Bytes per action in the encoded payment (from the shared layout; `zethora_shielded::codec::ACTION_SIZE` is the same).
+pub const ACTION_SIZE: usize = layout::ACTION_SIZE;
 
 /// Extra compute mass charged per action for checking its share of the proof (ZTH-SPEC-006 §5).
 /// About 1.85 ms per extra action on the reference PC; this price keeps a full block's proof checks
@@ -27,17 +30,21 @@ pub fn private_payment_bytes(payload: &[u8]) -> Option<&[u8]> {
     payload.strip_prefix(&PRIVATE_PAYMENT_MAGIC[..])
 }
 
-/// Number of actions declared by an encoded payment (bytes 1..3 after the pool version byte).
+/// Number of actions declared by an encoded payment (the u16 after the pool version byte).
 pub fn action_count(encoded: &[u8]) -> Option<usize> {
-    let b = encoded.get(1..3)?;
+    let b = encoded.get(layout::ACTION_COUNT_OFFSET..layout::ACTION_COUNT_OFFSET + 2)?;
     Some(u16::from_le_bytes([b[0], b[1]]) as usize)
+}
+
+/// Start of the trailer (flags, value balance, anchor, ...) of an encoded payment.
+fn trailer_offset(encoded: &[u8]) -> Option<usize> {
+    layout::trailer_offset(action_count(encoded)?)
 }
 
 /// The public value balance of an encoded payment: value leaving the private pool (positive)
 /// or entering it (negative), in zets.
 pub fn value_balance(encoded: &[u8]) -> Option<i64> {
-    let n = action_count(encoded)?;
-    let at = 1 + 2 + n.checked_mul(ACTION_SIZE)? + 1;
+    let at = trailer_offset(encoded)? + layout::VALUE_BALANCE_OFFSET;
     let b = encoded.get(at..at + 8)?;
     Some(i64::from_le_bytes(b.try_into().ok()?))
 }
@@ -68,7 +75,7 @@ pub fn nullifiers(payload: &[u8]) -> Vec<[u8; 32]> {
     let Some(n) = action_count(encoded) else { return Vec::new() };
     (0..n)
         .filter_map(|i| {
-            let at = 3 + i * ACTION_SIZE + 32; // value commitment (32), then the nullifier
+            let at = layout::action_offset(i)? + layout::NULLIFIER_OFFSET;
             encoded.get(at..at + 32).map(|b| b.try_into().expect("32 bytes"))
         })
         .collect()
@@ -99,9 +106,10 @@ pub fn private_state_anchor_element(root: &[u8; 32], blue_score: u64) -> [u8; 41
 }
 
 /// A spend must use a private coin list snapshot (anchor) produced at least this many blue blocks below the
-/// block that accepts it (ZTH-SPEC-006 §6.2). On today's devnet (one home miner, about 1 block per second) that is
-/// about 10 minutes; a reorg that deep never happens in practice, so a payment that was valid stays valid. Far inside
-/// the merge depth and finality. TODO before testnet: scale with the network's real block rate (10x at 10 blocks/s).
+/// block that accepts it (ZTH-SPEC-006 §6.2). Every network runs at 1 block per second, so that is about 10 minutes;
+/// a reorg that deep never happens in practice, so a payment that was valid stays valid. Far inside the merge depth
+/// and finality. Consensus reads `Params::anchor_depth` (600 on every network, not overridable); this constant is the
+/// default the network params are built from.
 pub const ANCHOR_DEPTH: u64 = 600;
 
 /// Orchard flags byte: bit 0 means "this payment spends private coins".
@@ -113,13 +121,12 @@ const FLAG_SPENDS_ENABLED: u8 = 0b0000_0001;
 /// checked in isolation, only to refuse stale ones before the expensive proof check.
 pub fn spend_anchor(payload: &[u8]) -> Option<[u8; 32]> {
     let encoded = private_payment_bytes(payload)?;
-    let n = action_count(encoded)?;
-    let flags_at = 3 + n.checked_mul(ACTION_SIZE)?;
-    let flags = *encoded.get(flags_at)?;
+    let trailer = trailer_offset(encoded)?;
+    let flags = *encoded.get(trailer + layout::FLAGS_OFFSET)?;
     if flags & FLAG_SPENDS_ENABLED == 0 {
         return None;
     }
-    let anchor_at = flags_at + 1 + 8; // flags, value balance, then the anchor
+    let anchor_at = trailer + layout::ANCHOR_OFFSET;
     encoded.get(anchor_at..anchor_at + 32).map(|b| b.try_into().expect("32 bytes"))
 }
 

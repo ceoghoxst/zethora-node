@@ -91,3 +91,17 @@ price. Mine because you want to help test it.
 Take a screenshot and open an issue at
 github.com/ceoghoxst/zethora-node/issues. If the app says the node or miner
 keeps stopping, attach node-crash.log or miner-crash.log from the folder.
+
+**The node stopped and says "this node's private payment records are incomplete". What now?**
+Your node's own database is damaged, most likely by a disk problem or a
+crash while it was saving. The network is fine, and restarting alone will
+not fix it. Start the node once with --reset-db: it deletes the node's
+database and downloads the chain again. Close Zethora, open the Zethora
+folder, type cmd in the folder's address bar, press Enter, and run:
+
+    zethora-node.exe --testnet --utxoindex --reset-db --yes
+
+When it is downloading blocks again, close that window and start Zethora as
+usual. (Building from source? Add `--reset-db --yes` to your kaspad
+command.) Your miner key file is not touched, and your coins are recorded on
+the chain, so they are back once the node has caught up.

@@ -787,6 +787,23 @@ mod tests {
     }
 
     #[test]
+    fn mainnet_and_testnet_run_at_one_block_per_second_with_anchor_depth_600() {
+        // The reward divisor (zethora_subsidy::D) and the snapshot depth both assume 1 block per second
+        for params in [&MAINNET_PARAMS, &TESTNET_PARAMS] {
+            assert_eq!(params.blockrate.target_time_per_block, 1_000, "{}", params.net);
+            let one_bps = serde_json::to_value(BlockrateParams::new::<1>()).unwrap();
+            assert_eq!(serde_json::to_value(&params.blockrate).unwrap(), one_bps, "{}", params.net);
+            assert_eq!(params.anchor_depth, 600, "{}", params.net);
+        }
+        // Control: a 10 blocks/sec network is told apart
+        assert_ne!(
+            serde_json::to_value(BlockrateParams::new::<10>()).unwrap(),
+            serde_json::to_value(BlockrateParams::new::<1>()).unwrap()
+        );
+        assert_eq!(BlockrateParams::new::<10>().target_time_per_block, 100);
+    }
+
+    #[test]
     fn override_params_cannot_change_anchor_depth() {
         let err = serde_json::from_str::<OverrideParams>(r#"{"anchor_depth":10}"#).unwrap_err();
         assert!(err.to_string().contains("unknown field `anchor_depth`"), "{err}");

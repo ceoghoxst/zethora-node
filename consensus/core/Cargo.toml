@@ -47,6 +47,7 @@ workflow-core.workspace = true
 workflow-log.workspace = true
 workflow-serializer.workspace = true
 workflow-wasm.workspace = true
+zethora-payment-layout.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true

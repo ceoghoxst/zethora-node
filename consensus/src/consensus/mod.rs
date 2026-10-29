@@ -404,6 +404,23 @@ impl Consensus {
         self.body_tips_store.read().get().unwrap().read().clone()
     }
 
+    /// Zethora: the private state as of chain block `block` (its coin list, and every coin tag spent and every snapshot
+    /// produced on its chain), as a peer joining from `block` downloads it (ZTH-SPEC-006 §6.4).
+    pub(crate) fn zethora_private_state_at(&self, block: Hash) -> ConsensusResult<kaspa_consensus_core::api::ZethoraPrivateState> {
+        use crate::model::stores::zethora_note_trees::ZethoraNoteTreesStoreReader;
+        let note_tree = self.zethora_note_trees_store.get(block).map_err(|e| {
+            ConsensusError::GeneralOwned(format!("Zethora: the private coin list of pruning point {block} is missing: {e}"))
+        })?;
+        let reachability = &self.services.reachability_service;
+        let (spent, anchors) = crate::processes::zethora_private_state::private_state_as_of(
+            self.zethora_nullifiers_store.iter_all().map(|r| r.map_err(|e| e.to_string())),
+            self.zethora_anchors_store.iter_all().map(|r| r.map_err(|e| e.to_string())),
+            |b| reachability.try_is_chain_ancestor_of(b, block).map_err(|e| format!("block {b}: {e}")),
+        )
+        .map_err(|e| ConsensusError::GeneralOwned(format!("Zethora: reading the private state failed: {e}")))?;
+        Ok(kaspa_consensus_core::api::ZethoraPrivateState { note_tree: note_tree.to_bytes(), spent, anchors })
+    }
+
     pub fn block_status(&self, hash: Hash) -> BlockStatus {
         self.statuses_store.read().get(hash).unwrap()
     }
@@ -1159,27 +1176,15 @@ impl ConsensusApi for Consensus {
         &self,
         expected_pruning_point: Hash,
     ) -> ConsensusResult<kaspa_consensus_core::api::ZethoraPrivateState> {
-        use crate::model::stores::zethora_note_trees::ZethoraNoteTreesStoreReader;
         // The caller holds a consensus session, so pruning (which rewrites these records) cannot run meanwhile
         if self.pruning_point_store.read().pruning_point().unwrap() != expected_pruning_point {
             return Err(ConsensusError::UnexpectedPruningPoint);
         }
-        let note_tree = self.zethora_note_trees_store.get(expected_pruning_point).map_err(|e| {
-            ConsensusError::GeneralOwned(format!(
-                "Zethora: the private coin list of pruning point {expected_pruning_point} is missing: {e}"
-            ))
-        })?;
-        let reachability = &self.services.reachability_service;
-        let (spent, anchors) = crate::processes::zethora_private_state::private_state_as_of(
-            self.zethora_nullifiers_store.iter_all().map(|r| r.map_err(|e| e.to_string())),
-            self.zethora_anchors_store.iter_all().map(|r| r.map_err(|e| e.to_string())),
-            |block| reachability.try_is_chain_ancestor_of(block, expected_pruning_point).map_err(|e| format!("block {block}: {e}")),
-        )
-        .map_err(|e| ConsensusError::GeneralOwned(format!("Zethora: reading the private state failed: {e}")))?;
+        let state = self.zethora_private_state_at(expected_pruning_point)?;
         if self.pruning_point_store.read().pruning_point().unwrap() != expected_pruning_point {
             return Err(ConsensusError::UnexpectedPruningPoint);
         }
-        Ok(kaspa_consensus_core::api::ZethoraPrivateState { note_tree: note_tree.to_bytes(), spent, anchors })
+        Ok(state)
     }
 
     fn import_zethora_private_state(

@@ -138,16 +138,14 @@ impl VirtualStateProcessor {
     ) {
         // Zethora: start from the selected parent's private coin list (ZTH-SPEC-006 §6.1)
         let selected_parent = ctx.selected_parent();
-        ctx.note_tree = self.zethora_note_trees_store.get(selected_parent).unwrap_or_else(|e| {
-            panic!(
-                "Zethora: private coin list missing for {selected_parent} ({e}). (If this node joined from a pruning point, its private state download did not finish.) Restart with --reset-db"
-            )
-        });
-        ctx.private_state = self.zethora_private_states_store.get(selected_parent).unwrap_or_else(|e| {
-            panic!(
-                "Zethora: private state fingerprint missing for {selected_parent} ({e}). (If this node joined from a pruning point, its private state download did not finish.) Restart with --reset-db"
-            )
-        });
+        ctx.note_tree = self
+            .zethora_note_trees_store
+            .get(selected_parent)
+            .unwrap_or_else(|e| panic!("{}", missing_private_state_message("private coin list", selected_parent, &e)));
+        ctx.private_state = self
+            .zethora_private_states_store
+            .get(selected_parent)
+            .unwrap_or_else(|e| panic!("{}", missing_private_state_message("private state fingerprint", selected_parent, &e)));
 
         // Zethora: the private pool's balance before this mergeset, as the selected parent sealed it (ZTH-SPEC-006 §7.1)
         ctx.shielded_balance = self.pool_state_of(selected_parent).shielded_balance;
@@ -486,6 +484,20 @@ impl VirtualStateProcessor {
             )));
         }
         Ok(())
+    }
+
+    /// Zethora: the turnstile at mempool admission (ZTH-SPEC-006 §7.1), the same rule the block template applies: a
+    /// private payment may not take more out of the private pool than `pool_left`, the pool's public balance after the
+    /// virtual's mergeset. Value it brings in is not counted. Such a payment could never be accepted on top of the
+    /// current chain, so keeping it would only waste mempool space and template slots. Chain-dependent: never a ban.
+    pub(crate) fn check_private_payment_fits_pool(&self, tx: &Transaction, pool_left: u64) -> TxResult<()> {
+        match zethora_private::pool_flows(&tx.payload) {
+            Ok(Some((_, value_out))) if value_out > pool_left => Err(TxRuleError::InvalidPrivatePayment(format!(
+                "would take {value_out} zets out of the private pool, which holds {pool_left}"
+            ))),
+            // An unreadable value balance is refused by the in-isolation checks
+            _ => Ok(()),
+        }
     }
 
     /// Zethora: the fee pool state recorded in a block's coinbase (ZTH-SPEC-008).
@@ -871,6 +883,20 @@ impl VirtualStateProcessor {
     }
 }
 
+/// Zethora: what the node says, in plain words, when a chain block's private payment record is missing from its
+/// database (F2 item 5). Every normal path writes these records together with the block's other state, and a pruning
+/// point sync downloads them before anything needs them, so this means a damaged database (or a bug). The node stops:
+/// a plain restart would hit the same missing record again, while --reset-db rebuilds the database from the network.
+pub(crate) fn missing_private_state_message(record: &str, block: Hash, error: &impl std::fmt::Display) -> String {
+    format!(
+        "Zethora node stopped: this node's private payment records are incomplete (the {record} of block {block} is \
+         missing: {error}). This usually means the node's database was damaged, for example by a disk problem or a \
+         crash while it was saving. Restarting alone will not fix it. To fix it, start the node again with --reset-db \
+         (add --yes to skip the question): it deletes this node's database and downloads the chain again. Your miner \
+         key file is not touched, and your coins are recorded on the chain, so they are back once the node has caught up."
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use itertools::Itertools;
@@ -926,5 +952,22 @@ mod tests {
             // Data was originally sorted, so we check if they remain sorted after filtering
             assert!(prev < curr, "expected {} < {} if original sort was preserved", prev, curr);
         });
+    }
+
+    #[test]
+    fn missing_private_state_message_is_plain_english() {
+        let block = kaspa_hashes::Hash::from_u64_word(7);
+        let message = super::missing_private_state_message("private coin list", block, &"key not found");
+        assert_eq!(
+            message,
+            format!(
+                "Zethora node stopped: this node's private payment records are incomplete (the private coin list of block \
+                 {block} is missing: key not found). This usually means the node's database was damaged, for example by a \
+                 disk problem or a crash while it was saving. Restarting alone will not fix it. To fix it, start the node \
+                 again with --reset-db (add --yes to skip the question): it deletes this node's database and downloads the \
+                 chain again. Your miner key file is not touched, and your coins are recorded on the chain, so they are \
+                 back once the node has caught up."
+            )
+        );
     }
 }

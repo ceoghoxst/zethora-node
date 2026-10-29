@@ -1280,8 +1280,9 @@ impl VirtualStateProcessor {
         Ok(())
     }
 
-    /// Zethora (ZTH-SPEC-006 §8.1): the cheap private payment checks, coin tags unspent and coin list snapshot matured.
-    /// Run before the expensive proof check, so a replayed or stale payment never costs a proof check.
+    /// Zethora (ZTH-SPEC-006 §8.1): the cheap private payment checks, coin tags unspent, coin list snapshot matured and
+    /// the turnstile (§7.1: no more out of the private pool than it holds). Run before the expensive proof check, so a
+    /// replayed, stale or overdrawing payment never costs a proof check.
     /// Takes the virtual lock only briefly. `Ok` for ordinary transactions.
     fn private_precheck(&self, txs: &[MutableTransaction]) -> Vec<TxResult<()>> {
         // Only payments declaring a sane action count are prechecked (bounds the store lookups); the in-isolation
@@ -1298,9 +1299,12 @@ impl VirtualStateProcessor {
         let virtual_state = virtual_read.state.get().unwrap();
         let sp = virtual_state.ghostdag_data.selected_parent;
         let pending: std::collections::HashSet<[u8; 32]> = virtual_state.mergeset_nullifiers.iter().copied().collect();
+        let pool_left = self.virtual_shielded_balance(&virtual_state);
         txs.iter()
             .map(|mtx| match prechecked(mtx) {
-                true => self.check_private_payment_in_context(&mtx.tx, sp, &pending),
+                true => self
+                    .check_private_payment_in_context(&mtx.tx, sp, &pending)
+                    .and_then(|_| self.check_private_payment_fits_pool(&mtx.tx, pool_left)),
                 false => Ok(()),
             })
             .collect()
@@ -1332,7 +1336,8 @@ impl VirtualStateProcessor {
         })?;
         // Zethora: check again against the current state (it may have moved on since the precheck)
         let pending: std::collections::HashSet<[u8; 32]> = virtual_state.mergeset_nullifiers.iter().copied().collect();
-        self.check_private_payment_in_context(&mutable_tx.tx, sp, &pending)
+        self.check_private_payment_in_context(&mutable_tx.tx, sp, &pending)?;
+        self.check_private_payment_fits_pool(&mutable_tx.tx, self.virtual_shielded_balance(&virtual_state))
     }
 
     pub fn validate_mempool_transactions_in_parallel(
@@ -1358,6 +1363,7 @@ impl VirtualStateProcessor {
         let virtual_past_median_time = virtual_state.past_median_time;
         let virtual_sp = virtual_state.ghostdag_data.selected_parent;
         let pending: std::collections::HashSet<[u8; 32]> = virtual_state.mergeset_nullifiers.iter().copied().collect();
+        let pool_left = self.virtual_shielded_balance(&virtual_state);
         self.thread_pool.install(|| {
             mutable_txs.par_iter_mut().zip(results.par_iter_mut()).for_each(|(mtx, result)| {
                 if result.is_ok() {
@@ -1370,9 +1376,11 @@ impl VirtualStateProcessor {
                             args.get(&mtx.id()),
                             virtual_sp,
                         )
-                        // Zethora: refuse private payments whose coin tags are already spent (§6.3) or whose anchor is
-                        // not matured (§6.2), against the current state
-                        .and_then(|_| self.check_private_payment_in_context(&mtx.tx, virtual_sp, &pending));
+                        // Zethora: refuse private payments whose coin tags are already spent (§6.3), whose anchor is
+                        // not matured (§6.2) or that take more out of the private pool than it holds (§7.1), against
+                        // the current state
+                        .and_then(|_| self.check_private_payment_in_context(&mtx.tx, virtual_sp, &pending))
+                        .and_then(|_| self.check_private_payment_fits_pool(&mtx.tx, pool_left));
                 }
             })
         });

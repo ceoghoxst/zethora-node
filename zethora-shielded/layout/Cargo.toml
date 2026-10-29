@@ -1,0 +1,8 @@
+[package]
+name = "zethora-payment-layout"
+description = "Byte layout of a Zethora private payment (ZTH-SPEC-006 §7.4): the one place consensus and the codec read their offsets from."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

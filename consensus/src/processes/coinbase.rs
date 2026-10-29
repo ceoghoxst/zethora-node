@@ -12,7 +12,7 @@ use crate::{
     model::stores::ghostdag::GhostdagData,
     processes::{
         zethora_fees,
-        zethora_subsidy::ZethoraSubsidy,
+        zethora_subsidy::{CAP_UNITS, ZethoraSubsidy},
         zethora_supply::{self, BlockFlows},
     },
 };
@@ -95,13 +95,25 @@ impl CoinbaseManager {
         let mut issued = 0u64;
         let mut unpaid = 0u64;
 
+        // Zethora hard cap clamp (ZTH-SPEC-001 §5, CEO decision 2026-10-28): each merged block is paid
+        // min(its subsidy, what is left under the cap), in mergeset order (blues, then reds). Total issued then reaches
+        // CAP_UNITS exactly and never passes it, so the CapExceeded backstop in ledger_step can't fire for an honest
+        // block and the chain never stalls at the cap. Tips and fee pool payouts are not new zets and are never clamped.
+        let mut cap_room = CAP_UNITS.saturating_sub(parent_pool.total_issued);
+        let mut paid_subsidy = |claimed: u64| -> u64 {
+            let paid = claimed.min(cap_room);
+            cap_room -= paid;
+            paid
+        };
+
         // Add an output for each mergeset blue block (∩ DAA window), paying to the script reported by the block.
         // Note that combinatorically it is nearly impossible for a blue block to be non-DAA
         for blue in ghostdag_data.mergeset_blues.iter().filter(|h| !mergeset_non_daa.contains(h)) {
             let reward_data = mergeset_rewards.get(blue).unwrap();
-            issued += reward_data.subsidy;
-            if reward_data.subsidy + reward_data.tips() > 0 {
-                outputs.push(TransactionOutput::new(reward_data.subsidy + reward_data.tips(), reward_data.script_public_key.clone()));
+            let subsidy = paid_subsidy(reward_data.subsidy);
+            issued += subsidy;
+            if subsidy + reward_data.tips() > 0 {
+                outputs.push(TransactionOutput::new(subsidy + reward_data.tips(), reward_data.script_public_key.clone()));
             }
         }
 
@@ -120,8 +132,9 @@ impl CoinbaseManager {
             if mergeset_non_daa.contains(red) {
                 red_reward += reward_data.tips();
             } else {
-                red_reward += reward_data.subsidy + reward_data.tips();
-                issued += reward_data.subsidy;
+                let subsidy = paid_subsidy(reward_data.subsidy);
+                red_reward += subsidy + reward_data.tips();
+                issued += subsidy;
             }
         }
 
@@ -358,6 +371,121 @@ mod tests {
             .unwrap();
 
         assert_eq!(tx.tx.version, constants::TX_VERSION_TOCCATA);
+    }
+
+    /// One chain block merging `merged` (blue, (subsidy claimed, tips)) and `reds`, built by the same function the
+    /// template builder and the coinbase check use. Returns the coinbase outputs' values and the new ledger.
+    fn cap_block(
+        cbm: &CoinbaseManager,
+        parent: PoolState,
+        blues: &[(u64, u64)],
+        reds: &[(u64, u64)],
+    ) -> Result<(Vec<u64>, PoolState), CoinbaseError> {
+        use kaspa_consensus_core::{BlockHashMap, Hash};
+        let miner = MinerData::new(ScriptPublicKey::new(0, scriptvec![0x51]), vec![]);
+        let mut rewards = BlockHashMap::default();
+        let mut hashes = |list: &[(u64, u64)], offset: u64| -> Vec<Hash> {
+            list.iter()
+                .enumerate()
+                .map(|(i, &(subsidy, tips))| {
+                    let h = Hash::from_u64_word(offset + i as u64);
+                    rewards.insert(h, BlockRewardData::new(subsidy, tips, 0, ScriptPublicKey::new(0, scriptvec![i as u8])));
+                    h
+                })
+                .collect()
+        };
+        let blue_hashes = hashes(blues, 1);
+        let red_hashes = hashes(reds, 1_000);
+        let ghostdag = GhostdagData::new(
+            7,
+            Default::default(),
+            blue_hashes[0],
+            std::sync::Arc::new(blue_hashes),
+            std::sync::Arc::new(red_hashes),
+            Default::default(),
+        );
+        // No transactions accepted: the visible supply changes only by what the coinbase pays (fees are tips only and
+        // come out of the merged blocks' own transactions, so count them as already spent: visible change = -tips)
+        let tips: u64 = blues.iter().chain(reds).map(|&(_, t)| t).sum();
+        let template = cbm.expected_coinbase_transaction(
+            100,
+            miner,
+            &ghostdag,
+            &rewards,
+            &Default::default(),
+            parent,
+            -(tips as i128),
+            [0; 32],
+            [0; 32],
+        )?;
+        let ledger = cbm.deserialize_coinbase_payload(&template.tx.payload).unwrap().pool;
+        Ok((template.tx.outputs.iter().map(|o| o.value).collect(), ledger))
+    }
+
+    /// A balanced ledger with `left` zets still to be issued under the cap.
+    fn ledger_below_cap(left: u64) -> PoolState {
+        PoolState { total_issued: CAP_UNITS - left, transparent_supply: CAP_UNITS - left, ..Default::default() }
+    }
+
+    #[test]
+    fn subsidy_is_clamped_to_reach_the_cap_exactly() {
+        let cbm = create_manager(&MAINNET_PARAMS);
+
+        // Positive control: far below the cap nothing is clamped; each merged block gets its full subsidy + tips
+        let (outs, ledger) = cap_block(&cbm, ledger_below_cap(1_000_000), &[(300, 5), (200, 0)], &[]).unwrap();
+        assert_eq!(outs, vec![305, 200]);
+        assert_eq!(ledger.total_issued, CAP_UNITS - 1_000_000 + 500);
+
+        // 250 zets left: the first blue (in mergeset order) gets 200 of its 300 and keeps its tips, the second blue gets
+        // 50 of 200, the red gets 0 of 100 but keeps its tips (paid to the merging miner). Issued lands exactly on the cap.
+        let (outs, at_cap) = cap_block(&cbm, ledger_below_cap(250), &[(200, 7), (200, 0)], &[(100, 3)]).unwrap();
+        assert_eq!(outs, vec![207, 50, 3]);
+        assert_eq!(at_cap.total_issued, CAP_UNITS);
+        assert_eq!(zethora_supply::check_balanced(&at_cap), Ok(()));
+
+        // The next block at the cap pays 0 subsidy (tips still paid), is valid, and issued stays exactly at the cap
+        let (outs, next) = cap_block(&cbm, at_cap, &[(2_745_536_136, 11)], &[]).unwrap();
+        assert_eq!(outs, vec![11]);
+        assert_eq!(next.total_issued, CAP_UNITS);
+        // A block whose merged blocks have no tips pays nothing at all (no outputs) and is still valid
+        let (outs, next) = cap_block(&cbm, next, &[(2_745_536_136, 0), (2_745_536_136, 0)], &[(9, 0)]).unwrap();
+        assert_eq!(outs, Vec::<u64>::new());
+        assert_eq!(next.total_issued, CAP_UNITS);
+
+        // The chain continues past the cap: 100 more blocks, issued never moves
+        let mut ledger = next;
+        for i in 0..100u64 {
+            let (outs, l) = cap_block(&cbm, ledger, &[(1_000 + i, i)], &[]).unwrap();
+            assert_eq!(outs, if i == 0 { vec![] } else { vec![i] });
+            assert_eq!(l.total_issued, CAP_UNITS);
+            ledger = l;
+        }
+    }
+
+    #[test]
+    fn a_coinbase_claiming_more_than_the_clamp_is_refused() {
+        let cbm = create_manager(&MAINNET_PARAMS);
+        // 50 zets left; the merged block claims 300
+        let parent = ledger_below_cap(50);
+        let (outs, ledger) = cap_block(&cbm, parent, &[(300, 0)], &[]).unwrap();
+        assert_eq!(outs, vec![50]);
+        assert_eq!(ledger.total_issued, CAP_UNITS);
+
+        // A miner's coinbase paying the unclamped 300 is not the expected coinbase (verify_coinbase_transaction
+        // compares hashes and returns BadCoinbaseTransaction), and its ledger is refused by the CapExceeded backstop
+        let unclamped = BlockFlows { issued: 300, coinbase_out: 300, ..Default::default() };
+        assert_eq!(
+            zethora_supply::ledger_step(parent, parent, unclamped),
+            Err(zethora_supply::SupplyError::CapExceeded { issued: CAP_UNITS + 250 })
+        );
+        // ... one zet over the clamp is refused too, exactly the clamp is accepted
+        let one_over = BlockFlows { issued: 51, coinbase_out: 51, ..Default::default() };
+        assert_eq!(
+            zethora_supply::ledger_step(parent, parent, one_over),
+            Err(zethora_supply::SupplyError::CapExceeded { issued: CAP_UNITS + 1 })
+        );
+        let exact = BlockFlows { issued: 50, coinbase_out: 50, ..Default::default() };
+        assert_eq!(zethora_supply::ledger_step(parent, parent, exact).unwrap().total_issued, CAP_UNITS);
     }
 
     fn create_manager(params: &Params) -> CoinbaseManager {

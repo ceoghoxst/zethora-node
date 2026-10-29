@@ -541,6 +541,7 @@ Nothing ships that a stranger can't verify, and nothing in the user experience m
 
 ## Standing rule: no surprise chain splits (threat model T11)
 Any change to consensus rules ships with a fixed activation height (or DAA score) announced before the release, so old and new nodes agree until that point. Never ship a consensus change that activates immediately on a live network. Test old-vs-new behaviour around the activation point before release.
+Clarification (CTO, 2026-10-28): T11 applies once a public network is live. Before the public testnet launches there is no live network to split, so consensus changes (F1, F2, the testnet privacy switch) take effect from the public testnet genesis. PR #3 decision: F1 accepted as is (option a).
 
 ## Standing rule: pre-testnet hardening
 Every threat-model item that can be fixed or tested in code (docs/THREAT-MODEL.md) is done before public testnet opens, not deferred to mainnet. Exceptions only: items that need an outside party (ZK review, audit) or a live network to prove.
@@ -565,3 +566,39 @@ as matured (TestConsensus::zethora_insert_anchor_for_good). Each new
 test shown failing with its check removed (PR description). Written by
 a Claude Code cloud session; needs CTO review before merge (standing
 rule). Private payments stay OFF on testnet/mainnet (G11 unchanged).
+
+2026-10-28 - F2 pre-testnet hardening (branch f2-hardening, PR open, NOT
+merged, PENDING CTO REVIEW). One commit per item. (1) New crate
+zethora-payment-layout (zethora-shielded/layout) = the only place the
+private payment byte offsets live; consensus readers and the codec both
+use it; test zethora-shielded/tests/payment_layout.rs (real 1/2/16-action
+payments, 248 s debug). (2) Cap clamp: coinbase pays each merged block
+min(subsidy, CAP_UNITS - issued), blues then reds; CapExceeded kept as
+backstop; effective from public testnet genesis (T11 clarification).
+(3) Mempool refuses a private payment whose pool_out > virtual pool
+balance (before the proof check; never a ban). (4) IBD trace: trusted
+bodies get full isolation checks (proof); P's private state checked
+against its fingerprint/root; blocks above P get full context checks +
+F1 turnstile. No code change. (5) Missing note tree / fingerprint:
+reachable only via DB corruption or a bug; panic -> process exit; plain
+restart loops, --reset-db recovers. Automatic resync from the pruning
+point = DESIGN DECISION PENDING (not built). (6)(7)(8) new e2e tests:
+anchor reorg, pruning-point state import (tampered copies refused before
+any write), mint attacks. Finding: after a reorg, the virtual re-accepts
+an old-branch private spend once its snapshot matures on the new chain
+(same as Kaspa for any tx). (9) stale 10-bps comments fixed + params
+test. (10) cargo audit passes: 6 crates bumped in Cargo.lock;
+tracing-subscriber 0.2.25 ignored in .cargo/audit.toml (not in kaspad).
+(11) Explorer/RPC show no coinbase-ledger numbers; FOLLOW-UP: RPC
+GetCoinSupply.max_sompi still returns Kaspa's MAX_SOMPI (2.9e18) not
+CAP_UNITS (1e18). Every new test shown failing with its protection
+removed (PR). Written by a Claude Code cloud session.
+2026-10-28 - F2 CTO review (PR #4): approved pending two additions, both
+done on f2-hardening: (1) RPC GetCoinSupply max_sompi = CAP_UNITS
+(1e18 zets = 100M ZTHR), not Kaspa's MAX_SOMPI; CAP_UNITS/ZETS_PER_ZTHR
+moved to consensus-core constants (same values), test
+coin_supply_reports_the_zethora_cap. (2) Item 5 decision: KEEP the
+panic; message is now plain English (records incomplete, likely damaged
+database, restart alone won't fix it, start with --reset-db); same entry
+in docs/FAQ.md. Real-chain cap test skipped by CTO decision (the builder
+test exercises the same function consensus uses). Still NOT merged.
