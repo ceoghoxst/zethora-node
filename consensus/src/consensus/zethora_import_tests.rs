@@ -23,11 +23,7 @@ fn anchors(tc: &TestConsensus) -> BTreeMap<[u8; 32], Vec<AnchorProducer>> {
 }
 
 /// `expected` plus what a fresh node already holds (genesis produced the empty coin list snapshot).
-fn with<K: Ord, V>(base: &BTreeMap<K, V>, expected: impl IntoIterator<Item = (K, V)>) -> BTreeMap<K, V>
-where
-    K: Clone,
-    V: Clone,
-{
+fn with<K: Ord + Clone, V: Clone>(base: &BTreeMap<K, V>, expected: impl IntoIterator<Item = (K, V)>) -> BTreeMap<K, V> {
     let mut all = base.clone();
     all.extend(expected);
     all
