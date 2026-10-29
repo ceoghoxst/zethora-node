@@ -36,4 +36,13 @@ reviewed and tested before it ships.
 - FAQ: docs/FAQ.md
 - X: @ZethoraNetwork
 
-Logo and screenshots: coming before testnet launch.
+## Screenshots
+
+- `screenshots/miner-app-testnet.png`: the Windows miner app (Zethora.cmd /
+  Zethora.ps1) running on a local test network before the public testnet.
+  It shows the START MINING button, blocks found, the balance in test coins
+  (worth zero, as the app header says) and the per-block supply check
+  (`BALANCED`). Caption to use: "Zethora's Windows miner app on a pre-launch
+  test network. Test coins have no value."
+
+Logo: coming before testnet launch.
