@@ -284,11 +284,22 @@ impl HeaderProcessor {
 
     /// Runs full ordinary header validation
     fn validate_header(&self, header: &Arc<Header>) -> BlockProcessResult<HeaderProcessingContext> {
-        let block_level = self.validate_header_in_isolation(header, false)?;
-        self.validate_parent_relations(header)?;
-        let mut ctx = self.build_processing_context(header, block_level);
+        self.validate_header_in_isolation_before_pow(header, false)?;
+        if let Err(err) = self.validate_parent_relations(header) {
+            // Unknown parents: the real difficulty can't be computed yet, so the PoW is checked against the claimed bits
+            // (as before P4-1): a block with bad PoW is reported as such, and only blocks with valid PoW become orphans.
+            if matches!(err, RuleError::MissingParents(_)) {
+                self.check_pow_and_calc_block_level(header)?;
+            }
+            return Err(err);
+        }
+        // Zethora (seam review P4-1): GHOSTDAG, the pruning check and the exact difficulty and DAA score check come before
+        // the RandomZ check, so a header claiming an easy target (or a wrong DAA score) costs no RandomZ work. The level
+        // is only used when the header is committed.
+        let mut ctx = self.build_processing_context(header, 0);
         self.ghostdag(&mut ctx);
         self.pre_pow_validation(&mut ctx, header)?;
+        ctx.block_level = self.check_pow_and_calc_block_level(header)?;
 
         if let Err(e) = self.post_pow_validation(&mut ctx, header) {
             self.statuses_store.write().set(ctx.hash, StatusInvalid).unwrap();
@@ -345,6 +356,10 @@ impl HeaderProcessor {
     }
 
     fn commit_header(&self, ctx: HeaderProcessingContext, header: &Header) {
+        // Seam review P4-8: near the end of a RandomZ key epoch, prepare the next epoch's light setup in the background
+        if !self.skip_proof_of_work {
+            kaspa_pow::randomz::prepare_next_epoch(header.daa_score);
+        }
         let ghostdag_data = ctx.ghostdag_data.as_ref().unwrap();
 
         // Create a DB batch writer

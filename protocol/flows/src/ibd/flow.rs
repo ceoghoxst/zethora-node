@@ -56,9 +56,10 @@ impl Flow for IbdFlow {
 
     async fn start(&mut self) -> Result<(), ProtocolError> {
         let res = self.start_impl().await;
-        // Zethora: a block with a forged private payment gets the peer that sent it banned (ZTH-SPEC-006 §8.3)
+        // Zethora: a block with a forged private payment gets the peer that sent it banned (ZTH-SPEC-006 §8.3); a header
+        // or pruning proof with unearned proof of work is a strike (seam review P4-1, ZTH-IMPL-020). Counted once, here.
         if let Err(err) = &res {
-            self.ctx.ban_if_forged_private_payment(&self.router, err).await;
+            self.ctx.penalize_if_misbehaving(&self.router, err).await;
         }
         res
     }
@@ -233,9 +234,10 @@ impl IbdFlow {
                 // that this peer was the origin of the orphan block
                 Err(e) => {
                     warn!("Validation failed for orphan block {}: {}", hash, e);
-                    // Zethora: but the orphan's own sender is known, and gets banned for a forged private payment
+                    // Zethora: but the orphan's own sender is known: banned for a forged private payment, a strike for
+                    // unearned proof of work (seam review P4-1)
                     if let Some(ip) = sender {
-                        self.ctx.ban_ip_if_forged_private_payment(ip, &ProtocolError::RuleError(e)).await;
+                        self.ctx.penalize_ip_if_misbehaving(ip, &ProtocolError::RuleError(e)).await;
                     }
                 }
             }
@@ -426,19 +428,10 @@ impl IbdFlow {
         let consensus = self.ctx.consensus().session().await;
 
         // The proof is validated in the context of current consensus
-        // ZTH-IMPL-020: intercept the proof validation error so we can ban the peer before
-        // propagating it. ban_if_implausible_pow_epoch only fires on the RandomZ-epoch
-        // variant; other PruningImportErrors pass through unchanged.
-        let proof_result =
-            consensus.clone().spawn_blocking(move |c| c.validate_pruning_proof(&proof, &proof_metadata).map(|()| proof)).await;
-        let proof = match proof_result {
-            Ok(p) => p,
-            Err(e) => {
-                let err = ProtocolError::PruningImportError(e);
-                self.ctx.ban_if_implausible_pow_epoch(&self.router, &err).await;
-                return Err(err);
-            }
-        };
+        // ZTH-IMPL-020: an implausible-epoch proof is a strike against the peer; the error reaches `start`, which records
+        // it (once) via `penalize_if_misbehaving`.
+        let proof =
+            consensus.clone().spawn_blocking(move |c| c.validate_pruning_proof(&proof, &proof_metadata).map(|()| proof)).await?;
 
         let proof_pruning_point_header = proof[0].last().expect("was just ensured by validation");
         let proof_pruning_point = proof_pruning_point_header.hash;

@@ -377,6 +377,13 @@ impl RandomXVM {
                 let cache_ptr = cache.as_ref().map(|stash| stash.inner.cache_ptr).unwrap_or_else(ptr::null_mut);
                 let dataset_ptr = dataset.as_ref().map(|data| data.inner.dataset_ptr).unwrap_or_else(ptr::null_mut);
                 let vm = unsafe { randomx_create_vm(flags.bits, cache_ptr, dataset_ptr) };
+                // Zethora (seam review P4-3): randomx_create_vm returns null when it runs out of memory or can't make JIT
+                // pages executable. Never keep a null VM (it would crash at the first hash): report an error instead.
+                if vm.is_null() {
+                    return Err(RandomXError::CreationError(
+                        "RandomX could not create a VM (out of memory, or JIT pages could not be made executable)".to_string(),
+                    ));
+                }
                 Ok(RandomXVM { vm, flags, linked_cache: cache, linked_dataset: dataset })
             }
         }
@@ -419,12 +426,14 @@ impl RandomXVM {
         } else {
             let size_input = input.len();
             let input_ptr = input.as_ptr() as *mut c_void;
-            let arr = [0; RANDOMX_HASH_SIZE as usize];
-            let output_ptr = arr.as_ptr() as *mut c_void;
+            // Zethora (seam review P4-3): the C library writes the hash into `arr`, so it must be a mutable buffer
+            // (writing through a pointer cast from an immutable one is undefined behavior)
+            let mut arr = [0; RANDOMX_HASH_SIZE as usize];
+            let output_ptr = arr.as_mut_ptr() as *mut c_void;
             unsafe {
                 randomx_calculate_hash(self.vm, input_ptr, size_input, output_ptr);
             }
-            // if this failed, arr should still be empty
+            // if this failed, arr should still be empty (an extra sanity check only)
             if arr == [0; RANDOMX_HASH_SIZE as usize] {
                 Err(RandomXError::Other("RandomX calculated hash was empty".to_string()))
             } else {
@@ -453,8 +462,8 @@ impl RandomXVM {
         }
 
         // For multiple inputs
-        let mut output_ptr: *mut c_void = ptr::null_mut();
-        let arr = [0; RANDOMX_HASH_SIZE as usize];
+        // Zethora (seam review P4-3): mutable buffer, and the output pointer is taken fresh for every write
+        let mut arr = [0; RANDOMX_HASH_SIZE as usize];
 
         // Not len() as last iteration assigns final hash
         let iterations = input.len() + 1;
@@ -462,7 +471,7 @@ impl RandomXVM {
             if i == iterations - 1 {
                 // For last iteration
                 unsafe {
-                    randomx_calculate_hash_last(self.vm, output_ptr);
+                    randomx_calculate_hash_last(self.vm, arr.as_mut_ptr() as *mut c_void);
                 }
             } else {
                 if input[i].is_empty() {
@@ -470,14 +479,13 @@ impl RandomXVM {
                     if arr != [0; RANDOMX_HASH_SIZE as usize] {
                         // Complete what was started
                         unsafe {
-                            randomx_calculate_hash_last(self.vm, output_ptr);
+                            randomx_calculate_hash_last(self.vm, arr.as_mut_ptr() as *mut c_void);
                         }
                     }
                     return Err(RandomXError::ParameterError("input was empty".to_string()));
                 };
                 let size_input = input[i].len();
                 let input_ptr = input[i].as_ptr() as *mut c_void;
-                output_ptr = arr.as_ptr() as *mut c_void;
                 if i == 0 {
                     // For first iteration
                     unsafe {
@@ -486,7 +494,7 @@ impl RandomXVM {
                 } else {
                     unsafe {
                         // For every other iteration
-                        randomx_calculate_hash_next(self.vm, input_ptr, size_input, output_ptr);
+                        randomx_calculate_hash_next(self.vm, input_ptr, size_input, arr.as_mut_ptr() as *mut c_void);
                     }
                 }
             }

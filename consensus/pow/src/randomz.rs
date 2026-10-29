@@ -118,6 +118,31 @@ fn light_cache(epoch: u64) -> RandomXCache {
     slot.get_or_init(|| new_cache(epoch)).0.clone()
 }
 
+/// Seam review P4-8: how close to the end of an epoch (in DAA scores) the next epoch's light setup is prepared.
+pub const PREPARE_NEXT_EPOCH_LEAD: u64 = 4_096;
+
+/// Seam review P4-8: called with each new header's DAA score. Near the end of an epoch, builds the next epoch's light
+/// setup once, on a background thread, so the first block of the new epoch is not checked behind a ~2 s setup.
+/// Returns the epoch it started preparing, if it started one.
+pub fn prepare_next_epoch(daa_score: u64) -> Option<u64> {
+    static PREPARED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let next = epoch_of(daa_score).checked_add(1)?;
+    if EPOCH_LENGTH - (daa_score & (EPOCH_LENGTH - 1)) > PREPARE_NEXT_EPOCH_LEAD {
+        return None;
+    }
+    // Once per epoch (epoch 0 is never "next", so 0 means none prepared yet)
+    if PREPARED.fetch_max(next, std::sync::atomic::Ordering::Relaxed) >= next {
+        return None;
+    }
+    std::thread::Builder::new()
+        .name(format!("randomz-prepare-{next}"))
+        .spawn(move || {
+            light_cache(next);
+        })
+        .ok()?;
+    Some(next)
+}
+
 /// The kept setup of `epoch` if it is ready, without counting this as a use.
 fn kept_light_cache(epoch: u64) -> Option<RandomXCache> {
     let caches = LIGHT_CACHES.lock().unwrap();
@@ -135,20 +160,33 @@ thread_local! {
 const MEMO_CAPACITY: usize = 200_000;
 type MemoKey = (u64, [u8; POW_INPUT_LEN]);
 
-fn memo() -> &'static Mutex<HashMap<MemoKey, Uint256>> {
-    static MEMO: OnceLock<Mutex<HashMap<MemoKey, Uint256>>> = OnceLock::new();
-    MEMO.get_or_init(|| Mutex::new(HashMap::new()))
+/// Which memo a value goes to. Seam review P4-8: a pruning proof's batch (up to `MEMO_CAPACITY` headers) used to clear
+/// the one memo, wiping the values of the live blocks; batches now have their own memo, and lookups read both.
+#[derive(Clone, Copy)]
+enum Memo {
+    Live,
+    Batch,
+}
+
+fn memo(which: Memo) -> &'static Mutex<HashMap<MemoKey, Uint256>> {
+    static LIVE: OnceLock<Mutex<HashMap<MemoKey, Uint256>>> = OnceLock::new();
+    static BATCH: OnceLock<Mutex<HashMap<MemoKey, Uint256>>> = OnceLock::new();
+    match which {
+        Memo::Live => LIVE.get_or_init(|| Mutex::new(HashMap::new())),
+        Memo::Batch => BATCH.get_or_init(|| Mutex::new(HashMap::new())),
+    }
 }
 
 fn memo_get(epoch: u64, input: &[u8]) -> Option<Uint256> {
     let key: [u8; POW_INPUT_LEN] = input.try_into().ok()?;
-    memo().lock().unwrap().get(&(epoch, key)).copied()
+    let live = memo(Memo::Live).lock().unwrap().get(&(epoch, key)).copied();
+    live.or_else(|| memo(Memo::Batch).lock().unwrap().get(&(epoch, key)).copied())
 }
 
 /// Remembers a batch of values. When the batch doesn't fit, older entries are dropped first, so a batch (e.g. a whole
 /// pruning proof from `precompute_light`) stays complete for the one-by-one checks that follow it.
-fn memo_put(entries: Vec<(u64, [u8; POW_INPUT_LEN], Uint256)>) {
-    let mut memo = memo().lock().unwrap();
+fn memo_put(which: Memo, entries: Vec<(u64, [u8; POW_INPUT_LEN], Uint256)>) {
+    let mut memo = memo(which).lock().unwrap();
     if memo.len() + entries.len() > MEMO_CAPACITY {
         memo.clear();
     }
@@ -180,7 +218,7 @@ pub fn pow_value_light(epoch: u64, input: &[u8]) -> Uint256 {
     }
     let value = light_hash(epoch, input);
     if let Ok(input) = input.try_into() {
-        memo_put(vec![(epoch, input, value)]);
+        memo_put(Memo::Live, vec![(epoch, input, value)]);
     }
     value
 }
@@ -239,7 +277,7 @@ pub fn precompute_light(items: &[(u64, [u8; POW_INPUT_LEN])]) -> Vec<Uint256> {
     });
     let computed = computed.into_inner().unwrap();
     let values: HashMap<(u64, [u8; POW_INPUT_LEN]), Uint256> = computed.iter().map(|&(i, value)| (items[i], value)).collect();
-    memo_put(computed.iter().map(|&(i, value)| (items[i].0, items[i].1, value)).collect());
+    memo_put(Memo::Batch, computed.iter().map(|&(i, value)| (items[i].0, items[i].1, value)).collect());
     for (i, item) in items.iter().enumerate() {
         if results[i].is_none() {
             results[i] = values.get(item).copied();
@@ -352,6 +390,39 @@ mod tests {
         // And through the public, remembering entry point
         assert_eq!(pow_value_light(1, &input), Uint256::from_le_bytes(epoch1));
         assert_eq!(pow_value_light(1, &input), Uint256::from_le_bytes(epoch1));
+    }
+
+    /// Seam review P4-8: a batch (a pruning proof) never wipes the live blocks' remembered values.
+    #[test]
+    fn proof_batches_do_not_wipe_live_values() {
+        let live_input = pow_input(&[3u8; 32], 77, 77);
+        let live_value = Uint256::from_u64(123);
+        memo_put(Memo::Live, vec![(0, live_input, live_value)]);
+        // A full batch (forces the batch memo to clear itself first)
+        memo_put(Memo::Batch, vec![(0, pow_input(&[4u8; 32], 0, 0), Uint256::from_u64(1))]);
+        let batch: Vec<_> = (0..MEMO_CAPACITY as u64).map(|n| (1, pow_input(&[5u8; 32], 0, n), Uint256::from_u64(n))).collect();
+        memo_put(Memo::Batch, batch);
+        assert_eq!(memo_get(0, &live_input), Some(live_value));
+        assert_eq!(memo_get(1, &pow_input(&[5u8; 32], 0, 7)), Some(Uint256::from_u64(7)));
+        // Negative control: the batch memo itself did clear (the entry before the full batch is gone)
+        assert_eq!(memo_get(0, &pow_input(&[4u8; 32], 0, 0)), None);
+    }
+
+    /// Seam review P4-8: the next epoch's light setup is prepared once, only near the end of an epoch.
+    #[test]
+    fn next_epoch_setup_is_prepared_once_near_the_end_of_an_epoch() {
+        let epoch = 5;
+        let start = epoch * EPOCH_LENGTH;
+        assert_eq!(prepare_next_epoch(start), None);
+        assert_eq!(prepare_next_epoch(start + EPOCH_LENGTH - PREPARE_NEXT_EPOCH_LEAD - 1), None);
+        assert_eq!(prepare_next_epoch(start + EPOCH_LENGTH - PREPARE_NEXT_EPOCH_LEAD), Some(epoch + 1));
+        assert_eq!(prepare_next_epoch(start + EPOCH_LENGTH - 1), None, "only once");
+        // The setup becomes ready in the background
+        let t = std::time::Instant::now();
+        while kept_light_cache(epoch + 1).is_none() {
+            assert!(t.elapsed() < std::time::Duration::from_secs(120), "next epoch setup never became ready");
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
     }
 
     #[test]

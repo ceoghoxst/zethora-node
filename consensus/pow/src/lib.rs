@@ -19,13 +19,13 @@ use kaspa_math::Uint256;
 
 /// State is an intermediate data structure with pre-computed values to speed up mining.
 pub struct State {
-    /// Only read on wasm32 (Kaspa kHeavyHash fallback). Native builds use RandomZ.
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    /// Kaspa's kHeavyHash state, no longer used for Zethora PoW (RandomZ on native builds; refused on wasm32: P4-6).
+    #[allow(dead_code)]
     pub(crate) matrix: Matrix,
     pub(crate) target: Uint256,
     // PRE_POW_HASH || TIME || 32 zero byte padding; without NONCE
-    /// Only read on wasm32 (Kaspa kHeavyHash fallback). Native builds use RandomZ.
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    /// Kaspa's kHeavyHash state, no longer used for Zethora PoW (see `matrix`).
+    #[allow(dead_code)]
     pub(crate) hasher: PowHash,
     pub(crate) pre_pow_hash: [u8; 32],
     pub(crate) timestamp: u64,
@@ -45,9 +45,9 @@ impl State {
         state
     }
 
-    /// Note (Zethora): the RandomZ key epoch is 0 here; use `State::new` to check a real header (its DAA score sets the
-    /// epoch).
-    pub fn from_parts(pre_pow_hash: kaspa_hashes::Hash, timestamp: u64, target: Uint256) -> Self {
+    /// Note (Zethora): the RandomZ key epoch is 0 here, so this is crate-private (seam review P4-7): outside code must
+    /// use `State::new`, where the header's DAA score sets the epoch.
+    pub(crate) fn from_parts(pre_pow_hash: kaspa_hashes::Hash, timestamp: u64, target: Uint256) -> Self {
         // PRE_POW_HASH || TIME || 32 zero byte padding || NONCE
         let hasher = PowHash::new(pre_pow_hash, timestamp);
         let matrix = Matrix::generate(pre_pow_hash);
@@ -79,13 +79,13 @@ impl State {
         {
             randomz::pow_value_light(self.epoch, &self.pow_input(nonce))
         }
-        // Original kHeavyHash, kept only for the wasm SDK build
+        // Zethora (seam review P4-6): the wasm build has no RandomZ. It used to fall back to Kaspa's kHeavyHash, which
+        // gives answers that disagree with every Zethora node; now it reports the worst possible PoW, so a wasm caller
+        // can never believe a nonce is valid.
         #[cfg(target_arch = "wasm32")]
         {
-            // Hasher already contains PRE_POW_HASH || TIME || 32 zero byte padding; so only the NONCE is missing
-            let hash = self.hasher.clone().finalize_with_nonce(nonce);
-            let hash = self.matrix.heavy_hash(hash);
-            Uint256::from_le_bytes(hash.as_bytes())
+            let _ = nonce;
+            Uint256::MAX
         }
     }
 

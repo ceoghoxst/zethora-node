@@ -22,6 +22,19 @@ not a bug still gets a permanent test proving it.** Every security test follows 
   CI round 2 (run #63) was in progress. Next: if red, fix; if green, rebase/merge onto zethora, do the
   fail-when-removed proofs for each new test (record them in the PR description), open the PR, CTO review.
 
+## Status update (2026-10-28 21:00 PT)
+- F3a run #63 red on one test (template batch test built its over-pool payment through the mempool, which F2 now
+  refuses). Fixed; zethora merged in; CI now runs with --no-fail-fast (one run shows every failure). Run #71 pending.
+- The cloud sandbox CAN now download crates: compile and run the affected tests locally before every push.
+- F3e branch `f3e-pow-dos` (stacked on F3a): P4-1 done in code (difficulty/DAA checked before RandomZ for headers with
+  known parents; strikes for unearned PoW in relay, IBD and orphan revalidation; per-IP orphan budget = 2x the block rate per 10 min, 1,200 at 1 bps; over it the peer is disconnected, not banned).
+- P5-3 table + recommendation (C = 10^13): docs/decisions/P5-3-storage-mass.md. Waiting for the CEO/VP decision.
+
+## VP notes (2026-10-28, approved breakdown)
+- Batch CI so Deion merges PRs at most once a day. No messages at night (3 AM).
+- P5-3 table and recommendation due this week, before F3f.
+- P4-4 cross-platform RandomZ hash check (Linux x86_64, Windows, ARM must agree) is HIGH PRIORITY for the release.
+
 ## Verdicts and assignments
 
 ### Pack 1: Orchard and Kaspa transactions
