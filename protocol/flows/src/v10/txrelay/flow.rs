@@ -231,7 +231,7 @@ impl RelayTransactionsFlow {
         }
         // Zethora (ZTH-SPEC-006 §8.3): private payments cost a proof check each, so check them in small groups after the
         // ordinary transactions, and stop at the first forged one. That bounds the work a lying peer can cause to one
-        // small group before it is banned.
+        // small group before it is disconnected (and gets a strike).
         let (private, ordinary): (Vec<Transaction>, Vec<Transaction>) = transactions.into_iter().partition(|tx| {
             kaspa_consensus_core::zethora_private::private_payment_bytes(kaspa_consensus_core::zethora_private::private_payload(tx))
                 .is_some()
@@ -254,9 +254,9 @@ impl RelayTransactionsFlow {
                     && err.is_forged_private_payment()
                 {
                     // A private payment whose proof or signatures fail. Our own node checks this before relaying, so an
-                    // honest peer never sends one: ban this peer's IP and disconnect
+                    // honest peer never sends one: a strike against this peer's IP (3 ban it), and disconnect
                     let err = ProtocolError::MiningManagerError(MiningManagerError::MempoolError(err.clone()));
-                    self.ctx.ban_if_forged_private_payment(&self.router, &err).await;
+                    self.ctx.penalize_if_misbehaving(&self.router, &err).await;
                     return Err(err);
                 }
             }

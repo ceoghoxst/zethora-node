@@ -480,7 +480,15 @@ impl PruningProcessor {
                 // Zethora: rewrite private coin tag records that point at this block, before its reachability is deleted
                 // (Every later query has the pruning point on its selected chain, so "chain ancestor of the pruning point"
                 // is exactly "on every future chain".)
-                let was_on_chain = reachability_read.try_is_chain_ancestor_of(current, new_pruning_point).unwrap();
+                // Seam review P3-5: these record rewrites, the reachability deletion below and the block's other data all
+                // go into this one `batch` (committed together at the end of this block), so they are present or absent
+                // together. Reachability of a block still being pruned always exists (it is deleted in this same batch).
+                let was_on_chain = reachability_read.try_is_chain_ancestor_of(current, new_pruning_point).unwrap_or_else(|e| {
+                    panic!(
+                        "Zethora: pruning block {current}: its reachability data is missing ({e}). The database is damaged; \
+                         restart the node with --reset-db to sync again."
+                    )
+                });
                 self.zethora_nullifiers_store.prune_block_batch(&mut batch, current, was_on_chain).unwrap();
                 // Zethora: same for the coin list snapshot (anchor) this block may have produced (§6.2). Read its coin list
                 // before it is deleted below; blocks that never had UTXO state computed have none and produced no anchor.

@@ -871,8 +871,28 @@ staging selected tip ({}) is too small or negative. Aborting IBD...",
                 RequestZethoraPrivateStateMessage { pruning_point_hash: Some(pruning_point.into()) }
             ))
             .await?;
-        let state = super::receive_zethora_private_state(&self.router, &mut self.incoming_route).await?;
-        consensus.clone().spawn_blocking(move |c| c.import_zethora_private_state(pruning_point, state)).await?;
+        // Seam review P3-3: refuse impossible announcements at the header, and store chunk by chunk (flat memory)
+        let (max_spent, max_anchors) =
+            consensus.clone().spawn_blocking(move |c| c.zethora_private_state_limits(pruning_point)).await?;
+        let mut stream =
+            super::ZethoraPrivateStateStream::start(&self.router, &mut self.incoming_route, max_spent, max_anchors).await?;
+        consensus.clone().spawn_blocking(|c| c.begin_zethora_private_state_import()).await;
+        let mut fingerprint = MuHash::new();
+        while let Some((spent, anchors)) = stream.next().await? {
+            fingerprint = consensus
+                .clone()
+                .spawn_blocking(move |c| {
+                    c.append_imported_zethora_private_state(&spent, &anchors, &mut fingerprint);
+                    fingerprint
+                })
+                .await;
+        }
+        let note_tree = std::mem::take(&mut stream.note_tree);
+        drop(stream);
+        consensus
+            .clone()
+            .spawn_blocking(move |c| c.finish_zethora_private_state_import(pruning_point, &note_tree, fingerprint))
+            .await?;
         Ok(())
     }
 
