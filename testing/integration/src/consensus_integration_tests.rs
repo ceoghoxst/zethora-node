@@ -27,7 +27,7 @@ use kaspa_consensus_core::block::{Block, MutableBlock};
 use kaspa_consensus_core::blockhash::{self, new_unique};
 use kaspa_consensus_core::blockstatus::BlockStatus;
 use kaspa_consensus_core::coinbase::MinerData;
-use kaspa_consensus_core::constants::{BLOCK_VERSION, SOMPI_PER_KASPA, TRANSIENT_BYTE_TO_MASS_FACTOR};
+use kaspa_consensus_core::constants::{BLOCK_VERSION, KASPA_SOMPI_PER_KAS, TRANSIENT_BYTE_TO_MASS_FACTOR};
 use kaspa_consensus_core::errors::block::{BlockProcessResult, RuleError};
 use kaspa_consensus_core::errors::tx::TxRuleError;
 use kaspa_consensus_core::hashing;
@@ -1553,7 +1553,7 @@ async fn seqcommit_sp_context_threshold_edge_test() {
     let initial_utxo = (
         TransactionOutpoint::new(100.into(), 0),
         UtxoEntry {
-            amount: SOMPI_PER_KASPA,
+            amount: KASPA_SOMPI_PER_KAS,
             script_public_key: seqcommit_spk.clone(),
             block_daa_score: 0,
             is_coinbase: false,
@@ -1726,7 +1726,7 @@ async fn kip10_test() {
     let initial_utxo_collection = [(
         TransactionOutpoint::new(1.into(), 0),
         UtxoEntry {
-            amount: SOMPI_PER_KASPA,
+            amount: KASPA_SOMPI_PER_KAS,
             script_public_key: spk.clone(),
             block_daa_score: 0,
             is_coinbase: false,
@@ -2032,7 +2032,7 @@ async fn payload_for_native_tx_test() {
     let initial_utxo_collection = [(
         TransactionOutpoint::new(1.into(), 0),
         UtxoEntry {
-            amount: SOMPI_PER_KASPA,
+            amount: KASPA_SOMPI_PER_KAS,
             script_public_key: ScriptPublicKey::from_vec(0, vec![OpTrue]),
             block_daa_score: 0,
             is_coinbase: false,
@@ -2112,7 +2112,7 @@ fn build_p2pk_block(
             (
                 TransactionOutpoint::new((i as u64 + 1).into(), 0),
                 UtxoEntry {
-                    amount: SOMPI_PER_KASPA / 10,
+                    amount: KASPA_SOMPI_PER_KAS / 10,
                     script_public_key: p2pk_script.clone(),
                     block_daa_score: 0,
                     is_coinbase: false,
@@ -2212,7 +2212,7 @@ fn init_stark_fixture() -> (TestConsensus, Vec<std::thread::JoinHandle<()>>, Has
             0,
         );
         let tx = Transaction::new(TX_VERSION_TOCCATA, vec![input.clone()], vec![], 0, Default::default(), 0, vec![]);
-        let utxo_entry = UtxoEntry::new(10 * SOMPI_PER_KASPA, stark_spk.clone(), 0, false, None);
+        let utxo_entry = UtxoEntry::new(10 * KASPA_SOMPI_PER_KAS, stark_spk.clone(), 0, false, None);
         let populated_tx = PopulatedTransaction::new(&tx, vec![utxo_entry.clone()]);
         let sig_cache = Cache::new(10_000);
         let reused_values = SigHashReusedValuesUnsync::new();
@@ -2235,7 +2235,7 @@ fn init_stark_fixture() -> (TestConsensus, Vec<std::thread::JoinHandle<()>>, Has
             (
                 TransactionOutpoint::new((i as u64 + 1).into(), 0),
                 UtxoEntry {
-                    amount: 10 * SOMPI_PER_KASPA,
+                    amount: 10 * KASPA_SOMPI_PER_KAS,
                     script_public_key: stark_spk.clone(),
                     block_daa_score: 0,
                     is_coinbase: false,
@@ -2404,7 +2404,7 @@ async fn runtime_sig_op_counting_test() {
     let initial_utxo_collection = [(
         TransactionOutpoint::new(1.into(), 0),
         UtxoEntry {
-            amount: SOMPI_PER_KASPA,
+            amount: KASPA_SOMPI_PER_KAS,
             script_public_key: script_pub_key.clone(),
             block_daa_score: 0,
             is_coinbase: false,
@@ -2511,7 +2511,7 @@ async fn sighash_type_commitment_test() {
         initial_utxo_collection.push((
             TransactionOutpoint::new((i + 1).into(), 0),
             UtxoEntry {
-                amount: SOMPI_PER_KASPA / 10,
+                amount: KASPA_SOMPI_PER_KAS * 10, // Zethora P5-3: 0.1 ZTHR (0.001 ZTHR is dust at C = 10^13)
                 script_public_key: p2sh_script.clone(),
                 block_daa_score: 0,
                 is_coinbase: false,
@@ -2523,7 +2523,7 @@ async fn sighash_type_commitment_test() {
         initial_utxo_collection.push((
             TransactionOutpoint::new((i + 7).into(), 0),
             UtxoEntry {
-                amount: SOMPI_PER_KASPA / 20,
+                amount: KASPA_SOMPI_PER_KAS * 5, // Zethora P5-3: 0.05 ZTHR
                 script_public_key: op_true_spk.clone(),
                 block_daa_score: 0,
                 is_coinbase: false,
@@ -2610,7 +2610,7 @@ async fn sighash_type_commitment_test() {
     let mut tx_single = Transaction::new(
         0,
         vec![TransactionInput::new(initial_utxo_collection[2].0, vec![], 0, 1)],
-        vec![TransactionOutput::new(initial_utxo_collection[2].1.amount - 5_500_000, op_true_spk.clone())],
+        vec![TransactionOutput::new(initial_utxo_collection[2].1.amount - 550_000_000, op_true_spk.clone())],
         0,
         SUBNETWORK_ID_NATIVE,
         0,
@@ -2618,7 +2618,7 @@ async fn sighash_type_commitment_test() {
     );
     let sig_script = make_sig_script(&tx_single, &initial_utxo_collection[2].1, SIG_HASH_SINGLE);
     tx_single.inputs[0].signature_script = sig_script;
-    tx_single.outputs.push(TransactionOutput::new(5_000_000, op_true_spk.clone()));
+    tx_single.outputs.push(TransactionOutput::new(500_000_000, op_true_spk.clone()));
     tx_single.finalize();
     let mut tx_single = MutableTransaction::from_tx(tx_single);
     let _ = consensus.validate_mempool_transaction(&mut tx_single, &TransactionValidationArgs::default());
@@ -2680,7 +2680,7 @@ async fn sighash_type_commitment_test() {
     let mut tx_single_acp = Transaction::new(
         0,
         vec![TransactionInput::new(initial_utxo_collection[5].0, vec![], 0, 1)],
-        vec![TransactionOutput::new(initial_utxo_collection[5].1.amount - 5_500_000, op_true_spk.clone())],
+        vec![TransactionOutput::new(initial_utxo_collection[5].1.amount - 550_000_000, op_true_spk.clone())],
         0,
         SUBNETWORK_ID_NATIVE,
         0,
@@ -2689,7 +2689,7 @@ async fn sighash_type_commitment_test() {
     let sig_script = make_sig_script(&tx_single_acp, &initial_utxo_collection[5].1, SIG_HASH_SINGLE | SIG_HASH_ANY_ONE_CAN_PAY);
     tx_single_acp.inputs[0].signature_script = sig_script;
     tx_single_acp.inputs.push(TransactionInput::new(initial_utxo_collection[8].0, vec![], 0, 0));
-    tx_single_acp.outputs.push(TransactionOutput::new(5_000_000, op_true_spk.clone()));
+    tx_single_acp.outputs.push(TransactionOutput::new(500_000_000, op_true_spk.clone()));
     tx_single_acp.finalize();
     let mut tx_single_acp = MutableTransaction::from_tx(tx_single_acp);
     let _ = consensus.validate_mempool_transaction(&mut tx_single_acp, &TransactionValidationArgs::default());

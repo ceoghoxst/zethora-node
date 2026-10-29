@@ -149,6 +149,8 @@ impl VirtualStateProcessor {
 
         // Zethora: the private pool's balance before this mergeset, as the selected parent sealed it (ZTH-SPEC-006 §7.1)
         ctx.shielded_balance = self.pool_state_of(selected_parent).shielded_balance;
+        // Zethora (seam review P2-2): free places in the private coin list before this mergeset
+        let mut coin_room = zethora_private::NOTE_TREE_CAPACITY - ctx.note_tree.size();
 
         let selected_parent_transactions = self.block_transactions_store.get(ctx.selected_parent()).unwrap();
         let validated_coinbase = ValidatedTransaction::new_coinbase(&selected_parent_transactions[0]);
@@ -189,24 +191,30 @@ impl VirtualStateProcessor {
                 ctx.selected_parent(),
                 &ctx.nullifiers,
                 &mut ctx.shielded_balance,
+                &mut coin_room,
             );
 
             ctx.multiset_hash.combine(&inner_multiset);
 
+            // Zethora (seam review P2-6): these sums can't overflow on a real chain: fees are paid out of existing coins
+            // and pool flows are bounded by the turnstile, so each sum is at most the 100M ZTHR cap (10^18 zets, under
+            // u64::MAX = 1.8 x 10^19). Saturating adds keep every node's answer identical anyway (no debug-build panic,
+            // no release-build wrap); a saturated sum would no longer balance and the supply ledger would refuse it.
             let mut block_fee = 0u64;
             let mut block_base_fee = 0u64; // Zethora: base-fee part (ZTH-SPEC-008)
             let (mut block_pool_in, mut block_pool_out) = (0u64, 0u64); // Zethora: private pool flows (ZTH-SPEC-006)
             for (validated_tx, _) in validated_transactions.iter() {
                 ctx.mergeset_diff.add_transaction(validated_tx, pov_daa_score).unwrap();
-                block_fee += validated_tx.calculated_fee;
+                block_fee = block_fee.saturating_add(validated_tx.calculated_fee);
                 let compute_mass = self.transaction_validator.mass_calculator.calc_non_contextual_masses(validated_tx.tx).compute_mass;
-                block_base_fee += crate::processes::zethora_fees::base_fee(validated_tx.calculated_fee, compute_mass);
+                block_base_fee =
+                    block_base_fee.saturating_add(crate::processes::zethora_fees::base_fee(validated_tx.calculated_fee, compute_mass));
                 // Already validated, so the value balance is readable
                 if let Ok(Some((value_in, value_out))) =
                     kaspa_consensus_core::zethora_private::pool_flows(zethora_private::private_payload(validated_tx.tx))
                 {
-                    block_pool_in += value_in;
-                    block_pool_out += value_out;
+                    block_pool_in = block_pool_in.saturating_add(value_in);
+                    block_pool_out = block_pool_out.saturating_add(value_out);
                 }
             }
 
@@ -232,7 +240,14 @@ impl VirtualStateProcessor {
             for (_, tx) in private_txs {
                 let encoded = zethora_private::private_payment_bytes(zethora_private::private_payload(tx)).expect("filtered above");
                 for cmx in zethora_shielded::codec::note_commitments(encoded).expect("accepted private payments are well-formed") {
-                    ctx.note_tree.append(&cmx).expect("private coin list is full: migrate to a new pool version");
+                    // Can't fail: private_in_order_accepts only accepted transactions whose coins fit (seam review P2-2)
+                    ctx.note_tree.append(&cmx).unwrap_or_else(|_| {
+                        panic!(
+                            "Zethora: the private coin list is full although every accepted payment was checked to fit. \
+                             This node's database is damaged or this is a bug: please report it, then restart the node \
+                             with --reset-db"
+                        )
+                    });
                     ctx.note_tree_grew = true;
                 }
             }
@@ -354,11 +369,13 @@ impl VirtualStateProcessor {
         let mut validated_transactions = validated_transactions;
         validated_transactions.sort_unstable_by_key(|(_, idx)| *idx);
         let mut shielded_balance = ctx.shielded_balance;
+        // Zethora (seam review P2-2): and their new private coins must fit in the coin list its mergeset leaves
+        let mut coin_room = zethora_private::NOTE_TREE_CAPACITY - ctx.note_tree.size();
         let valid = validated_transactions
             .iter()
             .filter(|(vtx, _)| {
                 !zethora_private::nullifiers(zethora_private::private_payload(vtx.tx)).iter().any(|nf| ctx.nullifiers.contains(nf))
-                    && zethora_supply::turnstile_accepts(&mut shielded_balance, &vtx.tx.payload)
+                    && zethora_supply::private_in_order_accepts(&mut shielded_balance, &mut coin_room, &vtx.tx.payload).is_ok()
             })
             .count();
         if valid < txs.len() - 1 {
@@ -538,7 +555,8 @@ impl VirtualStateProcessor {
     /// block order, starting from `shielded_balance` (the balance after the earlier blocks of the mergeset). A transaction
     /// that would take the pool below zero is not accepted: it is left out of the result, so none of its effects (UTXO
     /// diff, muhash, coin tags, coin list, fees, pool flows, acceptance data, seq-commit) ever happen. `shielded_balance`
-    /// is left at the balance after the accepted ones.
+    /// is left at the balance after the accepted ones. Seam review P2-2: the same pass refuses a transaction whose new
+    /// private coins don't fit in the coin list (`coin_room` = free places left, updated for the accepted ones).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn validate_transactions_with_muhash_in_parallel<'a, V: UtxoView + Sync>(
         &self,
@@ -550,6 +568,7 @@ impl VirtualStateProcessor {
         selected_parent: Hash,
         pending_nullifiers: &HashSet<[u8; 32]>,
         shielded_balance: &mut u64,
+        coin_room: &mut u64,
     ) -> (SmallVec<[(ValidatedTransaction<'a>, u32); 2]>, MuHash) {
         self.thread_pool.install(|| {
             let mut validated: Vec<(ValidatedTransaction<'a>, u32)> = txs
@@ -563,13 +582,17 @@ impl VirtualStateProcessor {
                 .collect();
             // Zethora: the turnstile depends on order, so it runs sequentially in block order, before any effect
             validated.sort_unstable_by_key(|(_, idx)| *idx);
-            validated.retain(|(vtx, _)| {
-                let accepted = zethora_supply::turnstile_accepts(shielded_balance, &vtx.tx.payload);
-                if !accepted {
+            validated.retain(|(vtx, _)| match zethora_supply::private_in_order_accepts(shielded_balance, coin_room, &vtx.tx.payload) {
+                Ok(()) => true,
+                Err(zethora_supply::NotAccepted::Turnstile) => {
                     // Can't happen with sound private payments: worth a warning, it points at a counterfeit
                     warn!("Zethora: transaction {} not accepted: it would take more out of the private pool than it holds", vtx.id());
+                    false
                 }
-                accepted
+                Err(zethora_supply::NotAccepted::CoinListFull) => {
+                    warn!("Zethora: transaction {} not accepted: its new private coins don't fit in the private coin list", vtx.id());
+                    false
+                }
             });
             let multiset = validated.par_iter().map(|(vtx, _)| MuHash::from_transaction(vtx, pov_daa_score)).reduce(MuHash::new, |mut a, b| {
                 a.combine(&b);

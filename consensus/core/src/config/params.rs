@@ -5,7 +5,7 @@ pub use super::{
 };
 use crate::{
     BlockLevel, KType,
-    constants::{BLOCK_VERSION, STORAGE_MASS_PARAMETER},
+    constants::{BLOCK_VERSION, ZETHORA_STORAGE_MASS_PARAMETER},
     mass::{BlockLaneLimits, BlockMassLimits, MassCofactors},
     network::{NetworkId, NetworkType},
 };
@@ -615,7 +615,7 @@ pub const MAINNET_PARAMS: Params = Params {
     block_mass_limits: BlockMassLimits { compute: 500_000, storage: 500_000, transient: 1_000_000 },
     block_lane_limits: BlockLaneLimits { lanes_per_block: DEFAULT_LANES_PER_BLOCK_LIMIT, gas_per_lane: DEFAULT_GAS_PER_LANE_LIMIT },
 
-    storage_mass_parameter: STORAGE_MASS_PARAMETER,
+    storage_mass_parameter: ZETHORA_STORAGE_MASS_PARAMETER,
 
     // deflationary_phase_daa_score is the DAA score after which the pre-deflationary period
     // switches to the deflationary period. This number is calculated as follows:
@@ -668,7 +668,7 @@ pub const TESTNET_PARAMS: Params = Params {
     block_mass_limits: BlockMassLimits { compute: 500_000, storage: 500_000, transient: 1_000_000 },
     block_lane_limits: BlockLaneLimits { lanes_per_block: DEFAULT_LANES_PER_BLOCK_LIMIT, gas_per_lane: DEFAULT_GAS_PER_LANE_LIMIT },
 
-    storage_mass_parameter: STORAGE_MASS_PARAMETER,
+    storage_mass_parameter: ZETHORA_STORAGE_MASS_PARAMETER,
     // deflationary_phase_daa_score is the DAA score after which the pre-deflationary period
     // switches to the deflationary period. This number is calculated as follows:
     // We define a year as 365.25 days
@@ -719,7 +719,7 @@ pub const SIMNET_PARAMS: Params = Params {
     block_mass_limits: BlockMassLimits { compute: 500_000, storage: 500_000, transient: 1_000_000 },
     block_lane_limits: BlockLaneLimits { lanes_per_block: DEFAULT_LANES_PER_BLOCK_LIMIT, gas_per_lane: DEFAULT_GAS_PER_LANE_LIMIT },
 
-    storage_mass_parameter: STORAGE_MASS_PARAMETER,
+    storage_mass_parameter: ZETHORA_STORAGE_MASS_PARAMETER,
 
     skip_proof_of_work: true, // For simnet only, PoW can be simulated by default
     max_block_level: 250,
@@ -760,7 +760,7 @@ pub const DEVNET_PARAMS: Params = Params {
     block_mass_limits: BlockMassLimits { compute: 500_000, storage: 500_000, transient: 1_000_000 },
     block_lane_limits: BlockLaneLimits { lanes_per_block: DEFAULT_LANES_PER_BLOCK_LIMIT, gas_per_lane: DEFAULT_GAS_PER_LANE_LIMIT },
 
-    storage_mass_parameter: STORAGE_MASS_PARAMETER,
+    storage_mass_parameter: ZETHORA_STORAGE_MASS_PARAMETER,
 
     deflationary_phase_daa_score: 0,
     pre_deflationary_phase_base_subsidy: TenBps::pre_deflationary_phase_base_subsidy(),

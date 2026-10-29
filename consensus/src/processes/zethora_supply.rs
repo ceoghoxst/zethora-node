@@ -88,6 +88,35 @@ pub fn turnstile_accepts(remaining: &mut u64, payload: &[u8]) -> bool {
     }
 }
 
+/// Why a valid transaction was not accepted by the in-order private rules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotAccepted {
+    /// It would take the private pool below zero (the turnstile, ZTH-SPEC-006 §7.1).
+    Turnstile,
+    /// Its new private coins don't fit in the coin list (seam review P2-2).
+    CoinListFull,
+}
+
+/// The private rules that depend on the order of transactions, applied one transaction at a time in consensus order
+/// (merge loop, a chain block's own transactions, block template):
+/// 1. the coin list must have room for the transaction's new private coins (seam review P2-2: a full list used to
+///    panic every node on the same block; now the transaction is simply not accepted, and the chain goes on), and
+/// 2. the turnstile (`turnstile_accepts`).
+///
+/// `pool_left` is the private pool's balance and `coin_room` the coin list's free places after the transactions
+/// accepted before this one. Both are updated only if the transaction is accepted.
+pub fn private_in_order_accepts(pool_left: &mut u64, coin_room: &mut u64, payload: &[u8]) -> Result<(), NotAccepted> {
+    let new_coins = kaspa_consensus_core::zethora_private::new_coin_count(payload);
+    if new_coins > *coin_room {
+        return Err(NotAccepted::CoinListFull);
+    }
+    if !turnstile_accepts(pool_left, payload) {
+        return Err(NotAccepted::Turnstile);
+    }
+    *coin_room -= new_coins;
+    Ok(())
+}
+
 /// Everything one chain block changes in the ledger, apart from the fee pool step.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct BlockFlows {
@@ -156,7 +185,7 @@ mod tests {
         unpaid: u64,
         cheat: i128,
     ) -> Result<PoolState, SupplyError> {
-        let pool = pool_step(parent, base);
+        let pool = pool_step(parent, base).unwrap();
         let fees = tips + base;
         let coinbase_out = subsidy + (tips - unpaid) + pool.payout;
         let flows =
@@ -306,6 +335,57 @@ mod tests {
         let flows = BlockFlows { visible_change: -1, ..Default::default() };
         let err = ledger_step(PoolState::default(), PoolState::default(), flows).unwrap_err();
         assert_eq!(err, SupplyError::VisibleSupplyOutOfRange(-1));
+    }
+
+    /// A private payment payload with `actions` actions and value balance `vb` (only the fields consensus reads here).
+    fn private_payment(actions: u16, vb: i64) -> Vec<u8> {
+        use kaspa_consensus_core::zethora_private::{ACTION_SIZE, PRIVATE_PAYMENT_MAGIC};
+        let mut p = PRIVATE_PAYMENT_MAGIC.to_vec();
+        p.push(1); // pool version
+        p.extend_from_slice(&actions.to_le_bytes());
+        p.extend(std::iter::repeat_n(0u8, actions as usize * ACTION_SIZE));
+        p.push(0x02); // flags
+        p.extend_from_slice(&vb.to_le_bytes());
+        p.extend_from_slice(&[0u8; 32]); // anchor
+        p
+    }
+
+    /// Seam review P2-2 (test P2-T2): two places left in the coin list; a 2-coin payment is accepted, then a 1-coin
+    /// payment is not (instead of every node panicking on the same block). A refused payment changes nothing.
+    #[test]
+    fn a_payment_that_does_not_fit_in_the_coin_list_is_not_accepted() {
+        let (mut pool, mut room) = (1_000u64, 2u64);
+        // Ordinary transactions add no private coins and always fit (positive control)
+        assert_eq!(private_in_order_accepts(&mut pool, &mut room, b"ordinary"), Ok(()));
+        assert_eq!((pool, room), (1_000, 2));
+        assert_eq!(private_in_order_accepts(&mut pool, &mut room, &private_payment(2, -100)), Ok(()));
+        assert_eq!((pool, room), (1_100, 0));
+        assert_eq!(private_in_order_accepts(&mut pool, &mut room, &private_payment(1, 50)), Err(NotAccepted::CoinListFull));
+        assert_eq!((pool, room), (1_100, 0)); // untouched: the turnstile part did not run either
+        // Exactly full is fine, one over is not
+        let mut room = 3u64;
+        assert_eq!(private_in_order_accepts(&mut pool, &mut room, &private_payment(4, 0)), Err(NotAccepted::CoinListFull));
+        assert_eq!(private_in_order_accepts(&mut pool, &mut room, &private_payment(3, 0)), Ok(()));
+        assert_eq!(room, 0);
+    }
+
+    /// Seam review P2-9: block totals can look fine while the pool goes below zero partway through. The pool holds 50;
+    /// the block's first payment takes 100 out, its second brings 100 in. The per-block ledger check alone (totals: in
+    /// 100, out 100) would pass; the in-order rule refuses the first payment, so it is never accepted.
+    #[test]
+    fn a_negative_pool_hidden_by_block_totals_is_refused_in_order() {
+        // The totals alone pass the per-block turnstile: 50 + 100 - 100 = 50
+        assert_eq!(turnstile(50, 100, 100), Ok(50));
+        let (mut pool, mut room) = (50u64, 100u64);
+        assert_eq!(private_in_order_accepts(&mut pool, &mut room, &private_payment(1, 100)), Err(NotAccepted::Turnstile));
+        assert_eq!((pool, room), (50, 100)); // a refused payment changes nothing
+        assert_eq!(private_in_order_accepts(&mut pool, &mut room, &private_payment(1, -100)), Ok(()));
+        assert_eq!(pool, 150);
+        // In the other order both are fine (positive control)
+        let (mut pool, mut room) = (50u64, 100u64);
+        assert_eq!(private_in_order_accepts(&mut pool, &mut room, &private_payment(1, -100)), Ok(()));
+        assert_eq!(private_in_order_accepts(&mut pool, &mut room, &private_payment(1, 100)), Ok(()));
+        assert_eq!(pool, 50);
     }
 }
 

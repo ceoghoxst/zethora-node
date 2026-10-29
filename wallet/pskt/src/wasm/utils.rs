@@ -4,12 +4,12 @@ use separator::{Separatable, separated_float, separated_int, separated_uint_with
 
 #[inline]
 pub fn sompi_to_kaspa(sompi: u64) -> f64 {
-    sompi as f64 / SOMPI_PER_KASPA as f64
+    sompi as f64 / KASPA_SOMPI_PER_KAS as f64
 }
 
 #[inline]
 pub fn kaspa_to_sompi(kaspa: f64) -> u64 {
-    (kaspa * SOMPI_PER_KASPA as f64) as u64
+    (kaspa * KASPA_SOMPI_PER_KAS as f64) as u64
 }
 
 #[inline]

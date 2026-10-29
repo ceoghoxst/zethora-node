@@ -60,7 +60,9 @@ pub struct MultiConsensusMetadata {
     version: u32,
 }
 
-pub const LATEST_DB_VERSION: u32 = 7;
+/// Zethora: 8 since seam review P2-5 (the virtual state row gained `note_tree_size`, row version 2). Databases of
+/// version 7 or older are reset when the node starts (daemon.rs).
+pub const LATEST_DB_VERSION: u32 = 8;
 impl Default for MultiConsensusMetadata {
     fn default() -> Self {
         Self {

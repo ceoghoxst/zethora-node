@@ -1510,7 +1510,7 @@ fn coin_supply_response(circulating_sompi: u64) -> GetCoinSupplyResponse {
 #[cfg(test)]
 mod tests {
     use super::coin_supply_response;
-    use kaspa_consensus_core::constants::MAX_SOMPI;
+    use kaspa_consensus_core::constants::{KASPA_SOMPI_PER_KAS, MAX_ZETS};
 
     #[test]
     fn coin_supply_reports_the_zethora_cap() {
@@ -1518,7 +1518,8 @@ mod tests {
         // 100,000,000 ZTHR x 10^10 zets per ZTHR
         assert_eq!(response.max_sompi, 1_000_000_000_000_000_000);
         assert_eq!(response.circulating_sompi, 123_456);
-        // Not Kaspa's 29 billion KAS (2.9 x 10^18 sompi)
-        assert_ne!(response.max_sompi, MAX_SOMPI);
+        // The same limit transactions are checked against (seam review P5-3), not Kaspa's 29 billion KAS
+        assert_eq!(response.max_sompi, MAX_ZETS);
+        assert_ne!(response.max_sompi, 29_000_000_000 * KASPA_SOMPI_PER_KAS);
     }
 }

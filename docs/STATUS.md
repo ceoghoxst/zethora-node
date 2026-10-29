@@ -16,6 +16,9 @@ Last updated: 2026-10-28
   in existence is accounted for. If it ever does not, stop and report it.
 - Balance lookup for your mining address.
 - No premine. Nobody, including the team, gets coins without mining.
+- Dust protection: a visible payment must be at least about 0.01 ZTHR, so
+  nobody can cheaply fill every node's disk with tiny coins (decided
+  Oct 29, 2026; lowering it later would be an announced upgrade).
 
 ## What is turned OFF on purpose
 

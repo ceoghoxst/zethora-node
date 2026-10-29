@@ -35,6 +35,13 @@ not a bug still gets a permanent test proving it.** Every security test follows 
 - F3c (branch `f3c-sync-robustness`): all pack 3 items and pack 1 #2 #8 #9 done in code and tested locally, with
   fail-when-removed proofs (PR description). Next: F3f, then F3d, then F3b.
 
+## Status update (2026-10-29 PT, CTO session)
+- F3a (PR #7), F3e (PR #8), P4-4 (PR #9) merged. F3c = PR #10 MERGED (552bd06). Website PR #11 MERGED.
+- P5-3 DECIDED: C = 10^13 (CEO + VP, Oct 29); recorded in docs/decisions/P5-3-storage-mass.md.
+- F3f + F3d batched into ONE PR (branch `f3f-f3d-supply-dag`, VP: one merge in the morning): every pack 2 and pack 5
+  finding fixed or proof-tested, each new test shown failing with its protection removed. Next: F3b, then the privacy switch.
+- Website copy: PR #11 (GitHub Pages, `site/`).
+
 ## VP notes (2026-10-28, approved breakdown)
 - Batch CI so Deion merges PRs at most once a day. No messages at night (3 AM).
 - P5-3 table and recommendation due this week, before F3f.

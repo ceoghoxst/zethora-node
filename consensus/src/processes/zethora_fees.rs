@@ -40,17 +40,24 @@ pub struct PoolStep {
     pub next: PoolState,
 }
 
+/// Seam review P5-5: a counter that would pass u64::MAX. Unreachable while the ledger balances (every counter is at
+/// most the total issued, at most CAP_UNITS), but a refused block is safer than a crashed node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("fee pool step overflows u64 ({0})")]
+pub struct FeePoolOverflow(pub &'static str);
+
 /// Applies a chain block's total base fees to the pool state of its selected parent.
-pub fn pool_step(parent: PoolState, base_total: u64) -> PoolStep {
+pub fn pool_step(parent: PoolState, base_total: u64) -> Result<PoolStep, FeePoolOverflow> {
     let payout = parent.pool_balance / POOL_PAYOUT_DIVISOR;
-    let to_pool = ((base_total as u128 * POOL_SHARE_PERCENT as u128) / 100) as u64;
+    let to_pool = ((base_total as u128 * POOL_SHARE_PERCENT as u128) / 100) as u64; // <= base_total
     let burned = base_total - to_pool;
     let next = PoolState {
-        pool_balance: parent.pool_balance - payout + to_pool,
-        total_burned: parent.total_burned.checked_add(burned).expect("burn counter overflow"),
+        // payout <= pool_balance, so only the addition can overflow
+        pool_balance: (parent.pool_balance - payout).checked_add(to_pool).ok_or(FeePoolOverflow("pool balance"))?,
+        total_burned: parent.total_burned.checked_add(burned).ok_or(FeePoolOverflow("total burned"))?,
         ..parent // the supply ledger fields are updated by zethora_supply::ledger_step
     };
-    PoolStep { payout, burned, next }
+    Ok(PoolStep { payout, burned, next })
 }
 
 #[cfg(test)]
@@ -67,17 +74,33 @@ mod tests {
 
     #[test]
     fn split_is_60_40_and_conserves_value() {
-        let s = pool_step(PoolState::default(), 1_000);
+        let s = pool_step(PoolState::default(), 1_000).unwrap();
         assert_eq!(s.next.pool_balance, 600);
         assert_eq!(s.burned, 400);
         assert_eq!(s.payout, 0);
         for base in [0u64, 1, 3, 7, 99, 12_345, 1 << 40] {
             let parent = PoolState { pool_balance: 9_876_543_210, total_burned: 5, ..Default::default() };
-            let s = pool_step(parent, base);
+            let s = pool_step(parent, base).unwrap();
             // pool_in + base fees == pool_out + payout + burned
             assert_eq!(parent.pool_balance + base, s.next.pool_balance + s.payout + s.burned);
             assert_eq!(s.next.total_burned, parent.total_burned + s.burned);
         }
+    }
+
+    /// Seam review P5-5: a counter that would overflow is an error, not a panic.
+    #[test]
+    fn pool_step_overflow_is_an_error() {
+        // Positive control: the largest burn that fits
+        let parent = PoolState { total_burned: u64::MAX - 40, ..Default::default() };
+        assert_eq!(pool_step(parent, 100).unwrap().next.total_burned, u64::MAX); // 40 of 100 burned
+        assert_eq!(pool_step(parent, 103), Err(FeePoolOverflow("total burned"))); // to_pool 61, burned 42: one too many
+        // The pool balance: no payout yet (balance < divisor), 60 more would pass u64::MAX
+        let parent = PoolState { pool_balance: 0, total_burned: 0, ..Default::default() };
+        assert!(pool_step(parent, u64::MAX).is_ok());
+        let full = PoolState { pool_balance: u64::MAX - 59, ..Default::default() };
+        let payout = full.pool_balance / POOL_PAYOUT_DIVISOR;
+        let base = (59 + payout) * 100 / 60 + 3; // then to_pool = base * 60 / 100 >= 60 + payout
+        assert_eq!(pool_step(full, base), Err(FeePoolOverflow("pool balance")));
     }
 
     #[test]
@@ -86,7 +109,7 @@ mod tests {
         let mut state = PoolState { pool_balance: 1_000_000 * 10_000_000_000, ..Default::default() };
         let start = state.pool_balance;
         for _ in 0..POOL_PAYOUT_DIVISOR {
-            state = pool_step(state, 0).next;
+            state = pool_step(state, 0).unwrap().next;
         }
         let left = state.pool_balance as f64 / start as f64;
         assert!((left - 0.3679).abs() < 0.001, "got {left}");

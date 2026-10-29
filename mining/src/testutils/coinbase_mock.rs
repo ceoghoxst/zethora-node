@@ -1,6 +1,6 @@
 use kaspa_consensus_core::{
     coinbase::{CoinbaseData, CoinbaseTransactionTemplate, MinerData},
-    constants::{SOMPI_PER_KASPA, TX_VERSION},
+    constants::{KASPA_SOMPI_PER_KAS, TX_VERSION},
     subnets::SUBNETWORK_ID_COINBASE,
     tx::{Transaction, TransactionOutput},
 };
@@ -16,7 +16,7 @@ impl CoinbaseManagerMock {
     }
 
     pub(super) fn expected_coinbase_transaction(&self, miner_data: MinerData) -> CoinbaseTransactionTemplate {
-        const SUBSIDY: u64 = 500 * SOMPI_PER_KASPA;
+        const SUBSIDY: u64 = 500 * KASPA_SOMPI_PER_KAS;
         let output = TransactionOutput::new(SUBSIDY, miner_data.script_public_key.clone());
 
         let payload = self.serialize_coinbase_payload(&CoinbaseData {

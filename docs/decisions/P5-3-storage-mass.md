@@ -1,6 +1,6 @@
 # P5-3: storage mass parameter for zets (dust protection) — table and CTO recommendation
 
-Written 2026-10-28 by Claude (CTO). Decision owner: CEO/VP. Needed before F3f.
+Written 2026-10-28 by Claude (CTO). Decision owner: CEO/VP. **DECIDED 2026-10-29: C = 10^13** (see the end).
 
 ## What the parameter does
 Kaspa's storage mass (KIP-9) charges each transaction `C / amount` for every output it creates (minus a credit for
@@ -44,3 +44,17 @@ Add `ZETHORA_STORAGE_MASS_PARAMETER = 10^13` next to `ZETS_PER_ZTHR`, use it in 
 mass tests and the wallet's mass estimate (wallet/core/src/tx/mass.rs), test the 0.01 ZTHR boundary exactly
 (standard at 0.0101 ZTHR from a 0.2746 coin, refused at 0.01), and state it in STATUS.md. Takes effect from the
 public testnet genesis.
+
+## Decision (2026-10-29)
+- **Approved: C = 10^13** (CEO, 2026-10-29 12:00 PT; VP approved the same day). Built in F3f as
+  `ZETHORA_STORAGE_MASS_PARAMETER` (consensus/core/src/constants.rs), used by mainnet, testnet, devnet and simnet.
+- **Rule:** revisit if 0.01 ZTHR becomes meaningful money (the smallest practical visible payment is ~0.01 ZTHR).
+- **Lowering it is a planned upgrade with an activation height** (a consensus change: standing rule T11, announced
+  before the release, old and new nodes agree until the activation point). Never lowered in a surprise release.
+- Takes effect from the public testnet genesis (no live network before it).
+- Tests: `zethora_storage_mass_table_and_the_0_01_zthr_boundary` (the table above, exactly; 0.0101 ZTHR from a fresh
+  0.2746 reward is standard at 99,148 mass, 0.01 ZTHR is not at 100,137) and
+  `every_network_uses_the_zethora_storage_mass_parameter` (consensus/core/src/mass/mod.rs).
+- Same PR (seam review P5-3): `MAX_SOMPI` (Kaspa's 2.9 x 10^18) is now `MAX_ZETS` = the 100M ZTHR cap (10^18 zets);
+  `SOMPI_PER_KASPA` renamed `KASPA_SOMPI_PER_KAS`, Kaspa's `STORAGE_MASS_PARAMETER` renamed
+  `KASPA_STORAGE_MASS_PARAMETER`, so neither is reused by mistake.

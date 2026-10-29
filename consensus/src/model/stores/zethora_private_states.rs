@@ -33,11 +33,14 @@ impl DbZethoraPrivateStatesStore {
     }
 
     pub fn set_batch(&self, batch: &mut WriteBatch, hash: Hash, state: MuHash) -> Result<(), StoreError> {
-        self.access.write(
-            BatchDbWriter::new(batch),
-            hash,
-            state.try_into().expect("private state multiset is expected to be finalized"),
-        )
+        // Seam review pack 2: the stored fingerprint is deliberately NOT finalized (later blocks keep adding to it); it
+        // only has to be normalized (denominator 1), which every caller does. A caller that forgot gets a clear error.
+        let normalized: Uint3072 = state.try_into().map_err(|_| {
+            StoreError::DataInconsistency(format!(
+                "the private state fingerprint of block {hash} was not normalized before saving (a bug, please report it)"
+            ))
+        })?;
+        self.access.write(BatchDbWriter::new(batch), hash, normalized)
     }
 
     pub fn delete_batch(&self, batch: &mut WriteBatch, hash: Hash) -> Result<(), StoreError> {

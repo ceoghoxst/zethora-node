@@ -523,7 +523,7 @@ async fn sanity_test() {
                 tst!(op, {
                     let response = rpc_client.get_coin_supply_call(None, GetCoinSupplyRequest {}).await.unwrap();
                     assert_eq!(response.circulating_sompi, 0);
-                    // Zethora: the hard cap, 100,000,000 ZTHR in zets (not Kaspa's MAX_SOMPI)
+                    // Zethora: the hard cap, 100,000,000 ZTHR in zets (not Kaspa's MAX_ZETS)
                     assert_eq!(response.max_sompi, CAP_UNITS);
                 })
             }

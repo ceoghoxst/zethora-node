@@ -647,3 +647,20 @@ the pool version, so old nodes refuse new payments as unreadable, never forged.
 One strike system: ProtocolError::is_strike / FlowContext::penalize_if_misbehaving.
 P3-5 clear panic message; P3-6 iter_all session rule documented; P3-8 Default
 removed. No stored-state format change, no devnet reset.
+2026-10-29 - CTO session (Ryzen-linked, compiled in the cloud sandbox). P5-3 DECIDED: storage mass
+C = 10^13 (CEO + VP); rule: revisit if 0.01 ZTHR becomes meaningful money, lowering it is a planned
+upgrade with an activation height (docs/decisions/P5-3-storage-mass.md). F3f + F3d batched on branch
+f3f-f3d-supply-dag: P5-1 dense checkpoints (2^12) + read-lock lookups; P5-2/P5-5 checked sums and
+pool step; P5-3 ZETHORA_STORAGE_MASS_PARAMETER, MAX_SOMPI -> MAX_ZETS (= cap), SOMPI_PER_KASPA ->
+KASPA_SOMPI_PER_KAS; P5-4 payload length checked when building; P5-6 genesis DAA test; P5-7 leftovers
+removed, miner shows the sealed subsidy. P2-2 full coin list = acceptance rule
+(zethora_supply::private_in_order_accepts in merge loop, own txs, template); P2-5 VirtualState manual
+Default + note_tree_size, row version 2, pre-Toccata rows refused, templates refused on the placeholder
+(RuleError::ZethoraVirtualNotReady), LATEST_DB_VERSION 8 (older DBs reset). DEVNET RESET REQUIRED.
+P2-6 saturating sums; P2-7 wording + boundary test; P2-8/P2-9/P2-1 proof tests; P2-10 for-good anchor
+keeps the lowest blue score. All 13 new security tests shown failing with all protections removed
+(one mutant build). P2-3 test: test-only pruning failpoint (ZETHORA_CRASH_BEFORE), a node
+stopped mid-pruning answers like one that finished; P2-4: import e2e test also stores an off-chain tag
+and an above-P tag, P serves exactly its sealed set. PR #10 (F3c) and #11 (website) merged Oct 29.
+Website = GitHub Pages (site/, PR #11). The inherited Kaspa wallet/CLI still use Kaspa's 10^8 unit;
+not shipped (release zip = zethora-node + zethora-miner only); fix before shipping them.

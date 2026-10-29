@@ -1,5 +1,5 @@
 use kaspa_consensus_core::{
-    constants::{STORAGE_MASS_PARAMETER, TRANSIENT_BYTE_TO_MASS_FACTOR},
+    constants::{TRANSIENT_BYTE_TO_MASS_FACTOR, ZETHORA_STORAGE_MASS_PARAMETER},
     mass::MassCalculator,
     tx::Transaction,
 };
@@ -31,7 +31,7 @@ pub const fn calc_for_plain_standard_tx_with_extra_serialized_bytes(
 
 /// Calculates relay fee from a transaction probe using the real non-contextual mass calculator.
 pub fn calc_for_transaction(tx: &Transaction) -> u64 {
-    let masses = MassCalculator::new(1, 10, STORAGE_MASS_PARAMETER).calc_non_contextual_masses(tx);
+    let masses = MassCalculator::new(1, 10, ZETHORA_STORAGE_MASS_PARAMETER).calc_non_contextual_masses(tx);
     let serialized_bytes = masses.transient_mass / TRANSIENT_BYTE_TO_MASS_FACTOR;
     let normalized_transient_mass = serialized_bytes * NORMALIZED_TRANSIENT_BYTE_FACTOR;
     FEE_RATE * masses.compute_mass.max(normalized_transient_mass)

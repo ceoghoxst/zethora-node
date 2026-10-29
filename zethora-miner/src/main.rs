@@ -366,14 +366,15 @@ async fn main() {
             let read = |i: usize| cb.get(i..i + 8).map(|b| u64::from_le_bytes(b.try_into().unwrap())).unwrap_or(0);
             let (pool_balance, total_burned) = (read(16), read(24));
             let (issued, visible, private) = (read(32), read(40), read(48));
+            // This block's subsidy for its DAA score (ZTH-SPEC-001 §5), as the node computed it and sealed it in the
+            // coinbase payload (bytes 8..16); seam review P5-7: no separate (capped) walk in the miner.
+            let reward = read(8);
             let balanced = visible as u128 + pool_balance as u128 + total_burned as u128 + private as u128 == issued as u128;
             // Private coin list fingerprint (bytes 56..88): first 4 bytes are enough to see it change
             let coin_list: String = cb.get(56..60).map(|b| b.iter().map(|x| format!("{x:02x}")).collect()).unwrap_or_default();
             match client.submit_block(block, false).await {
                 Ok(r) if r.report.is_success() => {
                     mined += 1;
-                    // Reward for this block's DAA score (ZTH-SPEC-001 §5); the node enforces it.
-                    let reward = header_reward_hint(daa);
                     total_reward += reward;
                     let rate = hashes.load(Ordering::Relaxed) as f64 / start.elapsed().as_secs_f64();
                     println!(
@@ -395,16 +396,6 @@ async fn main() {
             }
         }
     }
-}
-
-/// Display-only estimate of the subsidy for a DAA score, using the same rule as consensus.
-fn header_reward_hint(daa_score: u64) -> u64 {
-    const D: u64 = 364_223_944;
-    let mut remaining: u64 = 100_000_000 * 10_000_000_000 - 1_000 * 10_000_000_000;
-    for _ in 0..daa_score.min(10_000_000) {
-        remaining -= remaining / D;
-    }
-    remaining / D
 }
 
 #[cfg(test)]

@@ -524,7 +524,7 @@ pub fn calc_storage_mass(
 mod tests {
     use super::*;
     use crate::{
-        constants::{SOMPI_PER_KASPA, STORAGE_MASS_PARAMETER},
+        constants::{KASPA_SOMPI_PER_KAS, KASPA_STORAGE_MASS_PARAMETER},
         network::NetworkType,
         subnets::SubnetworkId,
         tx::*,
@@ -704,10 +704,10 @@ mod tests {
             },
             PluralityTestCase {
                 name: "1:3; output index=1, plurality=2; kas units",
-                inputs_tx1: &[1000 * SOMPI_PER_KASPA],
-                outputs_tx1: &[200 * SOMPI_PER_KASPA, 200 * SOMPI_PER_KASPA, 200 * SOMPI_PER_KASPA],
-                inputs_tx2: &[1000 * SOMPI_PER_KASPA],
-                outputs_tx2: &[200 * SOMPI_PER_KASPA, 400 * SOMPI_PER_KASPA],
+                inputs_tx1: &[1000 * KASPA_SOMPI_PER_KAS],
+                outputs_tx1: &[200 * KASPA_SOMPI_PER_KAS, 200 * KASPA_SOMPI_PER_KAS, 200 * KASPA_SOMPI_PER_KAS],
+                inputs_tx2: &[1000 * KASPA_SOMPI_PER_KAS],
+                outputs_tx2: &[200 * KASPA_SOMPI_PER_KAS, 400 * KASPA_SOMPI_PER_KAS],
                 plurality_index: Some(1),
                 desired_plurality: Some(2),
                 override_output: true,
@@ -715,10 +715,10 @@ mod tests {
             },
             PluralityTestCase {
                 name: "1:2; output index=0, plurality=2; kas units",
-                inputs_tx1: &[1000 * SOMPI_PER_KASPA],
-                outputs_tx1: &[200 * SOMPI_PER_KASPA, 200 * SOMPI_PER_KASPA],
-                inputs_tx2: &[1000 * SOMPI_PER_KASPA],
-                outputs_tx2: &[400 * SOMPI_PER_KASPA],
+                inputs_tx1: &[1000 * KASPA_SOMPI_PER_KAS],
+                outputs_tx1: &[200 * KASPA_SOMPI_PER_KAS, 200 * KASPA_SOMPI_PER_KAS],
+                inputs_tx2: &[1000 * KASPA_SOMPI_PER_KAS],
+                outputs_tx2: &[400 * KASPA_SOMPI_PER_KAS],
                 plurality_index: Some(0),
                 desired_plurality: Some(2),
                 override_output: true,
@@ -726,10 +726,10 @@ mod tests {
             },
             PluralityTestCase {
                 name: "2:2; output index=0, plurality=2; kas units",
-                inputs_tx1: &[350 * SOMPI_PER_KASPA, 500 * SOMPI_PER_KASPA],
-                outputs_tx1: &[200 * SOMPI_PER_KASPA, 200 * SOMPI_PER_KASPA],
-                inputs_tx2: &[350 * SOMPI_PER_KASPA, 500 * SOMPI_PER_KASPA],
-                outputs_tx2: &[400 * SOMPI_PER_KASPA],
+                inputs_tx1: &[350 * KASPA_SOMPI_PER_KAS, 500 * KASPA_SOMPI_PER_KAS],
+                outputs_tx1: &[200 * KASPA_SOMPI_PER_KAS, 200 * KASPA_SOMPI_PER_KAS],
+                inputs_tx2: &[350 * KASPA_SOMPI_PER_KAS, 500 * KASPA_SOMPI_PER_KAS],
+                outputs_tx2: &[400 * KASPA_SOMPI_PER_KAS],
                 plurality_index: Some(0),
                 desired_plurality: Some(2),
                 override_output: true,
@@ -737,17 +737,32 @@ mod tests {
             },
             PluralityTestCase {
                 name: "4:6; output index=0, plurality=3; kas units",
-                inputs_tx1: &[350 * SOMPI_PER_KASPA, 500 * SOMPI_PER_KASPA, 350 * SOMPI_PER_KASPA, 500 * SOMPI_PER_KASPA],
-                outputs_tx1: &[
-                    200 * SOMPI_PER_KASPA,
-                    200 * SOMPI_PER_KASPA,
-                    400 * SOMPI_PER_KASPA,
-                    250 * SOMPI_PER_KASPA,
-                    250 * SOMPI_PER_KASPA,
-                    250 * SOMPI_PER_KASPA,
+                inputs_tx1: &[
+                    350 * KASPA_SOMPI_PER_KAS,
+                    500 * KASPA_SOMPI_PER_KAS,
+                    350 * KASPA_SOMPI_PER_KAS,
+                    500 * KASPA_SOMPI_PER_KAS,
                 ],
-                inputs_tx2: &[350 * SOMPI_PER_KASPA, 500 * SOMPI_PER_KASPA, 350 * SOMPI_PER_KASPA, 500 * SOMPI_PER_KASPA],
-                outputs_tx2: &[200 * SOMPI_PER_KASPA, 200 * SOMPI_PER_KASPA, 400 * SOMPI_PER_KASPA, 750 * SOMPI_PER_KASPA],
+                outputs_tx1: &[
+                    200 * KASPA_SOMPI_PER_KAS,
+                    200 * KASPA_SOMPI_PER_KAS,
+                    400 * KASPA_SOMPI_PER_KAS,
+                    250 * KASPA_SOMPI_PER_KAS,
+                    250 * KASPA_SOMPI_PER_KAS,
+                    250 * KASPA_SOMPI_PER_KAS,
+                ],
+                inputs_tx2: &[
+                    350 * KASPA_SOMPI_PER_KAS,
+                    500 * KASPA_SOMPI_PER_KAS,
+                    350 * KASPA_SOMPI_PER_KAS,
+                    500 * KASPA_SOMPI_PER_KAS,
+                ],
+                outputs_tx2: &[
+                    200 * KASPA_SOMPI_PER_KAS,
+                    200 * KASPA_SOMPI_PER_KAS,
+                    400 * KASPA_SOMPI_PER_KAS,
+                    750 * KASPA_SOMPI_PER_KAS,
+                ],
                 plurality_index: Some(3),
                 desired_plurality: Some(3),
                 override_output: true,
@@ -787,14 +802,14 @@ mod tests {
         assert_eq!(storage_mass, storage_mass_parameter / 50 + storage_mass_parameter / 550 - 3 * (storage_mass_parameter / 200));
 
         // Create a tx with more outs than ins
-        let base_value = 10_000 * SOMPI_PER_KASPA;
+        let base_value = 10_000 * KASPA_SOMPI_PER_KAS;
         let mut tx = generate_tx_from_amounts(&[base_value, base_value, base_value * 2], &[base_value; 4]);
-        let storage_mass_parameter = STORAGE_MASS_PARAMETER;
+        let storage_mass_parameter = KASPA_STORAGE_MASS_PARAMETER;
         let storage_mass = MassCalculator::new(0, 0, storage_mass_parameter).calc_contextual_masses(&tx.as_verifiable()).unwrap();
         assert_eq!(storage_mass, 4); // Inputs are above C so they don't contribute negative mass, 4 outputs exactly equal C each charge 1
 
         let mut tx2 = tx.clone();
-        tx2.tx.outputs[0].value = 10 * SOMPI_PER_KASPA;
+        tx2.tx.outputs[0].value = 10 * KASPA_SOMPI_PER_KAS;
         let storage_mass = MassCalculator::new(0, 0, storage_mass_parameter).calc_contextual_masses(&tx2.as_verifiable()).unwrap();
         assert_eq!(storage_mass, 1003);
 
@@ -962,5 +977,48 @@ mod tests {
         assert_eq!(norm_a, 250_000); // ceil(500_000 * 0.5)
         assert_eq!(norm_b, 300_000); // compute mass (no scaling)
         assert_eq!(norm_c, 400_000); // ceil(200_000 * 2.0)
+    }
+
+    /// Seam review P5-3 (test P5-T3), CEO/VP decision 2026-10-29: storage mass of one output of 1 / 0.1 / 0.01 /
+    /// 0.001 ZTHR under Zethora's parameter (10^13), and the decision's boundary: from one fresh block reward
+    /// (2,745,536,136 zets) a home miner can pay 0.0101 ZTHR with change in one standard transaction (<= 100,000 mass,
+    /// the mempool's standard limit, wallet MAXIMUM_STANDARD_TRANSACTION_MASS), but not 0.01 ZTHR.
+    #[test]
+    fn zethora_storage_mass_table_and_the_0_01_zthr_boundary() {
+        use crate::constants::{ZETHORA_STORAGE_MASS_PARAMETER, ZETS_PER_ZTHR};
+        const STANDARD_LIMIT: u64 = 100_000;
+        let c = ZETHORA_STORAGE_MASS_PARAMETER;
+        assert_eq!(c, 10u64.pow(13));
+        // The table in docs/decisions/P5-3-storage-mass.md (an output's own harmonic part, C / amount)
+        let one_output = |amount: u64| calc_storage_mass(false, std::iter::empty(), [UtxoCell::new(1, amount)].into_iter(), c);
+        assert_eq!(one_output(ZETS_PER_ZTHR), Some(1_000));
+        assert_eq!(one_output(ZETS_PER_ZTHR / 10), Some(10_000));
+        assert_eq!(one_output(ZETS_PER_ZTHR / 100), Some(100_000));
+        assert_eq!(one_output(ZETS_PER_ZTHR / 1_000), Some(1_000_000));
+
+        let reward = 2_745_536_136u64; // zethora_subsidy at DAA score 0
+        let pay = |amount: u64| {
+            let tx = generate_tx_from_amounts(&[reward], &[amount, reward - amount]);
+            MassCalculator::new(0, 0, c).calc_contextual_masses(&tx.as_verifiable()).unwrap().storage_mass
+        };
+        // 0.1 ZTHR straight from one reward: standard
+        assert_eq!(pay(ZETS_PER_ZTHR / 10), 12_086);
+        // 0.0101 ZTHR: standard (positive control)
+        assert_eq!(pay(101_000_000), 99_148);
+        assert!(pay(101_000_000) <= STANDARD_LIMIT);
+        // 0.01 ZTHR: just over the standard limit (with Kaspa's 10^12 it would be 10,013 and pass)
+        assert_eq!(pay(ZETS_PER_ZTHR / 100), 100_137);
+        assert!(pay(ZETS_PER_ZTHR / 100) > STANDARD_LIMIT);
+    }
+
+    /// Seam review P5-3: every Zethora network uses Zethora's storage mass parameter, not Kaspa's.
+    #[test]
+    fn every_network_uses_the_zethora_storage_mass_parameter() {
+        use crate::config::params::{DEVNET_PARAMS, MAINNET_PARAMS, SIMNET_PARAMS, TESTNET_PARAMS};
+        use crate::constants::{KASPA_STORAGE_MASS_PARAMETER, ZETHORA_STORAGE_MASS_PARAMETER};
+        for p in [&MAINNET_PARAMS, &TESTNET_PARAMS, &DEVNET_PARAMS, &SIMNET_PARAMS] {
+            assert_eq!(p.storage_mass_parameter, ZETHORA_STORAGE_MASS_PARAMETER, "{}", p.net);
+            assert_ne!(p.storage_mass_parameter, KASPA_STORAGE_MASS_PARAMETER);
+        }
     }
 }
