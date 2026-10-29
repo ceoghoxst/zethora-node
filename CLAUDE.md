@@ -602,3 +602,9 @@ panic; message is now plain English (records incomplete, likely damaged
 database, restart alone won't fix it, start with --reset-db); same entry
 in docs/FAQ.md. Real-chain cap test skipped by CTO decision (the builder
 test exercises the same function consensus uses). Still NOT merged.
+
+2026-10-28 - Seam review (5 packs) complete; every claim checked by the
+CTO. Verdicts, assignments (F3a-F3f) and PR order: docs/F3-PLAN.md; raw
+reviews: docs/reviews/seam-pack-1..5.md. CEO rule: fix every finding,
+high or low; non-bugs get permanent proof tests. F2 (PR #4) merged as
+7bd7d20. F3a on branch f3a-seam-pack1 (CI round 2 pending).
