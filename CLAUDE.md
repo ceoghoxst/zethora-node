@@ -659,6 +659,8 @@ Default + note_tree_size, row version 2, pre-Toccata rows refused, templates ref
 (RuleError::ZethoraVirtualNotReady), LATEST_DB_VERSION 8 (older DBs reset). DEVNET RESET REQUIRED.
 P2-6 saturating sums; P2-7 wording + boundary test; P2-8/P2-9/P2-1 proof tests; P2-10 for-good anchor
 keeps the lowest blue score. All 13 new security tests shown failing with all protections removed
-(one mutant build). Open: P2-3 and P2-4 end-to-end pruning tests (after PR #10, same code).
+(one mutant build). P2-3 test: test-only pruning failpoint (ZETHORA_CRASH_BEFORE), a node
+stopped mid-pruning answers like one that finished; P2-4: import e2e test also stores an off-chain tag
+and an above-P tag, P serves exactly its sealed set. PR #10 (F3c) and #11 (website) merged Oct 29.
 Website = GitHub Pages (site/, PR #11). The inherited Kaspa wallet/CLI still use Kaspa's 10^8 unit;
 not shipped (release zip = zethora-node + zethora-miner only); fix before shipping them.
