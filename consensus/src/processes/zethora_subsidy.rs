@@ -54,6 +54,8 @@ const CHECKPOINT_INTERVAL: u64 = 1 << CHECKPOINT_SHIFT;
 
 #[inline]
 fn step(remaining: u64) -> u64 {
+    #[cfg(test)]
+    tests::STEPS.with(|s| s.set(s.get() + 1));
     remaining - remaining / D
 }
 
@@ -115,6 +117,11 @@ impl ZethoraSubsidy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    thread_local! {
+        /// Schedule steps walked on this thread (test-only instrumentation of `step`)
+        pub(super) static STEPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
 
     #[test]
     fn first_reward_matches_spec() {
@@ -270,24 +277,32 @@ mod tests {
             r = step(r);
         }
         let expected = std::sync::Arc::new(expected);
+        // Build the checkpoints once, on this thread; after that no lookup may walk more than 4,095 steps
+        z.remaining_at(base + 2_999);
         let handles: Vec<_> = (0..8u64)
             .map(|t| {
                 let (z, expected) = (z.clone(), expected.clone());
                 std::thread::spawn(move || {
                     let mut times = Vec::with_capacity(1_250);
+                    let mut most_steps = 0u64;
                     // A different shuffle per thread (multiplicative step coprime to 3,000)
                     for i in 0..1_250u64 {
                         let off = (i * 1_201 + t * 377) % 3_000;
+                        let steps_before = STEPS.with(|s| s.get());
                         let start = std::time::Instant::now();
                         let got = z.remaining_at(base + off);
                         times.push(start.elapsed());
+                        most_steps = most_steps.max(STEPS.with(|s| s.get()) - steps_before);
                         assert_eq!(got, expected[off as usize], "score {}", base + off);
                     }
-                    times
+                    (times, most_steps)
                 })
             })
             .collect();
-        let mut times: Vec<_> = handles.into_iter().flat_map(|h| h.join().unwrap()).collect();
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        // The most expensive lookup in the window (score 5 x 4,096 - 1) walks exactly 4,095 steps, from checkpoint 4
+        assert_eq!(results.iter().map(|(_, most)| *most).max(), Some(4_095));
+        let mut times: Vec<_> = results.into_iter().flat_map(|(t, _)| t).collect();
         times.sort();
         let p99 = times[times.len() * 99 / 100];
         println!("P5-T1: 10,000 lookups on 8 threads, p99 {p99:?}");
