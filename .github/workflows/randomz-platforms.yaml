@@ -1,0 +1,54 @@
+name: RandomZ platforms
+
+# Seam review P4-4: every platform a node or miner runs on must compute exactly the same RandomZ hashes, or it splits
+# from the network. Same test vectors on Linux x86_64, Windows x86_64, Linux aarch64 and macOS aarch64, in light mode
+# (JIT and interpreter) and fast mode (the miners' full dataset).
+
+on:
+  push:
+    branches: [zethora]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  randomz:
+    name: RandomZ vectors (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    # Linux x86_64, Windows and Linux ARM are required; macOS is checked but not (yet) a supported node platform
+    continue-on-error: ${{ matrix.name == 'macos-aarch64' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+          - name: windows-x86_64
+            os: windows-latest
+          - name: linux-aarch64
+            os: ubuntu-24.04-arm
+          - name: macos-aarch64
+            os: macos-latest
+    steps:
+      - name: Fix CRLF on Windows
+        if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
+
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Show CPU
+        shell: bash
+        run: |
+          uname -a
+          (lscpu || sysctl -n machdep.cpu.brand_string || wmic cpu get name) 2>/dev/null | head -20 || true
+
+      - name: RandomZ vectors, light mode (JIT and interpreter) and fast mode
+        shell: bash
+        run: cargo test -p kaspa-pow --release --lib -- --include-ignored randomz
