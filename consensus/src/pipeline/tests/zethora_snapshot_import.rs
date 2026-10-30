@@ -94,7 +94,7 @@ async fn pruning_point_private_state_import_end_to_end() {
     let change = scanner.pick_coins(0, 1).unwrap();
     assert_eq!(change.iter().map(|c| c.value()).collect::<Vec<_>>(), vec![SHIELDED - SPEND_FEE - 30_000]);
     let mut unspent = Transaction::new_non_finalized(TX_VERSION, vec![], vec![], 0, SUBNETWORK_ID_NATIVE, 0, vec![]);
-    let digest = zethora_private_payment_digest(&unspent);
+    let digest = zethora_private_payment_digest(&unspent, &crate::params::DEVNET_PARAMS.genesis.hash);
     let payment = scanner.spend_payment(0, &change, &[(me, change[0].value() - SPEND_FEE)], &digest.as_bytes()).unwrap();
     unspent.payload = PRIVATE_PAYMENT_MAGIC.iter().copied().chain(payment).collect();
     unspent.finalize();

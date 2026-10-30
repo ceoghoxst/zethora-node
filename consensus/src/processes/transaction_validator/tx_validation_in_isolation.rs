@@ -26,7 +26,7 @@ impl TransactionValidator {
         check_transaction_subnetwork(tx)?;
         check_transaction_version(tx)?;
         check_tx_version_specific_fields(tx)?;
-        check_private_payment(tx, self.private_spends_enabled)
+        check_private_payment(tx, self.private_spends_enabled, &self.zethora_genesis())
     }
 
     fn check_transaction_inputs_in_isolation(&self, tx: &Transaction) -> TxResult<()> {
@@ -146,7 +146,7 @@ fn private_payment_verifying_key() -> &'static zethora_shielded::orchard::circui
 /// NO private payment is accepted (no shielding, no spend, no unshield). The refusal fires before decode and proof, so no proof work is spent on testnet. When it is true (devnet, simnet), spends are allowed here and their
 /// chain rules are checked in UTXO context: every coin tag unspent (§6.3) and the anchor a matured snapshot of the
 /// chain's own coin list (§6.2), which is what keeps a spend from pointing at a made-up coin list.
-fn check_private_payment(tx: &Transaction, spends_enabled: bool) -> TxResult<()> {
+fn check_private_payment(tx: &Transaction, spends_enabled: bool, genesis_hash: &kaspa_hashes::Hash) -> TxResult<()> {
     if tx.is_coinbase() {
         return Ok(());
     }
@@ -176,7 +176,7 @@ fn check_private_payment(tx: &Transaction, spends_enabled: bool) -> TxResult<()>
     if !bundle.actions().iter().all(|a| seen.insert(a.nullifier().to_bytes())) {
         return Err(forged("the same private coin tag appears twice in one payment".to_string()));
     }
-    let digest = kaspa_consensus_core::hashing::tx::zethora_private_payment_digest(tx);
+    let digest = kaspa_consensus_core::hashing::tx::zethora_private_payment_digest(tx, genesis_hash);
     zethora_shielded::verify_payment(&bundle, private_payment_verifying_key(), &digest.as_bytes()).map_err(|e| match e {
         // Not proof of forgery (seam review pack 1, #7): refuse without banning
         zethora_shielded::VerifyError::Commitment => invalid(format!("{e:?}")),
@@ -570,6 +570,9 @@ mod zethora_private_payment_tests {
     use kaspa_hashes::Hash;
     use zethora_shielded::wallet::{PrivateWallet, shielding_payment};
 
+    /// The genesis hash these tests' "network" signs (seam review pack 1 #6)
+    const TEST_GENESIS: Hash = Hash::from_bytes([0x6E; 32]);
+
     fn base_tx() -> Transaction {
         let input = TransactionInput {
             previous_outpoint: TransactionOutpoint::new(Hash::from_u64_word(7), 0),
@@ -584,7 +587,7 @@ mod zethora_private_payment_tests {
 
     fn shielding_tx(amount: u64) -> Transaction {
         let mut tx = base_tx();
-        let digest = zethora_private_payment_digest(&tx);
+        let digest = zethora_private_payment_digest(&tx, &TEST_GENESIS);
         let payment = shielding_payment(PrivateWallet::from_seed(&[5; 32]).address(), amount, &digest.as_bytes()).unwrap();
         tx.payload = PRIVATE_PAYMENT_MAGIC.iter().copied().chain(payment).collect();
         tx
@@ -598,25 +601,25 @@ mod zethora_private_payment_tests {
     #[test]
     fn ordinary_payloads_are_untouched() {
         let mut tx = base_tx();
-        assert_eq!(check_private_payment(&tx, false), Ok(()));
+        assert_eq!(check_private_payment(&tx, false, &TEST_GENESIS), Ok(()));
         tx.payload = b"just some data".to_vec();
-        assert_eq!(check_private_payment(&tx, false), Ok(()));
+        assert_eq!(check_private_payment(&tx, false, &TEST_GENESIS), Ok(()));
     }
 
     #[test]
     fn valid_shielding_payment_is_accepted_and_bound_to_its_transaction() {
         let tx = shielding_tx(500_000);
-        assert_eq!(check_private_payment(&tx, true), Ok(()));
+        assert_eq!(check_private_payment(&tx, true, &TEST_GENESIS), Ok(()));
 
         // Change the visible part (send more to the output): the private payment no longer matches
         let mut moved = tx.clone();
         moved.outputs[0].value += 1;
-        assert!(matches!(check_private_payment(&moved, true), Err(TxRuleError::InvalidPrivatePaymentProof(_))));
+        assert!(matches!(check_private_payment(&moved, true, &TEST_GENESIS), Err(TxRuleError::InvalidPrivatePaymentProof(_))));
 
         // Changing only signature scripts does not affect it (they are signed separately)
         let mut resigned = tx.clone();
         resigned.inputs[0].signature_script = vec![1, 2, 3];
-        assert_eq!(check_private_payment(&resigned, true), Ok(()));
+        assert_eq!(check_private_payment(&resigned, true, &TEST_GENESIS), Ok(()));
     }
 
     #[test]
@@ -624,10 +627,10 @@ mod zethora_private_payment_tests {
         // Devnet and simnet: adding coins to the pool works; the proof binding
         // check still runs.
         let tx = shielding_tx(500_000);
-        assert_eq!(check_private_payment(&tx, true), Ok(()));
+        assert_eq!(check_private_payment(&tx, true, &TEST_GENESIS), Ok(()));
         let mut moved = tx.clone();
         moved.outputs[0].value += 1;
-        assert!(matches!(check_private_payment(&moved, true), Err(TxRuleError::InvalidPrivatePaymentProof(_))));
+        assert!(matches!(check_private_payment(&moved, true, &TEST_GENESIS), Err(TxRuleError::InvalidPrivatePaymentProof(_))));
     }
 
     #[test]
@@ -637,9 +640,9 @@ mod zethora_private_payment_tests {
         // banned for it. Both paths below are covered: shielding (which used to
         // pass) and fully private (which already refused at value_balance > 0).
         let shield = shielding_tx(500_000);
-        assert!(matches!(check_private_payment(&shield, false), Err(TxRuleError::InvalidPrivatePayment(_))));
+        assert!(matches!(check_private_payment(&shield, false, &TEST_GENESIS), Err(TxRuleError::InvalidPrivatePayment(_))));
         let spend = fully_private_tx(1_000);
-        assert!(matches!(check_private_payment(&spend, false), Err(TxRuleError::InvalidPrivatePayment(_))));
+        assert!(matches!(check_private_payment(&spend, false, &TEST_GENESIS), Err(TxRuleError::InvalidPrivatePayment(_))));
     }
 
     /// A fully private payment (ZTH-SPEC-006 §9): no visible input or output; `fee` zets leave the private pool
@@ -653,7 +656,7 @@ mod zethora_private_payment_tests {
         scanner.checkpoint().unwrap();
         let coins = scanner.pick_coins(0, 50_000).unwrap();
         let mut tx = Transaction::new_non_finalized(TX_VERSION, vec![], vec![], 0, SUBNETWORK_ID_NATIVE, 0, vec![]);
-        let digest = zethora_private_payment_digest(&tx);
+        let digest = zethora_private_payment_digest(&tx, &TEST_GENESIS);
         let payment =
             scanner.spend_payment(0, &coins, &[(friend_address, 30_000), (me_address, 20_000 - fee)], &digest.as_bytes()).unwrap();
         tx.payload = PRIVATE_PAYMENT_MAGIC.iter().copied().chain(payment).collect();
@@ -681,9 +684,9 @@ mod zethora_private_payment_tests {
         locked.lock_time = 5;
         assert!(matches!(tv.check_transaction_inputs_count(&locked), Err(TxRuleError::InvalidPrivatePayment(_))));
         // Real proof and signatures, bound to this (empty) visible part; spends must be switched on for the network
-        assert_eq!(check_private_payment(&tx, true), Ok(()));
+        assert_eq!(check_private_payment(&tx, true, &TEST_GENESIS), Ok(()));
         // Spends switched off: a plain refusal, not a ban (nodes on different rule versions may disagree)
-        assert!(matches!(check_private_payment(&tx, false), Err(TxRuleError::InvalidPrivatePayment(_))));
+        assert!(matches!(check_private_payment(&tx, false, &TEST_GENESIS), Err(TxRuleError::InvalidPrivatePayment(_))));
 
         // The fee is what leaves the pool: nothing visible in, nothing visible out
         let populated = kaspa_consensus_core::tx::PopulatedTransaction::new(&tx, vec![]);
@@ -706,7 +709,106 @@ mod zethora_private_payment_tests {
             script_public_key: ScriptPublicKey::new(0, scriptvec![0x51]),
             covenant: None,
         });
-        assert!(matches!(check_private_payment(&stolen, true), Err(TxRuleError::InvalidPrivatePaymentProof(_))));
+        assert!(matches!(check_private_payment(&stolen, true, &TEST_GENESIS), Err(TxRuleError::InvalidPrivatePaymentProof(_))));
+    }
+
+    /// Seam review pack 1 #6 (test T6): the digest a private payment signs covers every field it is documented to
+    /// cover, binds the network (genesis hash), and lives in its own hash domain. A fully private payment with one
+    /// visible (unshielded) output, transaction version 1 so the output's covenant is covered too.
+    #[test]
+    fn private_payment_digest_covers_every_field_and_the_network() {
+        use kaspa_consensus_core::{constants::TX_VERSION_TOCCATA, subnets::SubnetworkId, tx::CovenantBinding};
+        use zethora_shielded::scan::Scanner;
+        let (me, friend) = (PrivateWallet::from_seed(&[5; 32]), PrivateWallet::friend_of(&[5; 32]));
+        let me_address = me.address();
+        let mut scanner = Scanner::new(vec![me, friend]);
+        scanner.add_payment(&shielding_payment(me_address, 50_000, &[0; 32]).unwrap()).unwrap();
+        scanner.checkpoint().unwrap();
+        let coins = scanner.pick_coins(0, 50_000).unwrap();
+        // 10,000 zets leave the pool to a visible output, 1,000 pay the fee, 39,000 stay private
+        let output = TransactionOutput { value: 10_000, script_public_key: ScriptPublicKey::new(0, scriptvec![0x51]), covenant: None };
+        let mut tx = Transaction::new_non_finalized(TX_VERSION_TOCCATA, vec![], vec![output], 0, SUBNETWORK_ID_NATIVE, 0, vec![]);
+        let digest = zethora_private_payment_digest(&tx, &TEST_GENESIS);
+        let payment = scanner.spend_payment(0, &coins, &[(me_address, 39_000)], &digest.as_bytes()).unwrap();
+        tx.payload = PRIVATE_PAYMENT_MAGIC.iter().copied().chain(payment).collect();
+        tx.finalize();
+
+        // Positive control: valid on its own network
+        assert_eq!(check_private_payment(&tx, true, &TEST_GENESIS), Ok(()));
+        // Network binding: the same transaction on another network is a forgery there
+        let other_network = Hash::from_bytes([0x6F; 32]);
+        assert_ne!(zethora_private_payment_digest(&tx, &other_network), digest);
+        assert!(matches!(check_private_payment(&tx, true, &other_network), Err(TxRuleError::InvalidPrivatePaymentProof(_))));
+
+        // Each covered field, changed alone: the digest changes, and the payment's signatures no longer match
+        type Mutation = Box<dyn Fn(&mut Transaction)>;
+        let mutations: Vec<(&str, Mutation)> = vec![
+            ("version", Box::new(|t| t.version = TX_VERSION)),
+            ("lock time", Box::new(|t| t.lock_time = 1)),
+            ("gas", Box::new(|t| t.gas = 1)),
+            ("subnetwork", Box::new(|t| t.subnetwork_id = SubnetworkId::from_byte(9))),
+            ("output value", Box::new(|t| t.outputs[0].value += 1)),
+            ("output script version", Box::new(|t| t.outputs[0].script_public_key = ScriptPublicKey::new(1, scriptvec![0x51]))),
+            ("output script", Box::new(|t| t.outputs[0].script_public_key = ScriptPublicKey::new(0, scriptvec![0x52]))),
+            (
+                "output covenant",
+                Box::new(|t| {
+                    t.outputs[0].covenant = Some(CovenantBinding { authorizing_input: 0, covenant_id: Hash::from_bytes([1; 32]) })
+                }),
+            ),
+            ("an extra output", Box::new(|t| t.outputs.push(t.outputs[0].clone()))),
+            (
+                "an added input",
+                Box::new(|t| {
+                    t.inputs.push(TransactionInput {
+                        previous_outpoint: TransactionOutpoint::new(Hash::from_u64_word(7), 0),
+                        signature_script: vec![],
+                        sequence: 0,
+                        compute_commit: ComputeCommit::SigopCount(1.into()),
+                    })
+                }),
+            ),
+        ];
+        for (field, mutate) in &mutations {
+            let mut changed = tx.clone();
+            mutate(&mut changed);
+            assert_ne!(zethora_private_payment_digest(&changed, &TEST_GENESIS), digest, "{field}: digest must change");
+            let result = check_private_payment(&changed, true, &TEST_GENESIS);
+            if *field == "subnetwork" {
+                // Refused before the signatures are even checked (private payments use the native subnetwork only)
+                assert!(matches!(result, Err(TxRuleError::InvalidPrivatePayment(_))), "{field}: {result:?}");
+            } else {
+                assert!(matches!(result, Err(TxRuleError::InvalidPrivatePaymentProof(_))), "{field}: {result:?}");
+            }
+        }
+
+        // Inputs: outpoint and sequence are covered; the signature script and the compute budget (mass commitment)
+        // are not, by design (see zethora_private_payment_digest)
+        let with_input = |sequence: u64, index: u32, script: Vec<u8>, budget: u16| {
+            let mut t = tx.clone();
+            t.version = TX_VERSION_TOCCATA;
+            t.inputs.push(TransactionInput {
+                previous_outpoint: TransactionOutpoint::new(Hash::from_u64_word(7), index),
+                signature_script: script,
+                sequence,
+                compute_commit: ComputeCommit::ComputeBudget(budget.into()),
+            });
+            zethora_private_payment_digest(&t, &TEST_GENESIS)
+        };
+        let base = with_input(0, 0, vec![], 10);
+        assert_ne!(with_input(1, 0, vec![], 10), base, "input sequence");
+        assert_ne!(with_input(0, 1, vec![], 10), base, "input outpoint index");
+        assert_eq!(with_input(0, 0, vec![1, 2, 3], 10), base, "signature scripts are not covered (they sign the payload)");
+        assert_eq!(with_input(0, 0, vec![], 11), base, "the compute budget is not covered (mass commitment)");
+
+        // Own domain: the old digest was exactly the version-0 transaction id of the transaction without its payload;
+        // the new one never equals it (nor the transaction's id or hash)
+        let mut bare = tx.clone();
+        bare.payload.clear();
+        bare.finalize();
+        assert_ne!(digest, kaspa_consensus_core::hashing::tx::id_v0(&bare));
+        assert_ne!(digest, bare.id());
+        assert_ne!(digest, kaspa_consensus_core::hashing::tx::hash(&bare));
     }
 
     #[test]
@@ -714,6 +816,6 @@ mod zethora_private_payment_tests {
         let mut tx = base_tx();
         tx.payload = PRIVATE_PAYMENT_MAGIC.iter().copied().chain([1u8, 2, 0, 9, 9]).collect();
         // Unreadable: refused, but no ban (a newer node could send a format this node doesn't know yet)
-        assert!(matches!(check_private_payment(&tx, false), Err(TxRuleError::InvalidPrivatePayment(_))));
+        assert!(matches!(check_private_payment(&tx, false, &TEST_GENESIS), Err(TxRuleError::InvalidPrivatePayment(_))));
     }
 }

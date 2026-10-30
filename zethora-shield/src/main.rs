@@ -151,7 +151,7 @@ fn private_tx_with_fee(
         vec![]
     };
     let mut tx = Transaction::new_non_finalized(TX_VERSION, vec![], visible_outputs, 0, SUBNETWORK_ID_NATIVE, 0, vec![]);
-    let digest = zethora_private_payment_digest(&tx);
+    let digest = zethora_private_payment_digest(&tx, &DEVNET_PARAMS.genesis.hash);
     let payment = scanner.spend_payment(ME, coins, outputs, &digest.as_bytes()).unwrap_or_else(|e| panic!("private payment: {e}"));
     tx.payload = PRIVATE_PAYMENT_MAGIC.iter().copied().chain(payment).collect();
     tx.finalize();
@@ -358,7 +358,7 @@ async fn shield(n: &Nodes, m: &Miner, amount: u64) {
     let tx = visible_part(m, outpoint, change);
     println!("Making the private payment (proving key takes a few seconds the first time)...");
     let _ = proving_key();
-    let digest = zethora_private_payment_digest(&tx);
+    let digest = zethora_private_payment_digest(&tx, &DEVNET_PARAMS.genesis.hash);
     let payment = shielding_payment(PrivateWallet::from_seed(&m.seed).address(), amount, &digest.as_bytes()).expect("private payment");
     let tx = finish(m, tx, entry, payment);
     match submit(&n.sender, &tx).await {
@@ -864,7 +864,7 @@ async fn autoshield(n: &Nodes, m: &Miner) {
 
             let amount = entry.amount - FEE - change;
             let tx = visible_part(m, outpoint, change);
-            let digest = zethora_private_payment_digest(&tx);
+            let digest = zethora_private_payment_digest(&tx, &DEVNET_PARAMS.genesis.hash);
             let payment = match shielding_payment(PrivateWallet::from_seed(&m.seed).address(), amount, &digest.as_bytes()) {
                 Ok(p) => p,
                 Err(e) => {
