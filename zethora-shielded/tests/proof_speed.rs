@@ -82,7 +82,10 @@ fn payment(n: usize) -> Bundle<Authorized, i64> {
 #[test]
 #[ignore = "release-mode benchmark; see the module docs"]
 fn proof_check_time_by_action_count() {
-    assert!(!cfg!(debug_assertions), "run with --release");
+    if cfg!(debug_assertions) {
+        println!("proof_check_time_by_action_count: timings only mean something in release mode (cargo test --release)");
+        return;
+    }
     let vk = VerifyingKey::build(CIRCUIT);
     // Worst case: a block (500,000 compute mass) full of payments of one size, all checked one after another
     const BUDGET_MS: f64 = 250.0; // a quarter of a block at 1 block per second, on the slowest machine we measure on
