@@ -366,22 +366,7 @@ impl VirtualStateProcessor {
         // Zethora: the block's own transactions may not spend private coin tags its mergeset already spent (§6.3), and,
         // one at a time in block order, may not take the private pool below the balance its mergeset leaves (the
         // turnstile, §7.1), exactly as the next chain block replays them
-        let mut validated_transactions = validated_transactions;
-        validated_transactions.sort_unstable_by_key(|(_, idx)| *idx);
-        let mut shielded_balance = ctx.shielded_balance;
-        // Zethora (seam review P2-2): and their new private coins must fit in the coin list its mergeset leaves
-        let mut coin_room = zethora_private::NOTE_TREE_CAPACITY - ctx.note_tree.size();
-        let valid = validated_transactions
-            .iter()
-            .filter(|(vtx, _)| {
-                !zethora_private::nullifiers(zethora_private::private_payload(vtx.tx)).iter().any(|nf| ctx.nullifiers.contains(nf))
-                    && zethora_supply::private_in_order_accepts(&mut shielded_balance, &mut coin_room, &vtx.tx.payload).is_ok()
-            })
-            .count();
-        if valid < txs.len() - 1 {
-            // Some non-coinbase transactions are invalid
-            return Err(InvalidTransactionsInUtxoContext(txs.len() - 1 - valid, txs.len() - 1));
-        }
+        check_own_transactions_qualify(&txs, validated_transactions, &ctx.nullifiers, ctx.shielded_balance, ctx.note_tree.size())?;
 
         Ok(smt_build)
     }
@@ -908,6 +893,36 @@ impl VirtualStateProcessor {
     }
 }
 
+/// Zethora: the final chain-qualification condition for a chain block's own transactions (ZTH-SPEC-006 §6.3 and §7.1):
+/// each must not spend a coin tag the block's mergeset already spent, and, one at a time in block order, must not take
+/// the private pool below the balance its mergeset leaves (the turnstile), and its new private coins must fit in the
+/// coin list its mergeset leaves (seam review P2-2). Transactions that fail either rule are not accepted, so a block
+/// with any of them is disqualified with the exact (invalid, total) counts.
+fn check_own_transactions_qualify<'a>(
+    txs: &[Transaction],
+    mut validated_transactions: Vec<(ValidatedTransaction<'a>, u32)>,
+    mergeset_nullifiers: &HashSet<[u8; 32]>,
+    shielded_balance: u64,
+    note_tree_size: u64,
+) -> BlockProcessResult<()> {
+    validated_transactions.sort_unstable_by_key(|(_, idx)| *idx);
+    let mut shielded_balance = shielded_balance;
+    // Zethora (seam review P2-2): and their new private coins must fit in the coin list its mergeset leaves
+    let mut coin_room = zethora_private::NOTE_TREE_CAPACITY - note_tree_size;
+    let valid = validated_transactions
+        .iter()
+        .filter(|(vtx, _)| {
+            !zethora_private::nullifiers(zethora_private::private_payload(vtx.tx)).iter().any(|nf| mergeset_nullifiers.contains(nf))
+                && zethora_supply::private_in_order_accepts(&mut shielded_balance, &mut coin_room, &vtx.tx.payload).is_ok()
+        })
+        .count();
+    if valid < txs.len() - 1 {
+        // Some non-coinbase transactions are invalid
+        return Err(InvalidTransactionsInUtxoContext(txs.len() - 1 - valid, txs.len() - 1));
+    }
+    Ok(())
+}
+
 /// Zethora: what the node says, in plain words, when a chain block's private payment record is missing from its
 /// database (F2 item 5). Every normal path writes these records together with the block's other state, and a pruning
 /// point sync downloads them before anything needs them, so this means a damaged database (or a bug). The node stops:
@@ -993,6 +1008,73 @@ mod tests {
                  chain again. Your miner key file is not touched, and your coins are recorded on the chain, so they are \
                  back once the node has caught up."
             )
+        );
+    }
+
+    /// The layout of a private payment the chain-qualification check reads (like zethora_pack2::spend): one action
+    /// spending coin tag `nullifier`, spends enabled, `value_balance` taken out of the private pool.
+    fn private_payment(nullifier: [u8; 32], value_balance: i64) -> Transaction {
+        use kaspa_consensus_core::constants::TX_VERSION;
+        use kaspa_consensus_core::subnets::SUBNETWORK_ID_NATIVE;
+        use kaspa_consensus_core::zethora_private::{ACTION_SIZE, PRIVATE_PAYMENT_MAGIC, layout};
+        let mut p = PRIVATE_PAYMENT_MAGIC.to_vec();
+        p.push(1); // pool version
+        p.extend_from_slice(&1u16.to_le_bytes()); // one action
+        let mut action = vec![0u8; ACTION_SIZE];
+        action[layout::NULLIFIER_OFFSET..layout::NULLIFIER_OFFSET + 32].copy_from_slice(&nullifier);
+        p.extend(action);
+        p.push(0x01); // flags: spends enabled
+        p.extend_from_slice(&value_balance.to_le_bytes());
+        p.extend_from_slice(&[0xAA; 32]); // snapshot: never consulted by this check
+        Transaction::new(TX_VERSION, vec![], vec![], 0, SUBNETWORK_ID_NATIVE, 0, p)
+    }
+
+    /// The exact InvalidTransactionsInUtxoContext(invalid, total) refusal, nothing else
+    fn assert_disqualified(result: BlockProcessResult<()>, invalid: usize, total: usize) {
+        match result {
+            Err(RuleError::InvalidTransactionsInUtxoContext(i, t)) => assert_eq!((i, t), (invalid, total)),
+            other => panic!("expected InvalidTransactionsInUtxoContext({invalid}, {total}), got {other:?}"),
+        }
+    }
+
+    /// Seam review pack 2 (P-D): the final chain-qualification condition, the Err(InvalidTransactionsInUtxoContext)
+    /// return path of verify_expected_utxo_state: a chain block whose own transactions spend a coin tag its mergeset
+    /// already spent, or overdraw the private pool its mergeset leaves, or overfill the coin list it leaves, is
+    /// disqualified with the exact counts. Positive control first, boundary from both sides.
+    #[test]
+    fn own_transactions_spending_a_mergeset_tag_or_overdrawing_disqualify_the_block() {
+        use kaspa_consensus_core::constants::TX_VERSION;
+        use kaspa_consensus_core::subnets::SUBNETWORK_ID_NATIVE;
+        let coinbase = Transaction::new(TX_VERSION, vec![], vec![], 0, SUBNETWORK_ID_NATIVE, 0, vec![]);
+        let a = private_payment([0xA1; 32], 10); // takes 10 out of the private pool
+        let b = private_payment([0xA2; 32], 40); // takes 40: together with a, exactly the pool's 50
+        let txs = vec![coinbase.clone(), a.clone(), b.clone()];
+        let validated = |txs: &[Transaction]| -> Vec<(ValidatedTransaction, u32)> {
+            txs.iter()
+                .enumerate()
+                .map(|(i, tx)| (ValidatedTransaction::new(PopulatedTransaction::new(tx, vec![]), 0), i as u32 + 1))
+                .collect()
+        };
+
+        // Positive control: both payments fit (10 then 40 = the whole 50) and no mergeset tag matches
+        assert!(check_own_transactions_qualify(&txs, validated(&txs[1..]), &HashSet::new(), 50, 0).is_ok());
+        // The coin list rule passes on the exact boundary: two places left, two payments with one coin each
+        assert!(
+            check_own_transactions_qualify(&txs, validated(&txs[1..]), &HashSet::new(), 50, zethora_private::NOTE_TREE_CAPACITY - 2)
+                .is_ok()
+        );
+
+        // Attack 1: b's coin tag was already spent by the mergeset: the whole block is disqualified with the exact counts
+        let mut mergeset = HashSet::new();
+        mergeset.insert([0xA2; 32]);
+        assert_disqualified(check_own_transactions_qualify(&txs, validated(&txs[1..]), &mergeset, 50, 0), 1, 2);
+        // Attack 2 (turnstile): the pool holds 49: a's 10 fit, b's 40 no longer do
+        assert_disqualified(check_own_transactions_qualify(&txs, validated(&txs[1..]), &HashSet::new(), 49, 0), 1, 2);
+        // Attack 3 (coin list): one place left: a's coin fits, b's no longer does
+        assert_disqualified(
+            check_own_transactions_qualify(&txs, validated(&txs[1..]), &HashSet::new(), 50, zethora_private::NOTE_TREE_CAPACITY - 1),
+            1,
+            2,
         );
     }
 }

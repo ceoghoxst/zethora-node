@@ -18,6 +18,7 @@ use crate::model::stores::ghostdag::GhostdagStoreReader;
 use crate::model::stores::headers::HeaderStoreReader;
 use crate::model::stores::utxo_diffs::UtxoDiffsStoreReader;
 use crate::model::stores::virtual_state::VirtualStateStoreReader;
+use crate::processes::transaction_validator::tx_validation_in_utxo_context::TxValidationFlags;
 use kaspa_consensus_core::Hash;
 use kaspa_consensus_core::api::ConsensusApi;
 use kaspa_consensus_core::block::{Block, TemplateBuildMode, TemplateTransactionSelector};
@@ -28,8 +29,9 @@ use kaspa_consensus_core::subnets::SUBNETWORK_ID_NATIVE;
 use kaspa_consensus_core::tx::{
     ScriptPublicKey, Transaction, TransactionId, TransactionInput, TransactionOutpoint, TransactionOutput, UtxoEntry,
 };
+use kaspa_consensus_core::utxo::utxo_collection::UtxoCollection;
 use kaspa_consensus_core::utxo::utxo_diff::UtxoDiff;
-use kaspa_consensus_core::zethora_private::{PRIVATE_PAYMENT_MAGIC, nullifiers, pool_flows, spend_anchor};
+use kaspa_consensus_core::zethora_private::{NOTE_TREE_CAPACITY, PRIVATE_PAYMENT_MAGIC, nullifiers, pool_flows, spend_anchor};
 use kaspa_txscript::opcodes::codes::OpTrue;
 use std::sync::{Arc, Mutex};
 use zethora_shielded::scan::Scanner;
@@ -530,5 +532,77 @@ async fn block_template_checks_coin_tags_on_every_selection_batch() {
     let accepting = f.node.mine(vec![]).await;
     assert_eq!(f.node.accepted_count(accepting, a.id()), 1);
     assert_eq!(f.node.accepted_count(accepting, b.id()), 0);
+    f.node.shutdown();
+}
+
+/// Seam review pack 2 (P-C): the turnstile runs at the retain site of validate_transactions_with_muhash_in_parallel
+/// (the function every merged block and every chain block's own transactions go through). A payment the turnstile
+/// refuses must be ABSENT from the validated transactions the caller sees, and the pool balance handed on must be
+/// exactly the accepted payments'. The overdrawing payment is a counterfeit that passes every other check (its proof is
+/// valid against a snapshot registered "for good"), so only the retain site can keep it out.
+#[tokio::test]
+async fn turnstile_refused_payment_is_absent_from_validated_transactions() {
+    let mut f = shield_one_coin_on_chain().await;
+    let honest = f.spend(SPEND_FEE); // 1,000 out of the pool: fits
+    let over = counterfeit_unchecked(OVERDRAW, 77, &[&f.node]); // 49,500: fits alone, not after the honest spend
+    let view = UtxoCollection::default(); // both payments are fully private: no visible inputs to look up
+    let coinbase = Transaction::new(TX_VERSION, vec![], vec![], 0, SUBNETWORK_ID_NATIVE, 0, vec![]);
+    let daa = f.node.tc.get_header(f.node.tip).unwrap().daa_score;
+    let vp = f.node.tc.virtual_processor().clone();
+
+    // Positive control: alone in the block, the overdrawing payment fits the pool and IS validated
+    let mut shielded_balance = SHIELDED;
+    let mut coin_room = NOTE_TREE_CAPACITY;
+    let (validated, _) = vp.validate_transactions_with_muhash_in_parallel(
+        &vec![coinbase.clone(), over.clone()],
+        &view,
+        daa,
+        daa,
+        TxValidationFlags::SkipScriptChecks,
+        f.node.tip,
+        &HashSet::new(),
+        &mut shielded_balance,
+        &mut coin_room,
+    );
+    assert_eq!(validated.iter().map(|(vtx, _)| vtx.tx.id()).collect::<Vec<_>>(), vec![over.id()]);
+    assert_eq!(shielded_balance, SHIELDED - OVERDRAW);
+
+    // Attack: after the honest spend the pool holds 49,000, so the turnstile refuses the counterfeit at the retain
+    // site: it is absent from the validated transactions and the pool balance is untouched by it
+    let mut shielded_balance = SHIELDED;
+    let mut coin_room = NOTE_TREE_CAPACITY;
+    let (validated, _) = vp.validate_transactions_with_muhash_in_parallel(
+        &vec![coinbase.clone(), honest.clone(), over.clone()],
+        &view,
+        daa,
+        daa,
+        TxValidationFlags::SkipScriptChecks,
+        f.node.tip,
+        &HashSet::new(),
+        &mut shielded_balance,
+        &mut coin_room,
+    );
+    assert_eq!(validated.iter().map(|(vtx, _)| vtx.tx.id()).collect::<Vec<_>>(), vec![honest.id()]);
+    assert!(!validated.iter().any(|(vtx, _)| vtx.tx.id() == over.id()), "the turnstile-refused payment must be absent");
+    assert_eq!(shielded_balance, SHIELDED - SPEND_FEE);
+
+    // The other order decides the other way: the counterfeit fits first (500 left), the honest spend does not
+    let mut shielded_balance = SHIELDED;
+    let mut coin_room = NOTE_TREE_CAPACITY;
+    let (validated, _) = vp.validate_transactions_with_muhash_in_parallel(
+        &vec![coinbase, over.clone(), honest.clone()],
+        &view,
+        daa,
+        daa,
+        TxValidationFlags::SkipScriptChecks,
+        f.node.tip,
+        &HashSet::new(),
+        &mut shielded_balance,
+        &mut coin_room,
+    );
+    assert_eq!(validated.iter().map(|(vtx, _)| vtx.tx.id()).collect::<Vec<_>>(), vec![over.id()]);
+    assert!(!validated.iter().any(|(vtx, _)| vtx.tx.id() == honest.id()), "the turnstile-refused payment must be absent");
+    assert_eq!(shielded_balance, SHIELDED - OVERDRAW);
+
     f.node.shutdown();
 }

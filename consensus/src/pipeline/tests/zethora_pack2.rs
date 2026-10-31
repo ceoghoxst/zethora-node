@@ -10,6 +10,7 @@ use crate::model::stores::headers::HeaderStoreReader;
 use crate::params::DEVNET_PARAMS;
 use kaspa_consensus_core::Hash;
 use kaspa_consensus_core::constants::TX_VERSION;
+use kaspa_consensus_core::errors::tx::TxRuleError;
 use kaspa_consensus_core::subnets::SUBNETWORK_ID_NATIVE;
 use kaspa_consensus_core::tx::Transaction;
 use kaspa_consensus_core::zethora_private::{ACTION_SIZE, PRIVATE_PAYMENT_MAGIC, layout};
@@ -61,19 +62,33 @@ async fn anchor_depth_boundary_is_measured_from_the_selected_parent() {
     tc.zethora_insert_anchor_for_good(&for_good_root, 2);
 
     for root in [on_chain_root, for_good_root] {
-        // Selected parent b11: 11 - 2 = 9 = depth - 1: too young
-        assert!(!vp.anchor_matured_on_chain(&root, b[(DEPTH + 1) as usize]));
-        // b12: exactly depth: matured; b13: depth + 1: matured
+        // Positive control first: b12 is exactly depth blue score below the selected parent (12 - 2 = 10) and b13
+        // deeper, so the snapshot is matured and the spend is accepted by the rule the mempool, the template and the
+        // merge loop all call
         assert!(vp.anchor_matured_on_chain(&root, b[(DEPTH + 2) as usize]));
         assert!(vp.anchor_matured_on_chain(&root, b[(DEPTH + 3) as usize]));
-        // The same answers through the rule the mempool, the template and the merge loop all call
         let tx = spend([0x5E; 32], root);
         let none = HashSet::new();
-        assert!(vp.check_private_payment_in_context(&tx, b[(DEPTH + 1) as usize], &none).is_err());
-        assert!(vp.check_private_payment_in_context(&tx, b[(DEPTH + 2) as usize], &none).is_ok());
+        assert_eq!(vp.check_private_payment_in_context(&tx, b[(DEPTH + 2) as usize], &none), Ok(()));
+        // Attack: b11 is only depth - 1 below the selected parent: refused with the exact stale-snapshot error
+        assert!(!vp.anchor_matured_on_chain(&root, b[(DEPTH + 1) as usize]));
+        assert_eq!(
+            vp.check_private_payment_in_context(&tx, b[(DEPTH + 1) as usize], &none),
+            Err(TxRuleError::InvalidPrivatePayment(format!(
+                "spend uses an unknown or too recent private coin list snapshot (it must be at least {} blocks deep)",
+                DEPTH
+            )))
+        );
     }
-    // An unknown snapshot never counts (positive control for the lookup)
+    // An unknown snapshot never counts (positive control for the lookup), and the spend is refused with the same error
     assert!(!vp.anchor_matured_on_chain(&[0xA3; 32], b[(DEPTH + 3) as usize]));
+    assert_eq!(
+        vp.check_private_payment_in_context(&spend([0x6E; 32], [0xA3; 32]), b[(DEPTH + 3) as usize], &HashSet::new()),
+        Err(TxRuleError::InvalidPrivatePayment(format!(
+            "spend uses an unknown or too recent private coin list snapshot (it must be at least {} blocks deep)",
+            DEPTH
+        )))
+    );
 
     tc.shutdown(handles);
 }
