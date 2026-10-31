@@ -126,13 +126,19 @@ async fn pruning_point_private_state_import_end_to_end() {
     f.node.mine(vec![unspent.clone()]).await;
     let above_p = f.node.mine(vec![]).await;
     assert_eq!(f.node.accepted_count(above_p, unspent.id()), 1);
+    // The anchor store's records are filtered by the same chain rule: an anchor produced above P must stay out of the
+    // state P serves too (it only becomes part of the state of the blocks on whose chain it lies)
+    let extra_root = [0x33; 32];
+    f.node.tc.zethora_insert_anchor(above_p, f.node.tc.get_header(above_p).unwrap().blue_score, &extra_root);
     // Positive controls: both records really are in the store, and the newer tip serves the tag spent above P
     let stored: Vec<[u8; 32]> = f.node.tc.zethora_nullifiers_store().iter_all().map(|r| r.unwrap().0).collect();
     assert!(stored.contains(&[0x0F; 32]));
     assert!(nullifiers(&unspent.payload).iter().all(|nf| stored.contains(nf)));
+    assert!(f.node.tc.zethora_anchors_store().iter_all().map(|r| r.unwrap()).any(|(root, _)| root == extra_root));
     let at_tip: BTreeSet<[u8; 32]> = f.node.tc.zethora_private_state_at(f.node.tip).spent.into_iter().collect();
     assert!(nullifiers(&unspent.payload).iter().all(|nf| at_tip.contains(nf)));
     assert!(!at_tip.contains(&[0x0F; 32]));
+    assert!(f.node.tc.zethora_private_state_at(f.node.tip).anchors.iter().any(|(root, _)| *root == extra_root));
     // P still serves exactly what it served before both were added
     let again: ZethoraPrivateState = f.node.tc.zethora_private_state_at(p);
     assert_eq!(again.spent.iter().copied().collect::<BTreeSet<_>>(), expected_spent);

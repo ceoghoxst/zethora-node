@@ -3,8 +3,8 @@
 | Field   | Value |
 |---------|-------|
 | Status  | Draft (devnet phase) |
-| Version | 0.2 (reorg test added) |
-| Date    | 2026-10-19 |
+| Version | 0.4 (per-transaction turnstile) |
+| Date    | 2026-10-28 |
 | Authors | Zethora contributors |
 | Related | ZTH-SPEC-008 (fee pool), ZTH-IMPL-020 (RandomZ DoS ban), Zethora_Lightpaper_v0.3 |
 
@@ -327,4 +327,3 @@ Specific questions an external reviewer should examine. These are the "here is w
 | 0.2 | 2026-10-19 | Appendix C item 2: anchor reorg transition covered by consensus/src/pipeline/tests/zethora_anchor_reorg.rs. Version bumped. |
 | 0.3 | 2026-10-23 | §7.3 level (a) fully specified: testnet and mainnet refuse ALL private payments (shielding, private sends, unshielding), not only spends. Refusal fires at isolation time, before decode and proof. Tests split into `shielding_is_accepted_when_spends_on` and `private_payments_are_refused_when_spends_off`; the second is shown failing on pre-G11 code. Appendix C item 3 closed. Appendix B row split. |
 | 0.4 | 2026-10-28 | §7.2: per-transaction turnstile in merge order (F1). A transaction that would overdraw the pool is not accepted and has none of its effects. The chain block's own transactions and the block template follow the same rule. Appendix A, B rows added. Appendix C item 7 addressed. |
-| 0.2 | 2026-10-19 | Appendix C item 2: anchor reorg transition covered by consensus/src/pipeline/tests/zethora_anchor_reorg.rs. Version bumped. |

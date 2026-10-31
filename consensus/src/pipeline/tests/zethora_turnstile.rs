@@ -532,3 +532,65 @@ async fn block_template_checks_coin_tags_on_every_selection_batch() {
     assert_eq!(f.node.accepted_count(accepting, b.id()), 0);
     f.node.shutdown();
 }
+
+/// Seam review pack 2 (P-C): the turnstile runs at the retain site of the merged-block transaction validation — the seam
+/// between "this payment passes on its own" and "the block accepts it". A payment the private pool cannot cover at that
+/// point in merge order must be ABSENT from the transactions the accepting block accepts, must leave no coin tag
+/// behind, and must leave no trace in the pool balance that block seals.
+///
+/// The mirror image of `overdrawing_payment_is_skipped_and_the_merging_block_stays_valid`: the counterfeit (which passes
+/// every other check, see `counterfeit_alone_passes_every_other_check`) sits in the selected parent and IS accepted,
+/// while the payment refused is the honest spend. That is the point of the retain site: what is refused depends on the
+/// balance carried along the merge order, not on which payment it is.
+///
+/// Driven through the node on purpose: an earlier version of this test called
+/// `VirtualProcessor::validate_transactions_with_muhash_in_parallel` directly from the test thread, which blocks the
+/// only thread of the `#[tokio::test]` runtime inside the processor's thread pool and hangs the test. What is asserted
+/// here is that call's caller-visible outcome: the accepted transactions of the merged block, the coin tag store, and
+/// the sealed pool balance.
+#[tokio::test]
+async fn turnstile_refused_payment_is_absent_from_validated_transactions() {
+    let mut f = shield_one_coin_on_chain().await;
+    // Both payments pass the mempool's full checks against the 50,000 pool, and each fits it on its own: `spend` and
+    // `counterfeit` go through mempool_checked, so they panic here if anything but the turnstile would refuse them
+    let honest = f.spend(SPEND_FEE); // 1,000 out of the pool
+    let over = counterfeit(OVERDRAW, 77, &[&f.node]); // 49,500 out: together they take 500 more than the pool holds
+
+    // Siblings on the same tip, each valid on its own, merged by C. X is the selected parent, so the merge loop takes
+    // its transactions first and Y's only once the pool has already been debited by X's payment
+    let parent = f.node.tip;
+    let (x, y) = sibling_hashes(&mut f.node);
+    assert_eq!(f.node.insert(x, vec![parent], vec![over.clone()]).await, BlockStatus::StatusUTXOValid);
+    f.node.insert(y, vec![parent], vec![honest.clone()]).await;
+    let c = f.node.fresh_hash();
+    assert_eq!(f.node.insert(c, vec![x, y], vec![]).await, BlockStatus::StatusUTXOValid);
+    assert_eq!(f.node.tc.ghostdag_store().get_selected_parent(c).unwrap(), x);
+
+    // Positive control for the refusal below: the counterfeit passes every other check, so it is validated and accepted
+    assert_eq!(f.node.accepted_count(c, over.id()), 1);
+    // The honest spend is refused at the retain site: absent from the transactions C's mergeset validates
+    assert_eq!(f.node.accepted_count(c, honest.id()), 0);
+    assert_eq!(
+        acceptance(&f.node, c),
+        vec![(x, vec![(coinbase_id(&f.node, x), 0), (over.id(), 1)]), (y, vec![])],
+        "a turnstile-refused payment must be absent from the validated transactions of its merged block"
+    );
+    assert_eq!(recorded_tags(&f.node, &over), vec![vec![c]; nullifiers(&over.payload).len()]);
+    assert_eq!(recorded_tags(&f.node, &honest), vec![Vec::<Hash>::new(); nullifiers(&honest.payload).len()]);
+
+    // A refused payment leaves no trace in the pool: C seals exactly the flows of the accepted payments
+    let sealed = shielded_balance(&f.node.coinbase_payload(c));
+    assert_eq!(sealed, SHIELDED - OVERDRAW);
+    assert_eq!(sealed, 500); // what the accepted counterfeit left of the 50,000
+    // ... and it is the balance carried over from X that refused the honest spend, not the payment itself: 1,000 > 500
+    assert!(SPEND_FEE > sealed);
+
+    // The chain continues on the sealed balance, and the refused payment is not resurrected
+    f.node.tip = c;
+    let d = f.node.mine(vec![]).await;
+    assert_eq!(f.node.tc.get_sink(), d);
+    assert_eq!(shielded_balance(&f.node.coinbase_payload(d)), SHIELDED - OVERDRAW);
+    assert_eq!(f.node.accepted_count(d, honest.id()), 0);
+
+    f.node.shutdown();
+}
