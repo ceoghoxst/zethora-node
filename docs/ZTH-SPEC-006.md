@@ -55,17 +55,18 @@ A private payment travels inside a native-subnetwork transaction's `payload` fie
 
 - **Byte layout and encoding:** see `zethora-shielded/src/codec.rs`.
 - **Size:** a 2-action bundle encodes to 9,144 bytes (`zethora-shielded/tests/pool.rs`).
-- **Binding to the transaction:** the bundle's signature covers `zethora_private_payment_digest(tx)` (see `consensus/core/src/hashing/tx.rs`), which is the transaction with signature scripts, mass commitments, and payload excluded. This binds the private payment to its transaction; transparent-input signatures in turn cover the payload, so the two sides lock each other in.
+- **Binding to the transaction and the network:** the bundle's signatures cover `zethora_private_payment_digest(tx, genesis_hash)` (`consensus/core/src/hashing/tx.rs`): a hash in its own domain (`ZethoraPrivatePaymentDigest`) of the network's genesis hash followed by the transaction with signature scripts, mass commitments (input compute budgets) and the payload excluded. The covered fields are listed in that function's documentation and each one is tested (`private_payment_digest_covers_every_field_and_the_network`). This binds a private payment to its transaction and to one network (it can't be replayed on another); transparent-input signatures in turn cover the payload, so the two sides lock each other in (seam review pack 1 #6, Oct 29, 2026).
 - **Parse failures:** `private_payment_bytes` returns `None` for ordinary transactions and `Err` for malformed magic-prefixed payloads (`consensus/core/src/zethora_private.rs`).
 
 **TBD:** the byte-level field ordering is not reproduced here; `codec.rs` is the reference.
 
 ## §5 — Compute mass
 
-Each action pays a fixed compute-mass price for its share of proof verification:
+Each private payment pays compute mass for checking its proof: a fixed part per payment plus a part per action (seam review pack 1 #5, Oct 29, 2026):
 
-- `PROOF_MASS_PER_ACTION = 15_000` (`consensus/core/src/zethora_private.rs`).
-- Measured at ~1.85 ms per action on the reference PC, keeping a full block's proof checks to a small share of a second.
+- `PROOF_MASS_BASE = 40_000` per payment and `PROOF_MASS_PER_ACTION = 9_000` per action (`consensus/core/src/zethora_private.rs`), on top of the usual mass per byte.
+- Priced from the measured check time (`zethora-shielded/tests/proof_speed.rs`): about 13.8 ms + 3.0 ms per action on the cloud sandbox (Xeon 2.1 GHz, 2 vCPU), about 0.6x that on the reference PC (Ryzen 5 2600). A block full of private payments of any size (500,000 compute mass) then takes at most ~150 ms of proof checking on the sandbox, ~90 ms on the reference PC.
+- Every payment size the codec allows (1 to 16 actions) fits in one block, and the mempool's per-transaction limits are the block limits, so no valid payment is unrelayable (test `every_payment_size_fits_one_block_and_the_mempool`).
 - **Fully private payments** have no visible inputs, so the standard storage-mass formula would divide by zero. Handled explicitly: the input side is empty, and the outputs' harmonic part is the whole storage mass (`consensus/core/src/mass/mod.rs`).
 
 ---

@@ -54,7 +54,7 @@ fn private_spend_tx(fee: u64) -> Transaction {
     let coins = scanner.pick_coins(0, 50_000).unwrap();
 
     let mut tx = Transaction::new_non_finalized(TX_VERSION_TOCCATA, vec![], vec![], 0, SUBNETWORK_ID_NATIVE, 0, vec![]);
-    let digest = zethora_private_payment_digest(&tx);
+    let digest = zethora_private_payment_digest(&tx, &crate::params::DEVNET_PARAMS.genesis.hash);
     let payment =
         scanner.spend_payment(0, &coins, &[(friend_address, 30_000), (me_address, 20_000 - fee)], &digest.as_bytes()).unwrap();
     tx.payload = PRIVATE_PAYMENT_MAGIC.iter().copied().chain(payment).collect();
@@ -264,7 +264,7 @@ pub(super) async fn shield_one_coin_on_chain() -> Funded {
     let change = TransactionOutput::new(cb_amount - SHIELDED - SHIELD_FEE, ScriptPublicKey::from_vec(0, vec![OpTrue]));
     let input = TransactionInput::new(TransactionOutpoint::new(cb_id, 0), vec![], 0, 0);
     let mut shield = Transaction::new_non_finalized(TX_VERSION, vec![input], vec![change], 0, SUBNETWORK_ID_NATIVE, 0, vec![]);
-    let digest = zethora_private_payment_digest(&shield);
+    let digest = zethora_private_payment_digest(&shield, &crate::params::DEVNET_PARAMS.genesis.hash);
     let payment = shielding_payment(me, SHIELDED, &digest.as_bytes()).unwrap();
     shield.payload = PRIVATE_PAYMENT_MAGIC.iter().copied().chain(payment).collect();
     shield.finalize();
@@ -301,7 +301,7 @@ impl Funded {
     /// Checked through the mempool path against the current virtual.
     pub(super) fn spend(&self, to_friend: u64) -> Transaction {
         let mut tx = Transaction::new_non_finalized(TX_VERSION, vec![], vec![], 0, SUBNETWORK_ID_NATIVE, 0, vec![]);
-        let digest = zethora_private_payment_digest(&tx);
+        let digest = zethora_private_payment_digest(&tx, &crate::params::DEVNET_PARAMS.genesis.hash);
         let outputs = [(self.friend, to_friend), (self.me, SHIELDED - SPEND_FEE - to_friend)];
         let payment = self.scanner.spend_payment(0, std::slice::from_ref(&self.coin), &outputs, &digest.as_bytes()).unwrap();
         tx.payload = PRIVATE_PAYMENT_MAGIC.iter().copied().chain(payment).collect();

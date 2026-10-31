@@ -664,3 +664,22 @@ stopped mid-pruning answers like one that finished; P2-4: import e2e test also s
 and an above-P tag, P serves exactly its sealed set. PR #10 (F3c) and #11 (website) merged Oct 29.
 Website = GitHub Pages (site/, PR #11). The inherited Kaspa wallet/CLI still use Kaspa's 10^8 unit;
 not shipped (release zip = zethora-node + zethora-miner only); fix before shipping them.
+
+2026-10-29 (evening) - PR #12 merged; devnet reset done on the Ryzen (fresh chain, BALANCED) and on the Hetzner
+seed (DB version 8 check deleted the old database by itself; seed accepts the PC's blocks ~1/s via relay after the
+PC node was started with --seed=95.216.185.137 --disable-upnp). The PC's C:\Users\deion\zethora-node "origin"
+pointed at another repo; fixed (origin = github.com/ceoghoxst/zethora-node, branch zethora; old local state kept as
+branch backup-before-f3). Hetzner: root SSH by password is refused; use the Hetzner web console. Root password was
+reset via Rescue (an earlier one was pasted in chat; superseded by later resets).
+STANDING RULE (CEO, 2026-10-29): all testing is the CTO's job. The VP runs the project, makes decisions and relays
+between departments; the CEO only gets merge clicks and node/server commands.
+2026-10-29 - F3b (branch f3b-proof-mass-and-binding). Pack 1 #6: private payments sign
+zethora_private_payment_digest(tx, genesis_hash) in their own hash domain (ZethoraPrivatePaymentDigest), genesis
+hash first, covered fields documented in tx.rs; TransactionValidator::with_zethora_genesis(params.genesis.hash).
+Pool version NOT bumped (CTO decision): rule #9 protects live networks; none is live, the devnet was reset tonight
+and carries no private payments. DEVNET RESET only if private payments were made on the devnet before this merges.
+Pack 1 #5: PROOF_MASS_BASE 40,000 per payment + PROOF_MASS_PER_ACTION 9,000 (was 15,000 per action only), priced
+from zethora-shielded/tests/proof_speed.rs (sandbox Xeon 2.1 GHz 2 vCPU: 13.8 ms + 3.0 ms/action; full block of any
+payment size <= ~150 ms sandbox, ~90 ms Ryzen est.). Mempool per-tx limits = block limits (no 100k standard
+limit in this Kaspa version), so every 1..16-action payment is relayable (test). All F3 items (F3a-F3f) are
+done; left from the seam review: pack 1 #14 (goes with the testnet privacy switch) and P4-11 (launch item).

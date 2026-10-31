@@ -25,6 +25,9 @@ pub struct TransactionValidator {
     /// Zethora emergency switch (ZTH-SPEC-006 §7.3): whether private payments may spend private coins on this network.
     /// On for devnet and simnet; off for testnet and mainnet until the privacy code has had an outside audit.
     private_spends_enabled: bool,
+    /// Zethora (seam review pack 1 #6): the network's genesis hash, signed into every private payment so a payment
+    /// can't be replayed on another network. Zero until `with_zethora_genesis` is called (tests only).
+    zethora_genesis: kaspa_hashes::Hash,
 
     pub(crate) mass_calculator: MassCalculator,
 }
@@ -55,7 +58,19 @@ impl TransactionValidator {
             mass_calculator,
             mass_per_sig_op,
             private_spends_enabled: false,
+            zethora_genesis: kaspa_hashes::ZERO_HASH,
         }
+    }
+
+    /// Zethora (seam review pack 1 #6): the genesis hash private payments on this network must sign.
+    pub fn with_zethora_genesis(mut self, genesis_hash: kaspa_hashes::Hash) -> Self {
+        self.zethora_genesis = genesis_hash;
+        self
+    }
+
+    /// Zethora: the genesis hash private payments on this network sign (see `with_zethora_genesis`).
+    pub fn zethora_genesis(&self) -> kaspa_hashes::Hash {
+        self.zethora_genesis
     }
 
     /// Zethora: turn private spends on or off for this network (ZTH-SPEC-006 §7.3).
@@ -91,6 +106,7 @@ impl TransactionValidator {
             mass_calculator: MassCalculator::new(0, 0, 0),
             mass_per_sig_op: 0,
             private_spends_enabled: false,
+            zethora_genesis: kaspa_hashes::ZERO_HASH,
         }
     }
 }

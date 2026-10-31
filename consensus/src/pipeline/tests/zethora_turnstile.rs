@@ -57,7 +57,7 @@ fn counterfeit_unchecked(value_out: u64, seed: u8, nodes: &[&Node]) -> Transacti
     scanner.checkpoint().unwrap();
     let coins = scanner.pick_coins(0, value_out).unwrap();
     let mut tx = Transaction::new_non_finalized(TX_VERSION, vec![], vec![], 0, SUBNETWORK_ID_NATIVE, 0, vec![]);
-    let digest = zethora_private_payment_digest(&tx);
+    let digest = zethora_private_payment_digest(&tx, &crate::params::DEVNET_PARAMS.genesis.hash);
     let payment = scanner.spend_payment(0, &coins, &[], &digest.as_bytes()).unwrap();
     tx.payload = PRIVATE_PAYMENT_MAGIC.iter().copied().chain(payment).collect();
     tx.finalize();

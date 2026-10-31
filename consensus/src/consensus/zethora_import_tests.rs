@@ -123,10 +123,11 @@ async fn an_unfinished_import_is_cleared_at_startup_and_by_every_utxo_set_clear(
 #[test]
 fn private_state_limits_follow_the_chain() {
     use crate::consensus::private_state_limits;
-    // 100 chain blocks, mergesets of at most 180 blocks, 500,000 compute mass per block = 33 actions of 15,000
-    assert_eq!(private_state_limits(99, 180, 500_000), (100 * 180 * 33, 100));
+    // 100 chain blocks, mergesets of at most 180 blocks, 500,000 compute mass per block = at most 43 actions
+    // (500,000 x 16 / (16 x 9,000 + 40,000) = 43.5; the real best is 2 payments of 16 = 32, bytes not even counted)
+    assert_eq!(private_state_limits(99, 180, 500_000), (100 * 180 * 43, 100));
     // Genesis as the pruning point: one chain block
-    assert_eq!(private_state_limits(0, 180, 500_000), (180 * 33, 1));
+    assert_eq!(private_state_limits(0, 180, 500_000), (180 * 43, 1));
     // Never overflows
     assert_eq!(private_state_limits(u64::MAX, 180, 500_000), (u64::MAX, u64::MAX));
 }

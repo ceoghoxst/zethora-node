@@ -30,13 +30,29 @@ pub fn hash_pre_crescendo(tx: &Transaction) -> Hash {
     hasher.finalize()
 }
 
-/// Zethora (ZTH-SPEC-006): digest of everything in a transaction except signature scripts, mass
-/// commitments and the payload. A private payment (carried in the payload) signs this digest, so it is
-/// bound to the rest of its transaction and cannot be moved to another one. The transparent inputs'
-/// signatures in turn cover the payload, so the two sides lock each other in. A fully private payment has no
-/// transparent inputs: its own signatures over this digest and its bundle are then the only binding, and enough.
-pub fn zethora_private_payment_digest(tx: &Transaction) -> Hash {
-    let mut hasher = kaspa_hashes::TransactionID::new();
+/// Zethora (ZTH-SPEC-006): what a private payment (carried in the payload) signs. Binds the payment to the rest of
+/// its transaction and to ONE network, so it can't be moved to another transaction or replayed on another network.
+/// The transparent inputs' signatures in turn cover the payload, so the two sides lock each other in. A fully
+/// private payment has no transparent inputs: its own signatures over this digest are then the only binding.
+///
+/// Seam review pack 1 #6. The digest is
+///     ZethoraPrivatePaymentDigest-hash( genesis hash of the network || the transaction, encoded as below )
+/// in its own hash domain (never equal to a transaction id or any other hash). Fields covered, in order:
+///   - version;
+///   - per input: previous outpoint (transaction id, index), sequence (an empty signature script is written in
+///     its place: the scripts sign the payload, so they can't be signed by it);
+///   - per output: value, script public key version and bytes, and (version >= 1) the covenant
+///     (present flag, authorizing input, covenant id);
+///   - lock time, subnetwork id, gas.
+///
+/// Not covered: signature scripts and sigop counts (they sign this payload), each input's compute budget (the
+/// mass commitment, excluded like in the transaction id; it changes only the mass the sender pays for, and a fully
+/// private payment has no inputs), and the payload itself (it holds the signatures).
+///
+/// Test: private_payment_digest_covers_every_field_and_the_network (kaspa-consensus tx_validation_in_isolation).
+pub fn zethora_private_payment_digest(tx: &Transaction, genesis_hash: &Hash) -> Hash {
+    let mut hasher = kaspa_hashes::ZethoraPrivatePaymentDigest::new();
+    hasher.update(genesis_hash);
     write_transaction(
         &mut hasher,
         tx,

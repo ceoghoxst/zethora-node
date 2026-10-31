@@ -56,8 +56,8 @@ not a bug still gets a permanent test proving it.** Every security test follows 
 | 2 proof checks amplified for free | Real (CPU DoS). Proof-result cache keyed by tx id + cheap checks before proof | F3c |
 | 3 nested pruning-lock deadlock | Not a bug: RfRwLock is readers-first. Proof test added | F3a done |
 | 4 template follow-up batches skip tag check | Not a bug. Proof test added (BatchedSelector) | F3a done |
-| 5 no per-proof base mass; mempool vs consensus | Partly real. Add per-proof base mass (benchmark first, use the item 16 speed numbers) | F3b |
-| 6 private digest domain / coverage | Real. Separate domain + bind network/genesis | F3b |
+| 5 no per-proof base mass; mempool vs consensus | Partly real. Base 40,000 + 9,000/action from the proof_speed benchmark; mempool limit = block limit, every size relayable (test) | F3b done |
+| 6 private digest domain / coverage | Real. Own hash domain + genesis hash; covered fields documented and each one tested | F3b done |
 | 7 expect on consensus path | Real. VerifyError::Commitment, plain reject, no ban | F3a done |
 | 8 private-state import not atomic | Real. Import-in-progress marker + wipe on startup (with P3-2) | F3c |
 | 9 bans turn a version mismatch into a partition | Real. Version-gated strikes, not instant bans | F3c |

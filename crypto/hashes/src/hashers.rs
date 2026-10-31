@@ -30,6 +30,8 @@ blake2b_hasher! {
     struct MuHashFinalizeHash => b"MuHashFinalize",
     struct PersonalMessageSigningHash => b"PersonalMessageSigningHash",
     struct CovenantID => b"CovenantID",
+    // Zethora (seam review pack 1 #6): its own domain, so a private payment digest can never equal any other hash
+    struct ZethoraPrivatePaymentDigest => b"ZethoraPrivatePaymentDigest",
 }
 
 sha256_hasher! {

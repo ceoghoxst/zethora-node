@@ -143,7 +143,9 @@ impl ConsensusServices {
         .with_private_spends(matches!(
             params.net.network_type(),
             kaspa_consensus_core::network::NetworkType::Devnet | kaspa_consensus_core::network::NetworkType::Simnet
-        ));
+        ))
+        // Zethora (seam review pack 1 #6): private payments sign this network's genesis hash
+        .with_zethora_genesis(params.genesis.hash);
 
         let pruning_point_manager = PruningPointManager::new(
             params.pruning_depth(),

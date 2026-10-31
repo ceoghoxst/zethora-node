@@ -1875,9 +1875,14 @@ impl ConsensusApi for Consensus {
 /// Seam review P3-3: the most spent coin tags and snapshots a chain up to a pruning point with this blue score can hold.
 /// Snapshots: each chain block produces at most one, and the chain has at most `blue_score + 1` blocks. Coin tags: every
 /// block in the pruning point's past is in some chain block's mergeset (at most `mergeset_size_limit` each), and a
-/// block's private payments carry at most `compute_mass_limit / PROOF_MASS_PER_ACTION` actions, one tag each.
+/// block's private payments carry at most A actions, one tag each. Each payment costs at least PROOF_MASS_BASE +
+/// PROOF_MASS_PER_ACTION x its actions and has at most MAX_ACTIONS_PER_TX of them (seam review pack 1 #5), so k
+/// payments with A actions in all cost at least k x BASE + A x PER_ACTION >= A x (PER_ACTION + BASE / MAX), and
+/// A <= compute_mass_limit x MAX / (MAX x PER_ACTION + BASE).
 pub(crate) fn private_state_limits(blue_score: u64, mergeset_size_limit: u64, compute_mass_limit: u64) -> (u64, u64) {
+    use kaspa_consensus_core::zethora_private::{PROOF_MASS_BASE, PROOF_MASS_PER_ACTION};
     let chain_blocks = blue_score.saturating_add(1);
-    let actions_per_block = compute_mass_limit / kaspa_consensus_core::zethora_private::PROOF_MASS_PER_ACTION;
+    let max_actions = zethora_shielded::codec::MAX_ACTIONS_PER_TX as u64;
+    let actions_per_block = compute_mass_limit.saturating_mul(max_actions) / (max_actions * PROOF_MASS_PER_ACTION + PROOF_MASS_BASE);
     (chain_blocks.saturating_mul(mergeset_size_limit).saturating_mul(actions_per_block), chain_blocks)
 }

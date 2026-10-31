@@ -28,10 +28,18 @@ pub fn private_payload(tx: &crate::tx::Transaction) -> &[u8] {
 /// Bytes per action in the encoded payment (from the shared layout; `zethora_shielded::codec::ACTION_SIZE` is the same).
 pub const ACTION_SIZE: usize = layout::ACTION_SIZE;
 
-/// Extra compute mass charged per action for checking its share of the proof (ZTH-SPEC-006 §5).
-/// About 1.85 ms per extra action on the reference PC; this price keeps a full block's proof checks
-/// to a small share of a second.
-pub const PROOF_MASS_PER_ACTION: u64 = 15_000;
+/// Proof mass (ZTH-SPEC-006 §5; seam review pack 1 #5): every private payment pays compute mass for checking its
+/// proof, a fixed part per payment plus a part per action, priced from the measured check time
+/// (zethora-shielded/tests/proof_speed.rs). Checking a proof costs about 13.8 ms + 3.0 ms per action on the cloud
+/// sandbox (Intel Xeon 2.1 GHz, 2 vCPU; Oct 29, 2026: 1 action 16.8 ms, 2: 21.6, 4: 29.4, 8: 38.4, 16: 62.0) and
+/// about 0.6x that on the reference PC (Ryzen 5 2600: 13 ms for 2 actions, Oct 7, 2026). At about 3,000 mass per
+/// sandbox millisecond, a block full of private payments of ANY size (500,000 compute mass) takes at most ~150 ms of
+/// proof checking on the sandbox, ~90 ms on the reference PC. Before the fixed part existed (15,000 per action only),
+/// a block of 1-action payments took ~390 ms on the sandbox: the fixed cost of each proof was free.
+/// Fixed proof mass per private payment.
+pub const PROOF_MASS_BASE: u64 = 40_000;
+/// Proof mass per action.
+pub const PROOF_MASS_PER_ACTION: u64 = 9_000;
 
 /// If this payload is a private payment, returns the encoded payment (without the magic).
 pub fn private_payment_bytes(payload: &[u8]) -> Option<&[u8]> {
@@ -154,9 +162,11 @@ pub fn new_coin_count(payload: &[u8]) -> u64 {
     private_payment_bytes(payload).and_then(action_count).map_or(0, |n| n as u64)
 }
 
-/// Extra compute mass for the proof in this payload (0 for ordinary transactions).
+/// Extra compute mass for the proof in this payload: `PROOF_MASS_BASE` + `PROOF_MASS_PER_ACTION` per action for a
+/// private payment (the base alone if its action count can't be read; validation refuses it anyway), 0 otherwise.
 pub fn proof_mass(payload: &[u8]) -> u64 {
-    private_payment_bytes(payload).and_then(action_count).map_or(0, |n| n as u64 * PROOF_MASS_PER_ACTION)
+    private_payment_bytes(payload)
+        .map_or(0, |encoded| PROOF_MASS_BASE + action_count(encoded).map_or(0, |n| n as u64 * PROOF_MASS_PER_ACTION))
 }
 
 #[cfg(test)]
@@ -188,8 +198,10 @@ mod tests {
         assert_eq!(pool_flows(&fake(2, -5_000)), Ok(Some((5_000, 0)))); // shielding
         assert_eq!(pool_flows(&fake(2, 2_000)), Ok(Some((0, 2_000)))); // unshielding
         assert_eq!(pool_flows(&fake(3, 0)), Ok(Some((0, 0))));
-        assert_eq!(proof_mass(&fake(2, 0)), 30_000);
-        assert_eq!(proof_mass(&fake(4, 0)), 60_000);
+        assert_eq!(proof_mass(&fake(2, 0)), 40_000 + 18_000);
+        assert_eq!(proof_mass(&fake(4, 0)), 40_000 + 36_000);
+        assert_eq!(proof_mass(&fake(1, 0)), 49_000);
+        assert_eq!(proof_mass(&PRIVATE_PAYMENT_MAGIC), PROOF_MASS_BASE); // unreadable count: the base only
     }
 
     #[test]
