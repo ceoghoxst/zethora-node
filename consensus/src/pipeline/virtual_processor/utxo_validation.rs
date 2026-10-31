@@ -940,6 +940,7 @@ pub(crate) fn missing_private_state_message(record: &str, block: Hash, error: &i
 #[cfg(test)]
 mod tests {
     use itertools::Itertools;
+    use kaspa_consensus_core::errors::block::RuleError;
     use smallvec::smallvec;
 
     use super::*;
@@ -1037,6 +1038,15 @@ mod tests {
         }
     }
 
+    /// The validated-transaction list a block's own transactions produce (in block order, coinbase first but skipped
+    /// by the check), as validate_transactions_in_parallel hands it to the chain-qualification check
+    fn make_validated<'a>(txs: &'a [Transaction]) -> Vec<(ValidatedTransaction<'a>, u32)> {
+        txs.iter()
+            .enumerate()
+            .map(|(i, tx)| (ValidatedTransaction::new(PopulatedTransaction::new(tx, vec![]), 0), i as u32 + 1))
+            .collect()
+    }
+
     /// Seam review pack 2 (P-D): the final chain-qualification condition, the Err(InvalidTransactionsInUtxoContext)
     /// return path of verify_expected_utxo_state: a chain block whose own transactions spend a coin tag its mergeset
     /// already spent, or overdraw the private pool its mergeset leaves, or overfill the coin list it leaves, is
@@ -1049,30 +1059,36 @@ mod tests {
         let a = private_payment([0xA1; 32], 10); // takes 10 out of the private pool
         let b = private_payment([0xA2; 32], 40); // takes 40: together with a, exactly the pool's 50
         let txs = vec![coinbase.clone(), a.clone(), b.clone()];
-        let validated = |txs: &[Transaction]| -> Vec<(ValidatedTransaction, u32)> {
-            txs.iter()
-                .enumerate()
-                .map(|(i, tx)| (ValidatedTransaction::new(PopulatedTransaction::new(tx, vec![]), 0), i as u32 + 1))
-                .collect()
-        };
 
         // Positive control: both payments fit (10 then 40 = the whole 50) and no mergeset tag matches
-        assert!(check_own_transactions_qualify(&txs, validated(&txs[1..]), &HashSet::new(), 50, 0).is_ok());
+        assert!(check_own_transactions_qualify(&txs, make_validated(&txs[1..]), &HashSet::new(), 50, 0).is_ok());
         // The coin list rule passes on the exact boundary: two places left, two payments with one coin each
         assert!(
-            check_own_transactions_qualify(&txs, validated(&txs[1..]), &HashSet::new(), 50, zethora_private::NOTE_TREE_CAPACITY - 2)
-                .is_ok()
+            check_own_transactions_qualify(
+                &txs,
+                make_validated(&txs[1..]),
+                &HashSet::new(),
+                50,
+                zethora_private::NOTE_TREE_CAPACITY - 2
+            )
+            .is_ok()
         );
 
         // Attack 1: b's coin tag was already spent by the mergeset: the whole block is disqualified with the exact counts
         let mut mergeset = HashSet::new();
         mergeset.insert([0xA2; 32]);
-        assert_disqualified(check_own_transactions_qualify(&txs, validated(&txs[1..]), &mergeset, 50, 0), 1, 2);
+        assert_disqualified(check_own_transactions_qualify(&txs, make_validated(&txs[1..]), &mergeset, 50, 0), 1, 2);
         // Attack 2 (turnstile): the pool holds 49: a's 10 fit, b's 40 no longer do
-        assert_disqualified(check_own_transactions_qualify(&txs, validated(&txs[1..]), &HashSet::new(), 49, 0), 1, 2);
+        assert_disqualified(check_own_transactions_qualify(&txs, make_validated(&txs[1..]), &HashSet::new(), 49, 0), 1, 2);
         // Attack 3 (coin list): one place left: a's coin fits, b's no longer does
         assert_disqualified(
-            check_own_transactions_qualify(&txs, validated(&txs[1..]), &HashSet::new(), 50, zethora_private::NOTE_TREE_CAPACITY - 1),
+            check_own_transactions_qualify(
+                &txs,
+                make_validated(&txs[1..]),
+                &HashSet::new(),
+                50,
+                zethora_private::NOTE_TREE_CAPACITY - 1,
+            ),
             1,
             2,
         );

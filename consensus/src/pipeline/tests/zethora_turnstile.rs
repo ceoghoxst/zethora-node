@@ -33,6 +33,7 @@ use kaspa_consensus_core::utxo::utxo_collection::UtxoCollection;
 use kaspa_consensus_core::utxo::utxo_diff::UtxoDiff;
 use kaspa_consensus_core::zethora_private::{NOTE_TREE_CAPACITY, PRIVATE_PAYMENT_MAGIC, nullifiers, pool_flows, spend_anchor};
 use kaspa_txscript::opcodes::codes::OpTrue;
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use zethora_shielded::scan::Scanner;
 use zethora_shielded::wallet::{PrivateWallet, shielding_payment};
@@ -542,7 +543,7 @@ async fn block_template_checks_coin_tags_on_every_selection_batch() {
 /// valid against a snapshot registered "for good"), so only the retain site can keep it out.
 #[tokio::test]
 async fn turnstile_refused_payment_is_absent_from_validated_transactions() {
-    let mut f = shield_one_coin_on_chain().await;
+    let f = shield_one_coin_on_chain().await;
     let honest = f.spend(SPEND_FEE); // 1,000 out of the pool: fits
     let over = counterfeit_unchecked(OVERDRAW, 77, &[&f.node]); // 49,500: fits alone, not after the honest spend
     let view = UtxoCollection::default(); // both payments are fully private: no visible inputs to look up
@@ -553,8 +554,9 @@ async fn turnstile_refused_payment_is_absent_from_validated_transactions() {
     // Positive control: alone in the block, the overdrawing payment fits the pool and IS validated
     let mut shielded_balance = SHIELDED;
     let mut coin_room = NOTE_TREE_CAPACITY;
+    let single = vec![coinbase.clone(), over.clone()];
     let (validated, _) = vp.validate_transactions_with_muhash_in_parallel(
-        &vec![coinbase.clone(), over.clone()],
+        &single,
         &view,
         daa,
         daa,
@@ -571,8 +573,9 @@ async fn turnstile_refused_payment_is_absent_from_validated_transactions() {
     // site: it is absent from the validated transactions and the pool balance is untouched by it
     let mut shielded_balance = SHIELDED;
     let mut coin_room = NOTE_TREE_CAPACITY;
+    let honest_first = vec![coinbase.clone(), honest.clone(), over.clone()];
     let (validated, _) = vp.validate_transactions_with_muhash_in_parallel(
-        &vec![coinbase.clone(), honest.clone(), over.clone()],
+        &honest_first,
         &view,
         daa,
         daa,
@@ -589,8 +592,9 @@ async fn turnstile_refused_payment_is_absent_from_validated_transactions() {
     // The other order decides the other way: the counterfeit fits first (500 left), the honest spend does not
     let mut shielded_balance = SHIELDED;
     let mut coin_room = NOTE_TREE_CAPACITY;
+    let over_first = vec![coinbase, over.clone(), honest.clone()];
     let (validated, _) = vp.validate_transactions_with_muhash_in_parallel(
-        &vec![coinbase, over.clone(), honest.clone()],
+        &over_first,
         &view,
         daa,
         daa,
