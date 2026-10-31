@@ -1,3 +1,5 @@
+> **SUPERSEDED:** This is an early draft. The canonical spec is [ZTH-SPEC-006.md](../ZTH-SPEC-006.md).
+
 # ZTH-SPEC-006: Privacy and Provable Supply
 
 **Project:** Zethora (ZTHR). Built by DeionRaven Labs.
