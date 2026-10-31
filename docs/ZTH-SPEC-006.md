@@ -4,7 +4,7 @@
 |---------|-------|
 | Status  | Draft (devnet phase) |
 | Version | 0.4 (per-transaction turnstile) |
-| Date    | 2026-10-19 |
+| Date    | 2026-10-28 |
 | Authors | Zethora contributors |
 | Related | ZTH-SPEC-008 (fee pool), ZTH-IMPL-020 (RandomZ DoS ban), Zethora_Lightpaper_v0.3 |
 
