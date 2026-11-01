@@ -1,0 +1,28 @@
+﻿
+consensus\src\pipeline\virtual_processor\processor.rs:1301:                true => self.check_private_payment_in_context(&mtx.tx, sp, &pending),
+consensus\src\pipeline\virtual_processor\processor.rs:1333:        self.check_private_payment_in_context(&mutable_tx.tx, sp, &pending)
+consensus\src\pipeline\virtual_processor\processor.rs:1373:                        .and_then(|_| self.check_private_payment_in_context(&mtx.tx, virtual_sp, &pending));
+consensus\src\pipeline\virtual_processor\utxo_validation.rs:454:    pub(crate) fn check_private_payment_in_context(
+consensus\src\pipeline\virtual_processor\utxo_validation.rs:550:        self.check_private_payment_in_context(transaction, selected_parent, &HashSet::new())?;
+consensus\src\processes\transaction_validator\mod.rs:27:    private_spends_enabled: bool,
+consensus\src\processes\transaction_validator\mod.rs:57:            private_spends_enabled: false,
+consensus\src\processes\transaction_validator\mod.rs:63:        self.private_spends_enabled = enabled;
+consensus\src\processes\transaction_validator\mod.rs:88:            private_spends_enabled: false,
+consensus\src\processes\transaction_validator\tx_validation_in_isolation.rs:29:        check_private_payment(tx, self.private_spends_enabled)
+consensus\src\processes\transaction_validator\tx_validation_in_isolation.rs:149:fn check_private_payment(tx: &Transaction, spends_enabled: bool) -> TxResult<()> {
+consensus\src\processes\transaction_validator\tx_validation_in_isolation.rs:557:    use super::{TxRuleError, check_private_payment};
+consensus\src\processes\transaction_validator\tx_validation_in_isolation.rs:596:        assert_eq!(check_private_payment(&tx, false), Ok(()));
+consensus\src\processes\transaction_validator\tx_validation_in_isolation.rs:598:        assert_eq!(check_private_payment(&tx, false), Ok(()));
+consensus\src\processes\transaction_validator\tx_validation_in_isolation.rs:604:        assert_eq!(check_private_payment(&tx, false), Ok(()));
+consensus\src\processes\transaction_validator\tx_validation_in_isolation.rs:609:        assert!(matches!(check_private_payment(&moved, false), Err(TxRuleError::InvalidPrivatePaymentProof(_))));
+consensus\src\processes\transaction_validator\tx_validation_in_isolation.rs:614:        assert_eq!(check_private_payment(&resigned, false), Ok(()));
+consensus\src\processes\transaction_validator\tx_validation_in_isolation.rs:618:    fn shielding_is_accepted_with_spends_on_or_off() {
+consensus\src\processes\transaction_validator\tx_validation_in_isolation.rs:621:        assert_eq!(check_private_payment(&tx, true), Ok(()));
+consensus\src\processes\transaction_validator\tx_validation_in_isolation.rs:622:        assert_eq!(check_private_payment(&tx, false), Ok(()));
+consensus\src\processes\transaction_validator\tx_validation_in_isolation.rs:625:        assert!(matches!(check_private_payment(&moved, true), Err(TxRuleError::InvalidPrivatePaymentProof(_))));
+consensus\src\processes\transaction_validator\tx_validation_in_isolation.rs:667:        assert_eq!(check_private_payment(&tx, true), Ok(()));
+consensus\src\processes\transaction_validator\tx_validation_in_isolation.rs:669:        assert!(matches!(check_private_payment(&tx, false), Err(TxRuleError::InvalidPrivatePayment(_))));
+consensus\src\processes\transaction_validator\tx_validation_in_isolation.rs:692:        assert!(matches!(check_private_payment(&stolen, true), Err(TxRuleError::InvalidPrivatePaymentProof(_))));
+consensus\src\processes\transaction_validator\tx_validation_in_isolation.rs:700:        assert!(matches!(check_private_payment(&tx, false), Err(TxRuleError::InvalidPrivatePayment(_))));
+
+

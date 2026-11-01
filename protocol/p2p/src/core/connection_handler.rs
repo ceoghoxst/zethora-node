@@ -243,16 +243,16 @@ impl ConnectionHandler {
         (1 << 17) + 256
     }
 
-    fn communication_timeout() -> u64 {
-        10_000
-    }
-
-    fn keep_alive() -> u64 {
-        10_000
+     fn communication_timeout() -> u64 {
+        300_000
     }
 
     fn connect_timeout() -> u64 {
-        1_000
+        300_000
+    }
+
+    fn keep_alive() -> u64 {
+        30_000
     }
 }
 

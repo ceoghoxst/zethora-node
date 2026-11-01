@@ -1,0 +1,12 @@
+[package]
+name = "zethora-faucet"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+kaspa-consensus-core = { path = "../../consensus/core" }
+kaspa-grpc-client = { path = "../../rpc/grpc/client" }
+kaspa-rpc-core = { path = "../../rpc/core" }
+kaspa-txscript = { path = "../../crypto/txscript" }
+kaspa-addresses = { path = "../../crypto/addresses" }
+tokio = { version = "1", features = ["full"] }

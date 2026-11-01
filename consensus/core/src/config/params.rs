@@ -640,7 +640,7 @@ pub const MAINNET_PARAMS: Params = Params {
 
 pub const TESTNET_PARAMS: Params = Params {
     // Zethora testnet seeds are added before the testnet launch (Kaspa's testnet seeders were removed).
-    dns_seeders: &[],
+    dns_seeders: &["95.216.185.137"],
     net: NetworkId::with_suffix(NetworkType::Testnet, 10),
     genesis: TESTNET_GENESIS,
     anchor_depth: 600,
