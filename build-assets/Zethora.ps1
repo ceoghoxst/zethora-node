@@ -68,14 +68,14 @@ $tabWallet.UseVisualStyleBackColor = $false
 $tabs.TabPages.AddRange(@($tabMine,$tabWallet))
 
 $btn = New-Object Windows.Forms.Button; $btn.Text = 'START MINING'
-$btn.Location = New-Object Drawing.Point(440,4); $btn.Size = New-Object Drawing.Size(210,52)
+$btn.Location = New-Object Drawing.Point(440,108); $btn.Size = New-Object Drawing.Size(210,52)
 $btn.FlatStyle = 'Flat'; $btn.BackColor = $accent; $btn.ForeColor = [Drawing.Color]::White
 $btn.Font = New-Object Drawing.Font('Segoe UI',12,[Drawing.FontStyle]::Bold)
 $tabMine.Controls.Add($btn)
 
 # stat tiles
 $tiles = @{}
-$defs = @(@('Status','Stopped',16,158),@('Speed','-',182,158),@('Blocks found','0',348,158),@('Balance','-',514,168))
+$defs = @(@('Status','Stopped',16,158),@('Speed','-',182,158),@('Blocks found','0',348,158),@('Balance','-',504,160))
 foreach ($d in $defs) {
   $p = New-Object Windows.Forms.Panel; $p.BackColor = $panel
   # NB: the width lives in $d[3] on purpose. A local named $w would be assigned to
@@ -90,19 +90,21 @@ foreach ($d in $defs) {
   $tiles[$d[0]] = $v
 }
 
-$supply = New-Label 'Supply check: waiting for first block' 16 108 630 26 11 $true $dim $tabMine
-$addr = New-Label 'Address: (shown after start)' 16 138 630 22 9 $false $dim $tabMine
+$supply = New-Label 'Supply check: waiting for first block' 16 108 410 26 11 $true $dim $tabMine
+$addr = New-Label 'Address: (shown after start)' 16 138 410 22 9 $false $dim $tabMine
 
 $log = New-Object Windows.Forms.TextBox; $log.Multiline = $true; $log.ReadOnly = $true
 $log.ScrollBars = 'Vertical'; $log.BackColor = [Drawing.Color]::FromArgb(10,10,14); $log.ForeColor = $dim
 $log.Font = New-Object Drawing.Font('Consolas',9); $log.BorderStyle = 'None'
-$log.Location = New-Object Drawing.Point(16,168); $log.Size = New-Object Drawing.Size(630,220)
+$log.Location = New-Object Drawing.Point(16,168); $log.Size = New-Object Drawing.Size(630,200)
 $tabMine.Controls.Add($log)
 
-New-Label 'Your key file holds your rewards. Back it up (USB or a second drive). Never share it.' 16 402 470 40 9 $false $dim $tabMine | Out-Null
+New-Label 'Your key file holds your rewards. Back it up (USB or a second drive). Never share it.' 16 380 440 40 9 $false $dim $tabMine | Out-Null
 $keyBtn = New-Object Windows.Forms.Button; $keyBtn.Text = 'BACK UP MY KEY'
-$keyBtn.Location = New-Object Drawing.Point(476,396); $keyBtn.Size = New-Object Drawing.Size(170,32)
-$keyBtn.FlatStyle = 'Flat'; $keyBtn.ForeColor = $fg; $keyBtn.BackColor = $panel
+$keyBtn.Location = New-Object Drawing.Point(460,380); $keyBtn.Size = New-Object Drawing.Size(170,32)
+$keyBtn.FlatStyle = 'Flat'
+$keyBtn.FlatAppearance.BorderColor = [Drawing.Color]::FromArgb(30,30,40)
+$keyBtn.ForeColor = $fg; $keyBtn.BackColor = $panel
 $tabMine.Controls.Add($keyBtn)
 $keyBtn.Add_Click({
   $k = Join-Path $here 'zethora-miner-key-testnet.txt'
