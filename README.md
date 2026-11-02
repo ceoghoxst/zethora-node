@@ -1,4 +1,12 @@
-# Zethora (ZTHR)
+# Zethora (Testnet)
+
+**Zethora Testnet is currently LIVE.**
+- **Download:** https://tinyurl.com/Zethora-Testnet
+- **Live Network Commit Hash:** [PASTE YOUR COMMIT HASH HERE]
+- **Network Status:** Mining & Syncing
+- **Privacy Status:** Experimental on Testnet. Mainnet privacy is OFF until independent review.
+
+---
 
 **Self-custodied digital property.**
 
