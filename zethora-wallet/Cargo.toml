@@ -1,0 +1,22 @@
+[package]
+name = "zethora-wallet"
+description = "Zethora testnet wallet CLI: balance, receive, send (Testnet Phase 2)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "zethora-wallet"
+path = "src/main.rs"
+
+[dependencies]
+kaspa-addresses.workspace = true
+kaspa-consensus-core.workspace = true
+kaspa-grpc-client.workspace = true
+kaspa-rpc-core.workspace = true
+kaspa-txscript.workspace = true
+secp256k1.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true

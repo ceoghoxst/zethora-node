@@ -6,6 +6,7 @@ members = [
     "zethora-shield",
     "zethora-shielded",
     "zethora-shielded/layout",
+    "zethora-wallet",
     "daemon",
     "cli",
     "core",
