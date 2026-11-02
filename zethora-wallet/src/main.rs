@@ -399,11 +399,10 @@ async fn cmd_send(node_url: &str, key_file: &str, to: &str, amount: &str, dry_ru
     println!("Sent. Transaction id: {txid}");
     println!("It shows up in your balance after one confirmation (a few seconds on testnet).");
 
-    // What the payment actually moved to the recipient, summed from the transaction that was sent rather than from
-    // the text the user typed, so the ledger cannot disagree with what the network accepted.
-    let paid_sompi: u64 =
-        tx.outputs.iter().filter(|output| output.script_public_key == pay_to_address_script(&destination)).map(|output| output.value).sum();
-    if let Err(e) = history::record_send(&txid.to_string(), &destination.to_string(), paid_sompi, fee_sompi, now_unix()) {
+    // The amount the user asked to pay. This is recorded directly rather than summed from the transaction's outputs,
+    // because a self-send pays the recipient and the change to the same address: summing the matching outputs would
+    // count the change as part of the payment.
+    if let Err(e) = history::record_send(&txid.to_string(), &destination.to_string(), amount_zets, fee_sompi, now_unix()) {
         eprintln!(
             "WARN: the payment was sent, but the wallet ledger could not be written ({e}). Save this transaction id: {txid}"
         );
