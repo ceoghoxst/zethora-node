@@ -146,29 +146,37 @@ function Read-New($path,[ref]$pos) {
 # ---------- wallet: receive and send ----------
 # Both buttons run zethora-wallet.exe from this folder. The wallet reads the same
 # key file the miner uses, so "receive" shows the address you are mining to.
-function Invoke-Wallet([string[]]$walletArgs, [string]$tag) {
-  # Output goes to %TEMP%, not to this folder, so nothing extra is ever installed.
-  $outFile = Join-Path $env:TEMP "zethora-wallet-$tag.out"
-  $errFile = Join-Path $env:TEMP "zethora-wallet-$tag.err"
-  Remove-Item $outFile,$errFile -Force -ErrorAction SilentlyContinue
+# The process is started directly rather than with Start-Process: Start-Process
+# leaves ExitCode empty here, which made every wallet call look like a failure.
+# This way the one-minute guard still applies and the exit code is real.
+function Invoke-Wallet([string[]]$walletArgs) {
   if (-not (Test-Path $walletExe)) {
     return @{ Code = -1; Text = "Can't find zethora-wallet.exe in this folder.`n`nUnzip the whole download into one folder (right-click the zip, Extract All) and open Zethora from inside that folder." }
   }
-  $p = Start-Process -FilePath $walletExe -ArgumentList $walletArgs -WorkingDirectory $here `
-      -WindowStyle Hidden -RedirectStandardOutput $outFile -RedirectStandardError $errFile -PassThru
-  if (-not $p.WaitForExit(60000)) {
-    try { Stop-Process -Id $p.Id -Force } catch {}
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = $walletExe
+  $psi.Arguments = (($walletArgs | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' ')
+  $psi.WorkingDirectory = $here
+  $psi.UseShellExecute = $false        # no extra console window in front of the app
+  $psi.CreateNoWindow = $true
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+  $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+  try {
+    $proc = [System.Diagnostics.Process]::Start($psi)
+  } catch {
+    return @{ Code = -3; Text = "Couldn't start zethora-wallet.exe.`n`n$($_.Exception.Message)" }
+  }
+  # Both pipes are drained while the wallet runs, so a full pipe can't stall it.
+  $outTask = $proc.StandardOutput.ReadToEndAsync()
+  $errTask = $proc.StandardError.ReadToEndAsync()
+  if (-not $proc.WaitForExit(60000)) {
+    try { $proc.Kill() } catch {}
     return @{ Code = -2; Text = 'The wallet did not answer within a minute. Try again.' }
   }
-  $text = ''
-  for ($i = 0; $i -lt 25; $i++) {
-    $o = if (Test-Path $outFile) { Get-Content -LiteralPath $outFile -Raw -ErrorAction SilentlyContinue } else { $null }
-    $e = if (Test-Path $errFile) { Get-Content -LiteralPath $errFile -Raw -ErrorAction SilentlyContinue } else { $null }
-    $text = (@("$o","$e") -join "`r`n").Trim()
-    if ($text) { break }
-    Start-Sleep -Milliseconds 100
-  }
-  return @{ Code = $p.ExitCode; Text = $text }
+  $text = (@("$($outTask.Result)","$($errTask.Result)") -join "`r`n").Trim()
+  return @{ Code = $proc.ExitCode; Text = $text }
 }
 
 # A small dark popup: selectable text plus a copy button, so an address or a
@@ -276,15 +284,14 @@ $form.Controls.Add($sendBtn)
 New-Label 'Receive shows the address people send coins to. Send spends from the same key file.' 470 532 210 44 9 $false $dim | Out-Null
 
 $recvBtn.Add_Click({
-  $r = Invoke-Wallet @('receive','--testnet') 'receive'
-  if ($r.Code -ne 0) {
-    Add-Log "Receive failed. $($r.Text)"
-    [Windows.Forms.MessageBox]::Show("Couldn't read your address.`n`n$($r.Text)",'Receive') | Out-Null
-    return
-  }
-  $m = [regex]::Match($r.Text, 'zethoratest:[a-z0-9]+')
+  $r = Invoke-Wallet @('receive','--testnet')
+  # The wallet prints the address on its own line, indented by four spaces, so
+  # the text is trimmed and the pattern is not anchored to the start of a line:
+  # indentation must never be able to hide the address.
+  $m = [regex]::Match(([string]$r.Text).Trim(), 'zethoratest:[a-z0-9]+')
   if (-not $m.Success) {
-    [Windows.Forms.MessageBox]::Show("The wallet printed no address.`n`n$($r.Text)",'Receive') | Out-Null
+    Add-Log "Receive failed (exit $($r.Code)). $($r.Text)"
+    [Windows.Forms.MessageBox]::Show("Couldn't read your address.`n`n$($r.Text)",'Receive') | Out-Null
     return
   }
   $myAddr = $m.Value
@@ -305,7 +312,7 @@ $sendBtn.Add_Click({
   $answer = [Windows.Forms.MessageBox]::Show("Send $amount ZTHR to`n`n$to`n`nA send cannot be undone. Continue?",'Send ZTHR',[Windows.Forms.MessageBoxButtons]::YesNo,[Windows.Forms.MessageBoxIcon]::Question)
   if ($answer -ne 'Yes') { return }
   Add-Log "Sending $amount ZTHR to $to..."
-  $r = Invoke-Wallet @('send', $to, $amount, '--testnet') 'send'
+  $r = Invoke-Wallet @('send', $to, $amount, '--testnet')
   if ($r.Code -ne 0) {
     Add-Log "Send failed. $($r.Text)"
     [Windows.Forms.MessageBox]::Show("The send did not go through.`n`n$($r.Text)",'Send ZTHR') | Out-Null
