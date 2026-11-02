@@ -9947,6 +9947,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "zethora-wallet"
+version = "2.1.0"
+dependencies = [
+ "kaspa-addresses",
+ "kaspa-consensus-core",
+ "kaspa-grpc-client",
+ "kaspa-rpc-core",
+ "kaspa-txscript",
+ "secp256k1",
+ "tokio",
+]
+
+[[package]]
 name = "zip32"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
