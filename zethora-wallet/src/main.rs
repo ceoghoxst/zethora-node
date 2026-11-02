@@ -5,6 +5,8 @@
 //!     zethora-wallet balance --testnet                    show your balance
 //!     zethora-wallet receive --testnet                    print your zethoratest: address
 //!     zethora-wallet send <address> <amount> --testnet    build, sign and submit a payment
+//!     zethora-wallet history [--limit <n>] [--json]       list what this wallet has done
+//!     zethora-wallet sync --testnet                       record incoming coins that are not in the ledger yet
 //!
 //! The key is read from `zethora-miner-key-testnet.txt` (64 hex characters) - the same file
 //! zethora-miner uses, so the wallet controls the coins the miner earned. The wallet never
@@ -17,6 +19,8 @@
 //! mainnet by accident.
 
 #![allow(clippy::arithmetic_side_effects)]
+
+mod history;
 
 use kaspa_addresses::{Address, Prefix, Version};
 use kaspa_consensus_core::{
@@ -47,6 +51,8 @@ const FEE_RATE: u64 = 110;
 const MIN_CHANGE: u64 = 100_000_000;
 /// A regular (non-coinbase) coin is treated as spendable this many blocks after it landed.
 const REGULAR_CONFIRMATIONS: u64 = 10;
+/// How many records `history` prints when `--limit` is not given: the newest 50.
+const DEFAULT_HISTORY_LIMIT: usize = 50;
 
 // ---
 
@@ -66,6 +72,8 @@ enum WalletError {
     SignatureInvalid(SignError),
     /// The node could not be reached or refused a call.
     Rpc(String),
+    /// The wallet ledger could not be read or written.
+    Ledger(String),
 }
 
 impl fmt::Display for WalletError {
@@ -83,6 +91,7 @@ impl fmt::Display for WalletError {
             ),
             Self::SignatureInvalid(e) => write!(f, "the signed transaction failed its own signature check, so it was not sent: {e}"),
             Self::Rpc(m) => write!(f, "{m}"),
+            Self::Ledger(m) => write!(f, "{m}"),
         }
     }
 }
@@ -155,25 +164,20 @@ fn required_fee(num_inputs: usize, num_outputs: u64) -> u64 {
 
 // --- building and signing (no network, so it can be tested) ---
 
-/// A signed payment together with what it cost.
-#[derive(Debug)]
-struct BuiltSend {
-    tx: SignableTransaction,
-    fee: u64,
-    change: u64,
-    coins_used: usize,
-}
-
 /// Builds a payment to `to` out of `coins`, sends the change to `change_address` and signs with `key`.
 /// The signature is checked before the result is handed back, so no unsigned or wrongly signed transaction can
 /// reach the network. Nothing in here touches the network, which is what makes the tests below possible.
+///
+/// Returns the signed transaction and the fee it pays, in sompi. The caller must not work that fee out a second
+/// time: the number here already includes any dust change folded into the fee, so it is the only figure that
+/// matches the transaction that was signed. `cmd_send` prints it and writes it into the ledger unchanged.
 fn build_send(
     key: &Keypair,
     change_address: &Address,
     to: &Address,
     amount: u64,
     coins: &[(TransactionOutpoint, UtxoEntry)],
-) -> Result<BuiltSend, WalletError> {
+) -> Result<(SignableTransaction, u64), WalletError> {
     if coins.is_empty() {
         return Err(WalletError::NoCoins(format!(
             "{} holds no spendable coin. Wait for the coins to mature, and check that the node runs with --utxoindex",
@@ -222,7 +226,7 @@ fn build_send(
 
         let signed = sign(MutableTransaction::with_entries(unsigned, entries), *key);
         check_signatures(&signed.as_verifiable())?;
-        return Ok(BuiltSend { tx: signed, fee, change, coins_used: count });
+        return Ok((signed, fee));
     }
     Err(WalletError::InsufficientFunds {
         available: total,
@@ -367,12 +371,17 @@ async fn cmd_send(node_url: &str, key_file: &str, to: &str, amount: &str, dry_ru
     if coins.is_empty() && maturing > 0 {
         println!("note: {} is still maturing", zthr(maturing));
     }
-    let built = build_send(&key, &change_address, &destination, amount_zets, &coins)?;
-    println!("Coins    : {} spent of {} spendable", built.coins_used, coins.len());
-    println!("Fee      : {}", zthr(built.fee));
-    println!("Change   : {}", zthr(built.change));
+    // The fee comes back from build_send instead of being worked out again here: a second calculation could
+    // disagree with the transaction that was actually signed, and the ledger has to record the fee that was paid.
+    let (signed, fee_sompi) = build_send(&key, &change_address, &destination, amount_zets, &coins)?;
+    let coins_used = signed.tx.inputs.len();
+    // build_send pays the recipient first and appends the change output only when the change is not dust.
+    let change_sompi = signed.tx.outputs.get(1).map(|output| output.value).unwrap_or(0);
+    println!("Coins    : {coins_used} spent of {} spendable", coins.len());
+    println!("Fee      : {}", zthr(fee_sompi));
+    println!("Change   : {}", zthr(change_sompi));
 
-    let mut tx = built.tx.tx;
+    let mut tx = signed.tx;
     // The id is only set by finalize(), so this has to happen before it is printed or sent.
     tx.finalize();
     println!("Txid     : {}", tx.id());
@@ -389,7 +398,78 @@ async fn cmd_send(node_url: &str, key_file: &str, to: &str, amount: &str, dry_ru
     println!();
     println!("Sent. Transaction id: {txid}");
     println!("It shows up in your balance after one confirmation (a few seconds on testnet).");
+
+    // What the payment actually moved to the recipient, summed from the transaction that was sent rather than from
+    // the text the user typed, so the ledger cannot disagree with what the network accepted.
+    let paid_sompi: u64 =
+        tx.outputs.iter().filter(|output| output.script_public_key == pay_to_address_script(&destination)).map(|output| output.value).sum();
+    if let Err(e) = history::record_send(&txid.to_string(), &destination.to_string(), paid_sompi, fee_sompi, now_unix()) {
+        eprintln!(
+            "WARN: the payment was sent, but the wallet ledger could not be written ({e}). Save this transaction id: {txid}"
+        );
+    }
     Ok(())
+}
+
+/// Prints what the ledger holds: the newest `limit` records, oldest first. `json` prints the raw ledger lines
+/// instead of the table, which is what other tools (and the tests) read.
+async fn cmd_history(limit: usize, json: bool) -> Result<(), WalletError> {
+    let mut records = history::read_records().map_err(|e| WalletError::Ledger(format!("{e}")))?;
+    if records.is_empty() {
+        println!("No history.");
+        return Ok(());
+    }
+    // Oldest first, so the newest records are the ones a small `--limit` keeps.
+    records.sort_by_key(|record| record.timestamp_unix);
+    if records.len() > limit {
+        records.drain(..records.len() - limit);
+    }
+    if json {
+        for line in history::render_json_lines(&records).map_err(WalletError::Ledger)? {
+            println!("{line}");
+        }
+    } else {
+        print!("{}", history::render_table(&records).map_err(WalletError::Ledger)?);
+    }
+    Ok(())
+}
+
+/// Records every coin the node reports for this wallet's address that the ledger has not seen yet. Append-only: it
+/// never rewrites or removes a line, so a second run in a row discovers nothing.
+async fn cmd_sync(node_url: &str, key_file: &str) -> Result<(), WalletError> {
+    let key = load_key(key_file)?;
+    let address = testnet_address(&key);
+    let client = connect(node_url).await?;
+    let utxos = all_utxos(&client, &address).await?;
+    let (discovered, already_known) =
+        history::sync_utxos(&address.to_string(), &utxos, now_unix()).map_err(|e| WalletError::Ledger(format!("{e}")))?;
+    println!("Sync: discovered {discovered} new receive(s), {already_known} already known.");
+    Ok(())
+}
+
+/// Every coin the node reports for `address`, maturing or not - `sync` records what arrived, and a coin that is
+/// still maturing has very much arrived.
+async fn all_utxos(client: &GrpcClient, address: &Address) -> Result<Vec<history::UtxoRef>, WalletError> {
+    let utxos = client
+        .get_utxos_by_addresses(vec![address.clone()])
+        .await
+        .map_err(|e| WalletError::Rpc(rpc_hint("get_utxos_by_addresses", e)))?;
+    Ok(utxos
+        .into_iter()
+        .map(|entry| {
+            let outpoint = TransactionOutpoint::from(entry.outpoint);
+            history::UtxoRef {
+                txid: outpoint.transaction_id.to_string(),
+                index: outpoint.index,
+                amount_sompi: UtxoEntry::from(entry.utxo_entry).amount,
+            }
+        })
+        .collect())
+}
+
+/// Seconds since the Unix epoch, the unit every timestamp in the ledger uses.
+fn now_unix() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|since| since.as_secs()).unwrap_or(0)
 }
 
 // --- command line ---
@@ -400,16 +480,25 @@ USAGE:
     zethora-wallet balance --testnet [--node <url>] [--key-file <path>]
     zethora-wallet receive --testnet [--key-file <path>]
     zethora-wallet send <address> <amount> --testnet [--node <url>] [--key-file <path>] [--dry-run]
+    zethora-wallet history [--limit <n>] [--json]
+    zethora-wallet sync --testnet [--node <url>] [--key-file <path>]
 
 OPTIONS:
     --testnet           use the Zethora testnet (required - there is no mainnet wallet yet)
     --node <url>        node gRPC endpoint (default grpc://127.0.0.1:26210)
     --key-file <path>   key file with 64 hex characters (default zethora-miner-key-testnet.txt)
     --dry-run           send: build and sign the payment, then stop without sending it
+    --limit <n>         history: how many of the newest records to print (default 50)
+    --json              history: print the raw ledger lines instead of the table
     -h, --help          show this help
     -V, --version       show the version
 
-The node must run with --testnet --utxoindex, because `balance` and `send` ask it which coins an address holds.
+The node must run with --testnet --utxoindex, because `balance`, `send` and `sync` ask it which coins an address
+holds. `history` reads a local file and needs no --testnet.
+
+The ledger is append-only JSON lines at %APPDATA%\\Zethora\\wallet-history.jsonl, or at the path in
+ZETHORA_WALLET_HISTORY_PATH.
+
 Amounts are in ZTHR, for example:
 
     zethora-wallet send zethoratest:qq... 1.5 --testnet
@@ -422,6 +511,8 @@ struct Args {
     node_url: String,
     key_file: String,
     dry_run: bool,
+    json: bool,
+    limit: usize,
 }
 
 fn parse_args(argv: &[String]) -> Result<Args, WalletError> {
@@ -431,6 +522,8 @@ fn parse_args(argv: &[String]) -> Result<Args, WalletError> {
     let mut node_url = TESTNET_NODE_URL.to_string();
     let mut key_file = TESTNET_KEY_FILE.to_string();
     let mut dry_run = false;
+    let mut json = false;
+    let mut limit = DEFAULT_HISTORY_LIMIT;
 
     let mut index = 0;
     while index < argv.len() {
@@ -438,17 +531,19 @@ fn parse_args(argv: &[String]) -> Result<Args, WalletError> {
         match arg {
             "--testnet" => testnet = true,
             "--dry-run" => dry_run = true,
-            "--node" | "--key-file" => {
+            "--json" => json = true,
+            "--node" | "--key-file" | "--limit" => {
                 let value = argv.get(index + 1).ok_or_else(|| WalletError::Usage(format!("{arg} needs a value")))?;
-                if arg == "--node" {
-                    node_url = value.clone();
-                } else {
-                    key_file = value.clone();
+                match arg {
+                    "--node" => node_url = value.clone(),
+                    "--key-file" => key_file = value.clone(),
+                    _ => limit = parse_limit(value)?,
                 }
                 index += 1;
             }
             _ if arg.starts_with("--node=") => node_url = arg["--node=".len()..].to_string(),
             _ if arg.starts_with("--key-file=") => key_file = arg["--key-file=".len()..].to_string(),
+            _ if arg.starts_with("--limit=") => limit = parse_limit(&arg["--limit=".len()..])?,
             _ if arg.starts_with('-') => return Err(WalletError::Usage(format!("unknown option \"{arg}\""))),
             _ => {
                 if command.is_empty() {
@@ -461,9 +556,19 @@ fn parse_args(argv: &[String]) -> Result<Args, WalletError> {
         index += 1;
     }
     if command.is_empty() {
-        return Err(WalletError::Usage("no command given. Use balance, receive or send.".to_string()));
+        return Err(WalletError::Usage(
+            "no command given. Use balance, receive, send, history or sync.".to_string(),
+        ));
     }
-    Ok(Args { command, positionals, testnet, node_url, key_file, dry_run })
+    Ok(Args { command, positionals, testnet, node_url, key_file, dry_run, json, limit })
+}
+
+/// `--limit <n>`: how many of the newest ledger records `history` prints. A plain count, so a typo is refused
+/// instead of silently printing nothing.
+fn parse_limit(text: &str) -> Result<usize, WalletError> {
+    text.parse::<usize>().map_err(|_| {
+        WalletError::Usage(format!("--limit needs a whole number of records, for example 20 (got \"{text}\")"))
+    })
 }
 
 fn expect_no_positionals(args: &Args) -> Result<(), WalletError> {
@@ -484,7 +589,9 @@ async fn run(argv: &[String]) -> Result<(), WalletError> {
     }
 
     let args = parse_args(argv)?;
-    if !args.testnet {
+    // `history` reads a file in this user's profile and never talks to a node, so it is the one command that does
+    // not need --testnet. Everything that can reach the network still refuses to run without it.
+    if !args.testnet && args.command != "history" {
         return Err(WalletError::Usage(
             "testnet only for now: pass --testnet. The wallet refuses to run against any other network.".to_string(),
         ));
@@ -507,7 +614,17 @@ async fn run(argv: &[String]) -> Result<(), WalletError> {
             };
             cmd_send(&args.node_url, &args.key_file, to, amount, args.dry_run).await
         }
-        other => Err(WalletError::Usage(format!("unknown command \"{other}\". Use balance, receive or send."))),
+        "history" => {
+            expect_no_positionals(&args)?;
+            cmd_history(args.limit, args.json).await
+        }
+        "sync" => {
+            expect_no_positionals(&args)?;
+            cmd_sync(&args.node_url, &args.key_file).await
+        }
+        other => Err(WalletError::Usage(format!(
+            "unknown command \"{other}\". Use balance, receive, send, history or sync."
+        ))),
     }
 }
 
@@ -565,12 +682,12 @@ mod tests {
         let address = testnet_address(&key);
         let destination = testnet_address(&test_key(2));
 
-        let built = build_send(&key, &address, &destination, 2_000_000_000, &wallet_coins(&address)).expect("a valid payment");
-        check_signatures(&built.tx.as_verifiable()).expect("the signature must verify");
+        let (signed, _fee) = build_send(&key, &address, &destination, 2_000_000_000, &wallet_coins(&address)).expect("a valid payment");
+        check_signatures(&signed.as_verifiable()).expect("the signature must verify");
 
-        assert!(built.tx.tx.inputs.iter().all(|input| !input.signature_script.is_empty()), "every input must be signed");
-        assert_eq!(built.tx.tx.outputs[0].value, 2_000_000_000);
-        assert_eq!(built.tx.tx.outputs[0].script_public_key, pay_to_address_script(&destination));
+        assert!(signed.tx.inputs.iter().all(|input| !input.signature_script.is_empty()), "every input must be signed");
+        assert_eq!(signed.tx.outputs[0].value, 2_000_000_000);
+        assert_eq!(signed.tx.outputs[0].script_public_key, pay_to_address_script(&destination));
     }
 
     #[test]
@@ -579,10 +696,10 @@ mod tests {
         let address = testnet_address(&key);
         let destination = testnet_address(&test_key(2));
 
-        let mut built = build_send(&key, &address, &destination, 1_000_000_000, &wallet_coins(&address)).unwrap();
-        built.tx.tx.outputs[0].value = 999_000_000_000;
+        let (mut signed, _fee) = build_send(&key, &address, &destination, 1_000_000_000, &wallet_coins(&address)).unwrap();
+        signed.tx.outputs[0].value = 999_000_000_000;
 
-        let err = check_signatures(&built.tx.as_verifiable()).expect_err("a changed output must not verify");
+        let err = check_signatures(&signed.as_verifiable()).expect_err("a changed output must not verify");
         assert!(matches!(err, WalletError::SignatureInvalid(_)), "expected a signature error, got {err:?}");
     }
 
@@ -591,10 +708,10 @@ mod tests {
         let key = test_key(1);
         let address = testnet_address(&key);
 
-        let mut built = build_send(&key, &address, &address, 1_000_000_000, &wallet_coins(&address)).unwrap();
-        built.tx.tx.inputs[0].signature_script.clear();
+        let (mut signed, _fee) = build_send(&key, &address, &address, 1_000_000_000, &wallet_coins(&address)).unwrap();
+        signed.tx.inputs[0].signature_script.clear();
 
-        let err = check_signatures(&built.tx.as_verifiable()).expect_err("an unsigned input must not verify");
+        let err = check_signatures(&signed.as_verifiable()).expect_err("an unsigned input must not verify");
         let message = err.to_string();
         assert!(message.contains("Signature is empty for input: 0"), "unexpected message: {message}");
     }
@@ -614,10 +731,10 @@ mod tests {
         match result {
             Err(WalletError::SignatureInvalid(_)) => {}
             Err(other) => panic!("expected the signature check to reject coins of another key, got {other:?}"),
-            Ok(built) => panic!(
+            Ok((signed, _fee)) => panic!(
                 "build_send returned a transaction signed by the wrong key ({} inputs): the signature check before \
                  submission is gone",
-                built.coins_used
+                signed.tx.inputs.len()
             ),
         }
     }
@@ -628,7 +745,8 @@ mod tests {
         let address = testnet_address(&key);
         let destination = testnet_address(&test_key(2));
 
-        let mut tx = build_send(&key, &address, &destination, 1_000_000_000, &wallet_coins(&address)).unwrap().tx.tx;
+        let (signed, _fee) = build_send(&key, &address, &destination, 1_000_000_000, &wallet_coins(&address)).unwrap();
+        let mut tx = signed.tx;
         assert!(tx.id().to_string().chars().all(|c| c == '0'), "a non-finalized transaction carries the all-zero placeholder");
         // The wallet finalizes before printing the id or submitting, otherwise it would report a zero txid.
         tx.finalize();
@@ -643,17 +761,19 @@ mod tests {
         let coins = wallet_coins(&address);
         let total: u64 = coins.iter().map(|(_, entry)| entry.amount).sum();
 
-        let built = build_send(&key, &address, &destination, 1_000_000_000, &coins).unwrap();
+        let (signed, fee) = build_send(&key, &address, &destination, 1_000_000_000, &coins).unwrap();
         // The wallet spends the largest coins first, so the input side is the `coins_used` largest ones.
+        let coins_used = signed.tx.inputs.len();
+        let change = signed.tx.outputs.get(1).map(|output| output.value).unwrap_or(0);
         let mut amounts: Vec<u64> = coins.iter().map(|(_, entry)| entry.amount).collect();
         amounts.sort_unstable_by(|a, b| b.cmp(a));
-        let spent: u64 = amounts[..built.coins_used].iter().sum();
+        let spent: u64 = amounts[..coins_used].iter().sum();
 
-        assert_eq!(spent, 1_000_000_000 + built.fee + built.change, "no zet may be created or lost");
+        assert_eq!(spent, 1_000_000_000 + fee + change, "no zet may be created or lost");
         assert!(spent <= total, "the wallet must not spend more than the address holds");
-        assert!(built.fee >= required_fee(built.coins_used, 2), "the fee must cover the mass");
-        assert_eq!(built.tx.tx.outputs.len(), 2, "a payment and a change output");
-        assert!(built.change >= MIN_CHANGE, "change must never be dust");
+        assert!(fee >= required_fee(coins_used, 2), "the fee must cover the mass");
+        assert_eq!(signed.tx.outputs.len(), 2, "a payment and a change output");
+        assert!(change >= MIN_CHANGE, "change must never be dust");
     }
 
     #[test]
@@ -665,11 +785,10 @@ mod tests {
         let dust = MIN_CHANGE / 2;
         let coins = vec![coin(0, &address, 1_000_000_000 + required_fee(1, 2) + dust)];
 
-        let built = build_send(&key, &address, &destination, 1_000_000_000, &coins).unwrap();
-        assert_eq!(built.change, 0);
-        assert_eq!(built.tx.tx.outputs.len(), 1);
-        assert_eq!(built.fee, required_fee(1, 2) + dust);
-        assert!(built.fee >= required_fee(1, 1), "a single output needs less mass, so the fee still covers it");
+        let (signed, fee) = build_send(&key, &address, &destination, 1_000_000_000, &coins).unwrap();
+        assert_eq!(signed.tx.outputs.len(), 1, "a dust change output must not be created");
+        assert_eq!(fee, required_fee(1, 2) + dust);
+        assert!(fee >= required_fee(1, 1), "a single output needs less mass, so the fee still covers it");
     }
 
     #[test]
