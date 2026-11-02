@@ -16,13 +16,14 @@ $nodeExe  = Join-Path $here 'zethora-node.exe'
 $minerExe = Join-Path $here 'zethora-miner.exe'
 $nodeLog  = Join-Path $here 'node.log'
 $minerLog = Join-Path $here 'miner.log'
-$balLog   = Join-Path $here 'balance.log'
 $walletExe = Join-Path $here 'zethora-wallet.exe'
-
-$script:node = $null; $script:miner = $null; $script:bal = $null
+$walletBalOut = Join-Path $here 'wallet-balance.out'
+$walletHistOut = Join-Path $here 'wallet-history.out'
+$script:node = $null; $script:miner = $null; $script:bal = $null; $script:hist = $null
 $script:minerPos = 0; $script:startedAt = $null; $script:lastBal = [datetime]::MinValue
 $script:unbalanced = $false
 $script:balDue = [datetime]::MinValue
+$script:histDue = [datetime]::MinValue; $script:lastHist = [datetime]::MinValue
 $script:restarts = 0
 
 # ---------- look ----------
@@ -32,57 +33,77 @@ $green = [Drawing.Color]::FromArgb(70,210,120); $red = [Drawing.Color]::FromArgb
 $accent = [Drawing.Color]::FromArgb(140,110,255)
 
 $form = New-Object Windows.Forms.Form
-$form.Text = 'Zethora - testnet miner'; $form.Size = New-Object Drawing.Size(720,630)
+$form.Text = 'Zethora - testnet miner'; $form.Size = New-Object Drawing.Size(720,700)
 $form.BackColor = $bg; $form.ForeColor = $fg; $form.StartPosition = 'CenterScreen'
 $form.FormBorderStyle = 'FixedSingle'; $form.MaximizeBox = $false
 $form.Font = New-Object Drawing.Font('Segoe UI',10)
 
-function New-Label($text,$x,$y,$w,$h,$size,$bold,$color) {
+function New-Label($text,$x,$y,$w,$h,$size,$bold,$color,$parent) {
+  if (-not $parent) { $parent = $form }
   $l = New-Object Windows.Forms.Label; $l.Text = $text
   $l.Location = New-Object Drawing.Point($x,$y); $l.Size = New-Object Drawing.Size($w,$h)
   $style = if ($bold) { [Drawing.FontStyle]::Bold } else { [Drawing.FontStyle]::Regular }
   $l.Font = New-Object Drawing.Font('Segoe UI',$size,$style); $l.ForeColor = $color
-  $form.Controls.Add($l); return $l
+  $l.Parent = $parent; return $l
 }
 
 New-Label 'ZETHORA' 24 16 300 40 22 $true $accent | Out-Null
 New-Label 'testnet - coins have no value' 26 54 400 22 9 $false $dim | Out-Null
 
+# ---------- tabs ----------
+# Tab 1 keeps the mining controls, tab 2 keeps the wallet. Every control below is
+# parented to one page, so it is only shown on its own tab.
+$tabs = New-Object Windows.Forms.TabControl
+$tabs.Location = New-Object Drawing.Point(16,80); $tabs.Size = New-Object Drawing.Size(672,520)
+$tabs.Font = New-Object Drawing.Font('Segoe UI',10); $tabs.ItemSize = New-Object Drawing.Size(160,28)
+$tabs.SizeMode = 'Fixed'; $tabs.Appearance = 'Normal'
+$form.Controls.Add($tabs)
+
+$tabMine = New-Object Windows.Forms.TabPage
+$tabMine.Text = 'Miner Dashboard'; $tabMine.BackColor = $bg; $tabMine.ForeColor = $fg
+$tabMine.UseVisualStyleBackColor = $false
+$tabWallet = New-Object Windows.Forms.TabPage
+$tabWallet.Text = 'Wallet'; $tabWallet.BackColor = $bg; $tabWallet.ForeColor = $fg
+$tabWallet.UseVisualStyleBackColor = $false
+$tabs.TabPages.AddRange(@($tabMine,$tabWallet))
+
 $btn = New-Object Windows.Forms.Button; $btn.Text = 'START MINING'
-$btn.Location = New-Object Drawing.Point(470,22); $btn.Size = New-Object Drawing.Size(210,52)
+$btn.Location = New-Object Drawing.Point(440,4); $btn.Size = New-Object Drawing.Size(210,52)
 $btn.FlatStyle = 'Flat'; $btn.BackColor = $accent; $btn.ForeColor = [Drawing.Color]::White
 $btn.Font = New-Object Drawing.Font('Segoe UI',12,[Drawing.FontStyle]::Bold)
-$form.Controls.Add($btn)
+$tabMine.Controls.Add($btn)
 
 # stat tiles
 $tiles = @{}
-$defs = @(@('Status','Stopped',24),@('Speed','-',190),@('Blocks found','0',356),@('Balance','-',522))
+$defs = @(@('Status','Stopped',16,158),@('Speed','-',182,158),@('Blocks found','0',348,158),@('Balance','-',514,168))
 foreach ($d in $defs) {
   $p = New-Object Windows.Forms.Panel; $p.BackColor = $panel
-  $p.Location = New-Object Drawing.Point($d[2],96); $p.Size = New-Object Drawing.Size(158,78)
-  $form.Controls.Add($p)
+  # NB: the width lives in $d[3] on purpose. A local named $w would be assigned to
+  # the built-in -Width alias and come back as null, leaving a zero-width tile.
+  $p.Location = New-Object Drawing.Point($d[2],16); $p.Size = New-Object Drawing.Size($d[3],78)
+  $tabMine.Controls.Add($p)
   $t = New-Object Windows.Forms.Label; $t.Text = $d[0]; $t.ForeColor = $dim
-  $t.Location = New-Object Drawing.Point(10,8); $t.Size = New-Object Drawing.Size(140,20); $p.Controls.Add($t)
+  $t.Location = New-Object Drawing.Point(10,8); $t.Size = New-Object Drawing.Size(($d[3] - 20),20); $p.Controls.Add($t)
   $v = New-Object Windows.Forms.Label; $v.Text = $d[1]; $v.ForeColor = $fg
   $v.Font = New-Object Drawing.Font('Segoe UI',14,[Drawing.FontStyle]::Bold)
-  $v.Location = New-Object Drawing.Point(10,32); $v.Size = New-Object Drawing.Size(145,34); $p.Controls.Add($v)
+  $v.Location = New-Object Drawing.Point(10,32); $v.Size = New-Object Drawing.Size(($d[3] - 20),34); $p.Controls.Add($v)
   $tiles[$d[0]] = $v
 }
 
-$supply = New-Label 'Supply check: waiting for first block' 24 188 656 26 11 $true $dim
-$addr = New-Label 'Address: (shown after start)' 24 218 656 22 9 $false $dim
+$supply = New-Label 'Supply check: waiting for first block' 16 108 630 26 11 $true $dim $tabMine
+$addr = New-Label 'Address: (shown after start)' 16 138 630 22 9 $false $dim $tabMine
 
 $log = New-Object Windows.Forms.TextBox; $log.Multiline = $true; $log.ReadOnly = $true
 $log.ScrollBars = 'Vertical'; $log.BackColor = [Drawing.Color]::FromArgb(10,10,14); $log.ForeColor = $dim
 $log.Font = New-Object Drawing.Font('Consolas',9); $log.BorderStyle = 'None'
-$log.Location = New-Object Drawing.Point(24,248); $log.Size = New-Object Drawing.Size(656,220)
-$form.Controls.Add($log)
+$log.Location = New-Object Drawing.Point(16,168); $log.Size = New-Object Drawing.Size(630,220)
+$tabMine.Controls.Add($log)
 
-New-Label 'Your key file holds your rewards. Back it up (USB or a second drive). Never share it.' 24 482 470 40 9 $false $dim | Out-Null
+New-Label 'Your key file holds your rewards. Back it up (USB or a second drive). Never share it.' 16 402 470 40 9 $false $dim $tabMine | Out-Null
 $keyBtn = New-Object Windows.Forms.Button; $keyBtn.Text = 'BACK UP MY KEY'
-$keyBtn.Location = New-Object Drawing.Point(510,476); $keyBtn.Size = New-Object Drawing.Size(170,32)
+$keyBtn.Location = New-Object Drawing.Point(476,396); $keyBtn.Size = New-Object Drawing.Size(170,32)
 $keyBtn.FlatStyle = 'Flat'; $keyBtn.ForeColor = $fg; $keyBtn.BackColor = $panel
-$form.Controls.Add($keyBtn)
+$tabMine.Controls.Add($keyBtn)
 $keyBtn.Add_Click({
   $k = Join-Path $here 'zethora-miner-key-testnet.txt'
   if (Test-Path $k) {
@@ -106,6 +127,7 @@ function Start-All {
   $script:unbalanced = $false
   $supply.Text = 'Supply check: waiting for first block'; $supply.ForeColor = $dim
   $tiles['Status'].Text = 'Starting'; $tiles['Status'].ForeColor = $fg
+  $tiles['Balance'].Text = '-'; $walletBal.Text = '-'
   Add-Log 'Starting node...'
   $script:node = Start-Process -FilePath $nodeExe -ArgumentList '--testnet','--utxoindex','--enable-unsynced-mining' `
       -WorkingDirectory $here -WindowStyle Hidden -RedirectStandardOutput $nodeLog -RedirectStandardError "$nodeLog.err" -PassThru
@@ -123,11 +145,12 @@ function Start-Miner {
 }
 
 function Stop-All {
-  foreach ($p in @($script:miner,$script:node,$script:bal)) {
+  foreach ($p in @($script:miner,$script:node,$script:bal,$script:hist)) {
     if ($p -and -not $p.HasExited) { try { Stop-Process -Id $p.Id -Force } catch {} }
   }
-  $script:miner = $null; $script:node = $null; $script:bal = $null; $script:startedAt = $null
+  $script:miner = $null; $script:node = $null; $script:bal = $null; $script:hist = $null; $script:startedAt = $null
   $tiles['Status'].Text = 'Stopped'; $tiles['Status'].ForeColor = $fg; $tiles['Speed'].Text = '-'
+  $walletBal.Text = '-'; $tiles['Balance'].Text = '-'
   $btn.Text = 'START MINING'; $btn.BackColor = $accent
   Add-Log 'Stopped. Your key file and rewards are kept.'
 }
@@ -141,6 +164,113 @@ function Read-New($path,[ref]$pos) {
     $sr = New-Object IO.StreamReader($fs); $text = $sr.ReadToEnd(); $pos.Value = $fs.Position; $sr.Close()
     return ($text -split "`r?`n" | Where-Object { $_ -ne '' })
   } catch { return @() }
+}
+
+# ---------- wallet: balance and history ----------
+# Both read from zethora-wallet.exe and never from the miner's own output, so the
+# number on screen is the number the wallet would spend.
+#
+# Neither one is allowed to call the wallet synchronously: `Invoke-Wallet` can
+# wait up to a minute, and a minute of waiting inside a timer tick freezes the
+# window. So each one starts a hidden wallet, returns at once, and its output is
+# picked up on a later tick - the same way the node and miner are watched.
+function Start-WalletBalance {
+  if ($script:bal) { return }                       # one query at a time
+  if ($script:node -eq $null) { $walletBal.Text = '-'; $tiles['Balance'].Text = '-'; return }
+  if (-not (Test-Path $walletExe)) { $walletBal.Text = 'wallet tool missing'; return }
+  try { Remove-Item $walletBalOut -Force -ErrorAction SilentlyContinue } catch {}
+  try {
+    $script:bal = Start-Process -FilePath $walletExe -ArgumentList 'balance','--testnet' `
+        -WorkingDirectory $here -WindowStyle Hidden -RedirectStandardOutput $walletBalOut -RedirectStandardError "$walletBalOut.err" -PassThru
+  } catch { $script:bal = $null }
+}
+
+function Read-WalletBalance {
+  if (-not $script:bal -or -not $script:bal.HasExited) { return }
+  $script:bal = $null
+  $out = ''
+  try { if (Test-Path $walletBalOut) { $out = Get-Content $walletBalOut -Raw -ErrorAction SilentlyContinue } } catch {}
+  try { Remove-Item $walletBalOut -Force -ErrorAction SilentlyContinue } catch {}
+  # "Balance (node)   :          123.45678900    at DAA score 1234"
+  # The wallet already prints ZTHR here, so this amount is NOT divided again.
+  $m = [regex]::Match([string]$out, 'Balance \(node\)\s*:\s*([0-9]+(?:\.[0-9]+)?)')
+  if ($m.Success) {
+    $text = '{0:N8}' -f [decimal]::Parse($m.Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture)
+    $walletBal.Text = "$text ZTHR"; $walletBal.ForeColor = $fg; $tiles['Balance'].Text = $text
+  } else {
+    # Node still starting, or not answering: say nothing rather than something wrong.
+    $walletBal.Text = '-'; $tiles['Balance'].Text = '-'
+  }
+}
+
+function Start-WalletHistory {
+  if ($script:hist) { return }                      # one query at a time
+  if (-not (Test-Path $walletExe)) { $histNote.Text = 'History: the wallet tool is missing from this folder.'; return }
+  try { Remove-Item $walletHistOut -Force -ErrorAction SilentlyContinue } catch {}
+  try {
+    $script:hist = Start-Process -FilePath $walletExe -ArgumentList 'history','--limit','50','--json' `
+        -WorkingDirectory $here -WindowStyle Hidden -RedirectStandardOutput $walletHistOut -RedirectStandardError "$walletHistOut.err" -PassThru
+  } catch { $script:hist = $null; $histNote.Text = 'History: could not start the wallet tool.' }
+}
+
+function Set-HistoryRows($rows) {
+  $grid.Rows.Clear()
+  if (-not $rows -or @($rows).Count -eq 0) {
+    $grid.Rows.Add('No transactions yet.','','','','') | Out-Null
+    return 0
+  }
+  foreach ($r in $rows) {
+    $i = $grid.Rows.Add($r.Time, $r.Type, $r.Amount, $r.Fee, $r.Txid)
+    # The id is the proof of a payment, so it is never cut off for good: the full
+    # value is shown on hover even when the column is narrow. (Rows.Add returns the
+    # new row's index, not the row, so the row is fetched back by that index.)
+    $grid.Rows[$i].Cells['Txid'].ToolTipText = $r.Txid
+  }
+  return @($rows).Count
+}
+
+function Read-WalletHistory {
+  if (-not $script:hist -or -not $script:hist.HasExited) { return }
+  $script:hist = $null
+  $raw = ''
+  try { if (Test-Path $walletHistOut) { $raw = Get-Content $walletHistOut -Raw -ErrorAction SilentlyContinue } } catch {}
+  try { Remove-Item $walletHistOut -Force -ErrorAction SilentlyContinue } catch {}
+  $raw = [string]$raw
+  if (-not $raw.Trim()) {
+    [void](Set-HistoryRows @())
+    $histNote.Text = 'History: could not read the wallet ledger. Press REFRESH HISTORY to try again.'
+    return
+  }
+  # `history --json` prints one JSON object per line (the wallet ledger format),
+  # so each line is converted on its own. A single ConvertFrom-Json over the whole
+  # text would fail on the second object, and one damaged line would hide the rest.
+  $rows = @()
+  foreach ($line in ($raw -split "`r?`n")) {
+    if ($line -notmatch '^\s*\{') { continue }
+    try { $rec = $line | ConvertFrom-Json } catch { continue }
+    $time = '-'
+    try { $time = [DateTimeOffset]::FromUnixTimeSeconds([double]$rec.timestampUnix).LocalDateTime.ToString('yyyy-MM-dd HH:mm:ss') } catch {}
+    # Amounts are decimal strings in the ledger: parsing them as decimal (not as a
+    # float) is what keeps a large balance exact. Sompi are divided by 1e8 once.
+    $amount = '-'; $fee = '-'
+    try { $amount = ('{0:N8}' -f ([decimal]::Parse([string]$rec.amountSompi, [Globalization.CultureInfo]::InvariantCulture) / 100000000)) } catch {}
+    try { $fee = ('{0:N8}' -f ([decimal]::Parse([string]$rec.feeSompi, [Globalization.CultureInfo]::InvariantCulture) / 100000000)) } catch {}
+    $rows += [pscustomobject]@{ Time = $time; Type = [string]$rec.type; Amount = $amount; Fee = $fee; Txid = [string]$rec.txid }
+  }
+  if ($rows.Count -eq 0) {
+    [void](Set-HistoryRows @())
+    $histNote.Text = 'History: no transactions yet.'
+    return
+  }
+  # The wallet prints oldest first; a transaction list is read newest first.
+  [array]::Reverse($rows)
+  $n = Set-HistoryRows $rows
+  $histNote.Text = "History: $n transaction(s), newest first."
+}
+
+function Update-WalletHistory {
+  Start-WalletHistory
+  $script:lastHist = Get-Date
 }
 
 # ---------- wallet: receive and send ----------
@@ -268,20 +398,87 @@ function Show-SendDialog {
   [void]$d.ShowDialog($form)
 }
 
-# wallet buttons: the two things a miner needs besides mining
+# wallet tab: the balance, what the wallet has done, and the two buttons.
+# The balance on this tab and the Balance tile on the miner tab come from the
+# same place: `zethora-wallet.exe balance`, never from the miner's own output.
+New-Label 'Balance' 16 8 200 20 9 $false $dim $tabWallet | Out-Null
+$walletBal = New-Label '-' 16 28 620 34 18 $true $fg $tabWallet
+
+$grid = New-Object Windows.Forms.DataGridView
+$grid.Location = New-Object Drawing.Point(16,90); $grid.Size = New-Object Drawing.Size(624,130)
+$grid.ReadOnly = $true; $grid.AllowUserToAddRows = $false; $grid.AllowUserToDeleteRows = $false
+$grid.AllowUserToResizeRows = $false; $grid.RowHeadersVisible = $false
+$grid.SelectionMode = 'FullRowSelect'; $grid.MultiSelect = $false
+$grid.AutoSizeColumnsMode = 'Fill'; $grid.ColumnHeadersHeightSizeMode = 'DisableResizing'
+$grid.ColumnHeadersHeight = 28; $grid.GridColor = $panel
+$grid.BackgroundColor = [Drawing.Color]::FromArgb(10,10,14); $grid.BorderStyle = 'None'
+$grid.EnableHeadersVisualStyles = $false
+$grid.ColumnHeadersDefaultCellStyle.BackColor = $panel
+$grid.ColumnHeadersDefaultCellStyle.ForeColor = $dim
+$grid.ColumnHeadersDefaultCellStyle.SelectionBackColor = $panel
+$grid.DefaultCellStyle.BackColor = [Drawing.Color]::FromArgb(10,10,14)
+$grid.DefaultCellStyle.ForeColor = $fg
+$grid.DefaultCellStyle.SelectionBackColor = $accent
+$grid.DefaultCellStyle.SelectionForeColor = [Drawing.Color]::White
+$grid.DefaultCellStyle.Font = New-Object Drawing.Font('Consolas',9)
+$grid.Columns.Add('Time','Time') | Out-Null
+$grid.Columns.Add('Type','Type') | Out-Null
+$grid.Columns.Add('Amount','Amount (ZTHR)') | Out-Null
+$grid.Columns.Add('Fee','Fee (ZTHR)') | Out-Null
+$grid.Columns.Add('Txid','Txid') | Out-Null
+$grid.Columns['Time'].FillWeight = 130; $grid.Columns['Type'].FillWeight = 55
+$grid.Columns['Amount'].FillWeight = 110; $grid.Columns['Fee'].FillWeight = 95
+$grid.Columns['Txid'].FillWeight = 240
+$grid.Columns['Amount'].DefaultCellStyle.Alignment = 'MiddleRight'
+$grid.Columns['Fee'].DefaultCellStyle.Alignment = 'MiddleRight'
+$tabWallet.Controls.Add($grid)
+
+$histBtn = New-Object Windows.Forms.Button; $histBtn.Text = 'REFRESH HISTORY'
+$histBtn.Location = New-Object Drawing.Point(16,232); $histBtn.Size = New-Object Drawing.Size(180,34)
+$histBtn.FlatStyle = 'Flat'; $histBtn.BackColor = $panel; $histBtn.ForeColor = $fg
+$histBtn.Font = New-Object Drawing.Font('Segoe UI',9,[Drawing.FontStyle]::Bold)
+$tabWallet.Controls.Add($histBtn)
+
+# Orchard is not wired to anything: there is no shielded command behind it yet,
+# so the box is shown, greyed out and unclickable. It must never look usable.
+$shield = New-Object Windows.Forms.CheckBox
+$shield.Text = 'Shielded txs (Disabled pending audit)'
+$shield.Location = New-Object Drawing.Point(206,238); $shield.Size = New-Object Drawing.Size(300,24)
+$shield.ForeColor = $dim; $shield.Font = New-Object Drawing.Font('Segoe UI',9)
+$shield.Enabled = $false
+$tabWallet.Controls.Add($shield)
+
+$histNote = New-Label 'History: press REFRESH HISTORY to load your transactions.' 16 272 620 22 9 $false $dim $tabWallet
+
 $recvBtn = New-Object Windows.Forms.Button; $recvBtn.Text = 'RECEIVE'
-$recvBtn.Location = New-Object Drawing.Point(24,532); $recvBtn.Size = New-Object Drawing.Size(210,44)
+$recvBtn.Location = New-Object Drawing.Point(16,302); $recvBtn.Size = New-Object Drawing.Size(210,44)
 $recvBtn.FlatStyle = 'Flat'; $recvBtn.BackColor = $panel; $recvBtn.ForeColor = $fg
 $recvBtn.Font = New-Object Drawing.Font('Segoe UI',11,[Drawing.FontStyle]::Bold)
-$form.Controls.Add($recvBtn)
+$tabWallet.Controls.Add($recvBtn)
 
 $sendBtn = New-Object Windows.Forms.Button; $sendBtn.Text = 'SEND ZTHR'
-$sendBtn.Location = New-Object Drawing.Point(246,532); $sendBtn.Size = New-Object Drawing.Size(210,44)
+$sendBtn.Location = New-Object Drawing.Point(246,302); $sendBtn.Size = New-Object Drawing.Size(210,44)
 $sendBtn.FlatStyle = 'Flat'; $sendBtn.BackColor = $accent; $sendBtn.ForeColor = [Drawing.Color]::White
 $sendBtn.Font = New-Object Drawing.Font('Segoe UI',11,[Drawing.FontStyle]::Bold)
-$form.Controls.Add($sendBtn)
+$tabWallet.Controls.Add($sendBtn)
 
-New-Label 'Receive shows the address people send coins to. Send spends from the same key file.' 470 532 210 44 9 $false $dim | Out-Null
+New-Label 'Receive shows the address people send coins to. Send spends from the same key file.' 470 302 170 60 9 $false $dim $tabWallet | Out-Null
+
+$histBtn.Add_Click({
+  if ($script:hist) { $histNote.Text = 'History: still reading the last request...'; return }
+  $histNote.Text = 'History: reading your transactions...'
+  try { Update-WalletHistory } catch { $histNote.Text = 'History: could not read the wallet ledger.' }
+})
+
+# Opening the wallet tab loads what it shows, so the tab is never blank.
+$tabs.Add_SelectedIndexChanged({
+  try {
+    if ($tabs.SelectedTab -eq $tabWallet) {
+      if (((Get-Date) - $script:lastHist).TotalSeconds -ge 2) { Update-WalletHistory }
+      if ($script:node) { Start-WalletBalance }
+    }
+  } catch {}
+})
 
 $recvBtn.Add_Click({
   $r = Invoke-Wallet @('receive','--testnet')
@@ -328,6 +525,7 @@ $sendBtn.Add_Click({
   $txid = $m.Groups[1].Value
   Add-Log "Sent. Transaction id: $txid"
   $script:balDue = (Get-Date)   # ask the node for the new balance on the next tick
+  $script:histDue = (Get-Date)  # and for the new history, so the payment shows in the grid
   Show-Popup 'Send ZTHR' "Sent $amount ZTHR.`r`n`r`nTransaction id:`r`n$txid`r`n`r`nIt shows in your balance after one confirmation (a few seconds on testnet)." $txid 'COPY ID'
 })
 
@@ -340,8 +538,8 @@ $timer.Add_Tick({
     $script:restarts++
     if ($script:restarts -gt 3) { Add-Log 'The node keeps stopping. See node.log and send it to us.'; Stop-All; return }
     Add-Log "The node stopped unexpectedly. Restarting it ($($script:restarts) of 3)..."
-    foreach ($p in @($script:miner,$script:bal)) { if ($p -and -not $p.HasExited) { try { Stop-Process -Id $p.Id -Force } catch {} } }
-    $script:bal = $null; Copy-Item $nodeLog (Join-Path $here 'node-crash.log') -Force -ErrorAction SilentlyContinue; Start-All; return
+    foreach ($p in @($script:miner,$script:bal,$script:hist)) { if ($p -and -not $p.HasExited) { try { Stop-Process -Id $p.Id -Force } catch {} } }
+    $script:bal = $null; $script:hist = $null; Copy-Item $nodeLog (Join-Path $here 'node-crash.log') -Force -ErrorAction SilentlyContinue; Start-All; return
   }
   $age = ((Get-Date) - $script:startedAt).TotalSeconds
   if (-not $script:miner -and $age -ge 20) { Start-Miner }
@@ -369,20 +567,33 @@ $timer.Add_Tick({
         }
       }
     }
-    # balance: 1 s after each block found, else every 10 s (one tiny local query to your own node, no mining cost)
-    if ($script:bal -and $script:bal.HasExited) {
-      $out = Get-Content $balLog -Raw -ErrorAction SilentlyContinue
-      if ($out -match 'Balance:\s+([\d\.]+)\s+ZTHR') { $tiles['Balance'].Text = ('{0:N4}' -f [double]$matches[1]) }
-      $script:bal = $null
-    }
-    if (-not $script:bal -and $age -ge 25 -and (((Get-Date) -ge $script:balDue -and $script:balDue -gt $script:lastBal) -or ((Get-Date) - $script:lastBal).TotalSeconds -ge 10)) {
+    # balance: 1 s after each block found, else every 10 s. It is the wallet that
+    # answers (`zethora-wallet balance`), so the miner's own output is not scraped.
+    if ($age -ge 25 -and (((Get-Date) -ge $script:balDue -and $script:balDue -gt $script:lastBal) -or ((Get-Date) - $script:lastBal).TotalSeconds -ge 10)) {
       $script:lastBal = Get-Date
-      $script:bal = Start-Process -FilePath $minerExe -ArgumentList '--testnet','balance' `
-          -WorkingDirectory $here -WindowStyle Hidden -RedirectStandardOutput $balLog -RedirectStandardError "$balLog.err" -PassThru
+      Start-WalletBalance
     }
+  }
+
+  # Wallet output is picked up on every tick: the wallet may have been started a
+  # moment ago, by a button press or by the previous tick.
+  try {
+    Read-WalletBalance
+    Read-WalletHistory
+  } catch {}
+
+  # While the desktop shows the wallet, its history and balance keep themselves
+  # up to date - unless one was asked for less than ten seconds ago.
+  if ($tabs.SelectedTab -eq $tabWallet) {
+    if (((Get-Date) - $script:lastHist).TotalSeconds -ge 10 -or (Get-Date) -lt $script:histDue) { try { Update-WalletHistory } catch {} }
+    if ($script:node -and ((Get-Date) - $script:lastBal).TotalSeconds -ge 10) { $script:lastBal = Get-Date; Start-WalletBalance }
   }
 })
 $timer.Start()
 
-$form.Add_FormClosing({ $timer.Stop(); Stop-All })
+$form.Add_FormClosing({
+  $timer.Stop(); Stop-All
+  # Nothing of the wallet's is left behind, and no hidden wallet keeps running.
+  try { Remove-Item $walletBalOut,"$walletBalOut.err",$walletHistOut,"$walletHistOut.err" -Force -ErrorAction SilentlyContinue } catch {}
+})
 [void]$form.ShowDialog()
