@@ -1,20 +1,31 @@
 # Zethora (Testnet)
 
 **Zethora Testnet is currently LIVE.**
+- **Version:** v0.1.1-testnet.1
 - **Download:** https://tinyurl.com/Zethora-Testnet
-- **Live Network Commit Hash:** [PASTE YOUR COMMIT HASH HERE]
+- **Live Network Commit Hash:** e0c180c55d6094be568f73f7eebf1d6c324d1e36
 - **Network Status:** Mining & Syncing
-- **Privacy Status:** Experimental on Testnet. Mainnet privacy is OFF until independent review.
+- **Privacy Status:** Shielded transactions are disabled on this build. See
+  [Privacy status](#privacy-status) below.
 
 ---
 
-**Self-custodied digital property.**
+## Overview
 
-Status: devnet phase. Private sends are built in and disabled in today's
-builds. Testnet will enable them as an experimental, unreviewed feature after
-the current hardening (F2); mainnet keeps them disabled until an independent
-review of the Orchard integration is complete. No token, no
-presale, no smart contracts.
+Zethora is a proof-of-work Layer 1 derived from the Kaspa codebase. It keeps
+Kaspa's GHOSTDAG BlockDAG consensus and 1 block-per-second cadence, and adds
+its own emission schedule, a RandomZ proof-of-work algorithm, and an optional
+shielded-transaction layer built on Zcash Orchard.
+
+- **Supply:** 100,000,000 ZTHR hard cap, enforced by consensus rules. No
+  premine, no allocation, no owner.
+- **Consensus:** GHOSTDAG, 1 BPS on public networks.
+- **Mining:** RandomZ, a RandomX variant tuned for Zethora. CPU-mineable and
+  ASIC-resistant by design.
+- **Base layer:** Kaspa's Rust implementation. Zethora forks it rather than
+  reimplementing consensus.
+
+No token sale, no presale, no smart contracts.
 
 ---
 
@@ -41,9 +52,10 @@ foundation or a company.
 **Home mining from Monero.** RandomZ, a RandomX variant tuned for Zethora.
 Designed for ordinary CPUs (ASIC-resistant).
 
-**Privacy from Zcash.** Orchard 0.16.0, used unmodified. Shielded sends,
-shielded receives, unshielding back to transparent. The Orchard primitive is
-the audited, battle-tested Zcash code. We did not change it.
+**Privacy from Zcash: built, currently disabled.** Orchard 0.16.0, used
+unmodified: shielded sends, shielded receives, unshielding back to
+transparent. The primitive is upstream Zcash code, unchanged. It is disabled
+on testnet and mainnet; see [Privacy status](#privacy-status).
 
 **Fast settlement from Kaspa.** GHOSTDAG BlockDAG, configured for 1 block per
 second on the public networks. Kaspa's Rust codebase is the base; Zethora
@@ -97,18 +109,19 @@ This behavior is emergency switch level (a) as described in ZTH-SPEC-006 Section
 
 ## What is live today
 
-**Live on devnet:**
+**Live on testnet:**
 - Full node with GHOSTDAG consensus at 1 BPS
-- Shielding (transparent to private) fully working
-- Private sends and unshielding fully working on devnet only
 - CPU mining with RandomZ
-- Reference wallet
+- `zethora-wallet` CLI: `balance`, `receive`, `send`, `history`, `sync`
+- Tabbed Windows GUI (Miner Dashboard + Wallet) with a transaction-history grid
+
+**Live on devnet only:**
+- Shielding (transparent to private)
+- Private sends and unshielding
 
 **Not live:**
-- **Private sends on testnet and mainnet.** Testnet: coming as an
-  experimental, unreviewed feature after F2. Mainnet: after an independent
-  review. See the section above.
-- **Public testnet.** Not open yet.
+- **Shielded transactions on testnet and mainnet.** See
+  [Privacy status](#privacy-status).
 - **Mainnet.** Not launched.
 - **Any token.** There is no token. There will be no presale. There will be
   no airdrop. ZTHR is created only by mining.
@@ -116,33 +129,81 @@ This behavior is emergency switch level (a) as described in ZTH-SPEC-006 Section
 
 ---
 
-## The privacy review is the gate
+## The application
 
-Private sends are disabled in today's builds. On testnet they will be enabled
-as an experimental, unreviewed feature after the current hardening (F2). On
-mainnet they stay disabled until an independent reviewer has checked the
-Orchard integration. The internal review is complete and backed by regression
-tests. See docs/ZTH-SPEC-006.md for the spec, the mechanism descriptions,
-and an honest list of open questions (Appendix C).
+The Windows build ships a single-window GUI, launched from `Zethora.cmd`
+(installed shortcut: **Zethora**). It manages the node and miner processes
+directly; there is no separate console to watch.
 
-The tests cover parallel nullifier defense, turnstile accounting, anchor
-maturity, and private state fingerprint.
+**Tab 1 - Miner Dashboard.** Start/stop controls for the node and miner, live
+status tiles (node sync, miner state, block height, blocks found), the current
+balance, and a scrolling log.
 
-If you are a ZK cryptographer or know one, we would like to hear from you.
-DM us on X at @ZethoraNetwork, or open a GitHub issue at
-github.com/ceoghoxst/zethora-node/issues. We are bootstrapped. Reviewers get
-named credit in the specs.
+**Tab 2 - Wallet.** Balance read from the wallet itself, a transaction-history
+grid, and the Receive and Send actions.
+
+The GUI does not parse the miner's log to find your balance. It asks the wallet,
+so the figure on screen is the figure the wallet would spend.
+
+### Wallet
+
+The wallet is a separate binary, `zethora-wallet.exe`, shipped alongside the
+node and miner. It is currently testnet-only: it refuses to run against any
+other network unless `--testnet` is passed.
+
+| Command | Purpose |
+| --- | --- |
+| `balance` | Current spendable balance, read from the node |
+| `receive` | Prints your address; derived from your key file, never changes |
+| `send <address> <amount>` | Sends ZTHR; supports `--dry-run` |
+| `history` | Transaction ledger; `--limit N` and `--json` supported |
+| `sync` | Reconciles local wallet state with the chain |
+
+```powershell
+zethora-wallet balance --testnet
+zethora-wallet receive --testnet
+zethora-wallet send zethoratest:... 1.5 --testnet
+zethora-wallet history --limit 50 --json
+```
+
+The GUI's history grid is driven by `history --limit 50 --json`. Amounts are
+printed newest first, with the full transaction id available on hover.
+
+Wallet and GUI walkthrough: [docs/WALLET-WALKTHROUGH.md](docs/WALLET-WALKTHROUGH.md)
 
 ---
 
-## Team devnet docs (devnet is a private test network, not for public use)
+## Privacy status
 
-Devnet is a private test network for the Zethora team. It is not public, coins have no value, and nothing carries over to testnet or mainnet. No token exists.
+Zcash Orchard (Halo2) privacy is currently disabled pending independent
+cryptographic review. The UI toggle is locked.
 
-Setup guide: [docs/WINDOWS-GETTING-STARTED.md](docs/WINDOWS-GETTING-STARTED.md)
+The switch is compile-time and set by network type
+(consensus/src/consensus/services.rs). When it is off, any transaction
+carrying a private payment is rejected with
+`TxRuleError::InvalidPrivatePayment`, covering shielding, private sends, and
+unshielding. The GUI exposes the control but disables it.
 
-For mining: [docs/MINING-WALKTHROUGH.md](docs/MINING-WALKTHROUGH.md)
-For wallet: [docs/WALLET-WALKTHROUGH.md](docs/WALLET-WALKTHROUGH.md)
+Regression tests cover parallel nullifier defense, turnstile accounting, anchor
+maturity, and private state fingerprint. That test coverage is not a substitute
+for review by an outside party. See [docs/ZTH-SPEC-006.md](docs/ZTH-SPEC-006.md)
+for the spec and Appendix C for the open questions.
+
+If you are a ZK cryptographer or know one, we would like to hear from you. DM
+us on X at @ZethoraNetwork, or open an issue at
+github.com/ceoghoxst/zethora-node/issues. Reviewers get named credit in the
+specs.
+
+---
+
+## Seed nodes
+
+Testnet nodes discover peers through community-operated seed nodes. Running one
+is the most direct way to help the network stay reachable without depending on
+a single operator.
+
+Guide for community members, written for a small Linux VPS (Ubuntu 22.04 or
+24.04): [docs/RUN-A-SEED-NODE.md](docs/RUN-A-SEED-NODE.md)
 
 ---
 
@@ -165,8 +226,9 @@ This README is written to match what the code actually does. We will not
 claim any of the following, and if you see these claims in the wild, they
 are not from us:
 
-- **No audit claim.** Private sends are gated on an external review that has
-  not yet happened.
+- **No independent-review claim.** Shielded transactions are disabled pending
+  an external cryptographic review that has not yet happened. No part of the
+  privacy layer is presented as reviewed by an outside party.
 - **No farm detection claim.** Zethora does not detect or block industrial
   mining. Any anti-farm feature is undecided and post-testnet.
 - **No timeline claim.** Testnet and mainnet ship when the code is ready.
@@ -186,12 +248,19 @@ are not from us:
 
 ## Documentation
 
+- Getting started (Windows): docs/WINDOWS-GETTING-STARTED.md
+- Mining walkthrough: docs/MINING-WALKTHROUGH.md
+- Wallet and GUI walkthrough: docs/WALLET-WALKTHROUGH.md
+- Running a seed node: docs/RUN-A-SEED-NODE.md
 - Privacy layer spec: docs/ZTH-SPEC-006.md
 - Lightpaper: Zethora_Lightpaper_v0.3.md
 - Testnet roadmap: docs/TESTNET-ROADMAP.md
 - RandomZ DoS protection: docs/ZTH-IMPL-020-randomz-dos-ban.md
 - Internal notes / audit trail: CLAUDE.md
 - Persistence rules: docs/PERSISTENCE-RULES.md
+
+Devnet is a private team test network, not for public use. Coins have no value
+and nothing carries over to testnet or mainnet. No token exists.
 
 ---
 
