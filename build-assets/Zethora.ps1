@@ -1,8 +1,9 @@
 # ============================================================
 #  Zethora (testnet) - one-window miner.
 #  Plain text: open in Notepad to read exactly what it does.
-#  It only runs zethora-node.exe and zethora-miner.exe from
-#  this folder. It downloads nothing and changes no settings.
+#  It only runs zethora-node.exe, zethora-miner.exe and
+#  zethora-wallet.exe from this folder. It downloads nothing
+#  and changes no settings.
 #  Logs: node.log and miner.log in this folder.
 # ============================================================
 Add-Type -AssemblyName System.Windows.Forms
@@ -16,6 +17,7 @@ $minerExe = Join-Path $here 'zethora-miner.exe'
 $nodeLog  = Join-Path $here 'node.log'
 $minerLog = Join-Path $here 'miner.log'
 $balLog   = Join-Path $here 'balance.log'
+$walletExe = Join-Path $here 'zethora-wallet.exe'
 
 $script:node = $null; $script:miner = $null; $script:bal = $null
 $script:minerPos = 0; $script:startedAt = $null; $script:lastBal = [datetime]::MinValue
@@ -30,7 +32,7 @@ $green = [Drawing.Color]::FromArgb(70,210,120); $red = [Drawing.Color]::FromArgb
 $accent = [Drawing.Color]::FromArgb(140,110,255)
 
 $form = New-Object Windows.Forms.Form
-$form.Text = 'Zethora - testnet miner'; $form.Size = New-Object Drawing.Size(720,560)
+$form.Text = 'Zethora - testnet miner'; $form.Size = New-Object Drawing.Size(720,630)
 $form.BackColor = $bg; $form.ForeColor = $fg; $form.StartPosition = 'CenterScreen'
 $form.FormBorderStyle = 'FixedSingle'; $form.MaximizeBox = $false
 $form.Font = New-Object Drawing.Font('Segoe UI',10)
@@ -140,6 +142,187 @@ function Read-New($path,[ref]$pos) {
     return ($text -split "`r?`n" | Where-Object { $_ -ne '' })
   } catch { return @() }
 }
+
+# ---------- wallet: receive and send ----------
+# Both buttons run zethora-wallet.exe from this folder. The wallet reads the same
+# key file the miner uses, so "receive" shows the address you are mining to.
+function Invoke-Wallet([string[]]$walletArgs, [string]$tag) {
+  # Output goes to %TEMP%, not to this folder, so nothing extra is ever installed.
+  $outFile = Join-Path $env:TEMP "zethora-wallet-$tag.out"
+  $errFile = Join-Path $env:TEMP "zethora-wallet-$tag.err"
+  Remove-Item $outFile,$errFile -Force -ErrorAction SilentlyContinue
+  if (-not (Test-Path $walletExe)) {
+    return @{ Code = -1; Text = "Can't find zethora-wallet.exe in this folder.`n`nUnzip the whole download into one folder (right-click the zip, Extract All) and open Zethora from inside that folder." }
+  }
+  $p = Start-Process -FilePath $walletExe -ArgumentList $walletArgs -WorkingDirectory $here `
+      -WindowStyle Hidden -RedirectStandardOutput $outFile -RedirectStandardError $errFile -PassThru
+  if (-not $p.WaitForExit(60000)) {
+    try { Stop-Process -Id $p.Id -Force } catch {}
+    return @{ Code = -2; Text = 'The wallet did not answer within a minute. Try again.' }
+  }
+  $text = ''
+  for ($i = 0; $i -lt 25; $i++) {
+    $o = if (Test-Path $outFile) { Get-Content -LiteralPath $outFile -Raw -ErrorAction SilentlyContinue } else { $null }
+    $e = if (Test-Path $errFile) { Get-Content -LiteralPath $errFile -Raw -ErrorAction SilentlyContinue } else { $null }
+    $text = (@("$o","$e") -join "`r`n").Trim()
+    if ($text) { break }
+    Start-Sleep -Milliseconds 100
+  }
+  return @{ Code = $p.ExitCode; Text = $text }
+}
+
+# A small dark popup: selectable text plus a copy button, so an address or a
+# transaction id can be copied without retyping it.
+function Show-Popup([string]$title, [string]$body, [string]$copyText, [string]$copyLabel) {
+  $d = New-Object Windows.Forms.Form
+  $d.Text = $title; $d.Size = New-Object Drawing.Size(560,300)
+  $d.BackColor = $bg; $d.ForeColor = $fg; $d.StartPosition = 'CenterParent'
+  $d.FormBorderStyle = 'FixedDialog'; $d.MaximizeBox = $false; $d.MinimizeBox = $false
+  $d.Font = New-Object Drawing.Font('Segoe UI',10)
+  $box = New-Object Windows.Forms.TextBox
+  $box.Multiline = $true; $box.ReadOnly = $true; $box.ScrollBars = 'Vertical'
+  $box.BackColor = [Drawing.Color]::FromArgb(10,10,14); $box.ForeColor = $fg; $box.BorderStyle = 'None'
+  $box.Font = New-Object Drawing.Font('Consolas',10)
+  $box.Location = New-Object Drawing.Point(16,16); $box.Size = New-Object Drawing.Size(512,170)
+  $box.Text = $body
+  $d.Controls.Add($box)
+  $close = New-Object Windows.Forms.Button; $close.Text = 'CLOSE'
+  $close.Location = New-Object Drawing.Point(398,204); $close.Size = New-Object Drawing.Size(130,32)
+  $close.FlatStyle = 'Flat'; $close.BackColor = $panel; $close.ForeColor = $fg
+  $close.Add_Click({ $d.Close() })
+  $d.Controls.Add($close); $d.AcceptButton = $close; $d.CancelButton = $close
+  if ($copyText) {
+    $copy = New-Object Windows.Forms.Button; $copy.Text = $copyLabel
+    $copy.Location = New-Object Drawing.Point(16,204); $copy.Size = New-Object Drawing.Size(160,32)
+    $copy.FlatStyle = 'Flat'; $copy.BackColor = $accent; $copy.ForeColor = [Drawing.Color]::White
+    $copy.Add_Click({ try { Set-Clipboard -Value $copyText; $copy.Text = 'COPIED' } catch { $copy.Text = 'COPY FAILED' } })
+    $d.Controls.Add($copy)
+  }
+  [void]$d.ShowDialog($form)
+}
+
+# Asks for a destination address and an amount. Puts the answer in
+# $script:sendRequest when the user presses SEND.
+function Show-SendDialog {
+  $script:sendRequest = $null
+  $d = New-Object Windows.Forms.Form
+  $d.Text = 'Send ZTHR (testnet)'; $d.Size = New-Object Drawing.Size(580,340)
+  $d.BackColor = $bg; $d.ForeColor = $fg; $d.StartPosition = 'CenterParent'
+  $d.FormBorderStyle = 'FixedDialog'; $d.MaximizeBox = $false; $d.MinimizeBox = $false
+  $d.Font = New-Object Drawing.Font('Segoe UI',10)
+
+  $l1 = New-Object Windows.Forms.Label; $l1.Text = 'Send to this address (it starts with zethoratest:)'
+  $l1.Location = New-Object Drawing.Point(16,14); $l1.Size = New-Object Drawing.Size(530,20); $l1.ForeColor = $dim
+  $d.Controls.Add($l1)
+  $toBox = New-Object Windows.Forms.TextBox
+  $toBox.Location = New-Object Drawing.Point(16,38); $toBox.Size = New-Object Drawing.Size(530,26)
+  $toBox.BackColor = $panel; $toBox.ForeColor = $fg; $toBox.Font = New-Object Drawing.Font('Consolas',10)
+  $d.Controls.Add($toBox)
+
+  $l2 = New-Object Windows.Forms.Label; $l2.Text = 'Amount in ZTHR (for example 1.5)'
+  $l2.Location = New-Object Drawing.Point(16,74); $l2.Size = New-Object Drawing.Size(530,20); $l2.ForeColor = $dim
+  $d.Controls.Add($l2)
+  $amtBox = New-Object Windows.Forms.TextBox
+  $amtBox.Location = New-Object Drawing.Point(16,98); $amtBox.Size = New-Object Drawing.Size(160,26)
+  $amtBox.BackColor = $panel; $amtBox.ForeColor = $fg; $amtBox.Font = New-Object Drawing.Font('Consolas',10)
+  $d.Controls.Add($amtBox)
+
+  $note = New-Object Windows.Forms.Label
+  $note.Text = 'Coins come from your key file and a send cannot be undone. Testnet coins have no value.'
+  $note.Location = New-Object Drawing.Point(16,134); $note.Size = New-Object Drawing.Size(530,36); $note.ForeColor = $dim
+  $note.Font = New-Object Drawing.Font('Segoe UI',9)
+  $d.Controls.Add($note)
+
+  $problem = New-Object Windows.Forms.Label
+  $problem.Location = New-Object Drawing.Point(16,172); $problem.Size = New-Object Drawing.Size(530,36); $problem.ForeColor = $red
+  $problem.Font = New-Object Drawing.Font('Segoe UI',9)
+  $d.Controls.Add($problem)
+
+  $go = New-Object Windows.Forms.Button; $go.Text = 'SEND'
+  $go.Location = New-Object Drawing.Point(286,222); $go.Size = New-Object Drawing.Size(120,34)
+  $go.FlatStyle = 'Flat'; $go.BackColor = $accent; $go.ForeColor = [Drawing.Color]::White
+  $d.Controls.Add($go)
+  $cancel = New-Object Windows.Forms.Button; $cancel.Text = 'CANCEL'
+  $cancel.Location = New-Object Drawing.Point(416,222); $cancel.Size = New-Object Drawing.Size(120,34)
+  $cancel.FlatStyle = 'Flat'; $cancel.BackColor = $panel; $cancel.ForeColor = $fg
+  $cancel.Add_Click({ $d.Close() })
+  $d.Controls.Add($cancel); $d.CancelButton = $cancel
+
+  $go.Add_Click({
+    $to = $toBox.Text.Trim(); $amount = $amtBox.Text.Trim()
+    if (-not $to) { $problem.Text = 'Type the address you are sending to.'; return }
+    if ($to -notmatch '^zethoratest:[a-z0-9]+$') { $problem.Text = 'That is not a Zethora testnet address (it starts with zethoratest:).'; return }
+    if ($amount -notmatch '^[0-9]+(\.[0-9]{1,9})?$') { $problem.Text = 'Type an amount like 1.5 - digits and a dot only, no commas, no spaces.'; return }
+    if ($amount -notmatch '[1-9]') { $problem.Text = 'The amount has to be more than zero.'; return }
+    $script:sendRequest = @{ To = $to; Amount = $amount }
+    $d.Close()
+  })
+  [void]$d.ShowDialog($form)
+}
+
+# wallet buttons: the two things a miner needs besides mining
+$recvBtn = New-Object Windows.Forms.Button; $recvBtn.Text = 'RECEIVE'
+$recvBtn.Location = New-Object Drawing.Point(24,532); $recvBtn.Size = New-Object Drawing.Size(210,44)
+$recvBtn.FlatStyle = 'Flat'; $recvBtn.BackColor = $panel; $recvBtn.ForeColor = $fg
+$recvBtn.Font = New-Object Drawing.Font('Segoe UI',11,[Drawing.FontStyle]::Bold)
+$form.Controls.Add($recvBtn)
+
+$sendBtn = New-Object Windows.Forms.Button; $sendBtn.Text = 'SEND ZTHR'
+$sendBtn.Location = New-Object Drawing.Point(246,532); $sendBtn.Size = New-Object Drawing.Size(210,44)
+$sendBtn.FlatStyle = 'Flat'; $sendBtn.BackColor = $accent; $sendBtn.ForeColor = [Drawing.Color]::White
+$sendBtn.Font = New-Object Drawing.Font('Segoe UI',11,[Drawing.FontStyle]::Bold)
+$form.Controls.Add($sendBtn)
+
+New-Label 'Receive shows the address people send coins to. Send spends from the same key file.' 470 532 210 44 9 $false $dim | Out-Null
+
+$recvBtn.Add_Click({
+  $r = Invoke-Wallet @('receive','--testnet') 'receive'
+  if ($r.Code -ne 0) {
+    Add-Log "Receive failed. $($r.Text)"
+    [Windows.Forms.MessageBox]::Show("Couldn't read your address.`n`n$($r.Text)",'Receive') | Out-Null
+    return
+  }
+  $m = [regex]::Match($r.Text, 'zethoratest:[a-z0-9]+')
+  if (-not $m.Success) {
+    [Windows.Forms.MessageBox]::Show("The wallet printed no address.`n`n$($r.Text)",'Receive') | Out-Null
+    return
+  }
+  $myAddr = $m.Value
+  $addr.Text = "Address: $myAddr"
+  Add-Log "Your address: $myAddr"
+  Show-Popup 'Receive ZTHR' "Your Zethora testnet address:`r`n`r`n$myAddr`r`n`r`nGive this to whoever sends you coins. It comes from your key file and never changes." $myAddr 'COPY ADDRESS'
+})
+
+$sendBtn.Add_Click({
+  Show-SendDialog
+  if (-not $script:sendRequest) { return }
+  $to = $script:sendRequest.To; $amount = $script:sendRequest.Amount
+  if (-not $script:node) {
+    Add-Log 'Send: start mining first, so the node can say which coins you can spend.'
+    [Windows.Forms.MessageBox]::Show("Start mining first.`n`nThe wallet asks your own node which coins you can spend, so zethora-node.exe has to be running. Press START MINING, wait a few seconds, then press SEND ZTHR again.",'Send ZTHR') | Out-Null
+    return
+  }
+  $answer = [Windows.Forms.MessageBox]::Show("Send $amount ZTHR to`n`n$to`n`nA send cannot be undone. Continue?",'Send ZTHR',[Windows.Forms.MessageBoxButtons]::YesNo,[Windows.Forms.MessageBoxIcon]::Question)
+  if ($answer -ne 'Yes') { return }
+  Add-Log "Sending $amount ZTHR to $to..."
+  $r = Invoke-Wallet @('send', $to, $amount, '--testnet') 'send'
+  if ($r.Code -ne 0) {
+    Add-Log "Send failed. $($r.Text)"
+    [Windows.Forms.MessageBox]::Show("The send did not go through.`n`n$($r.Text)",'Send ZTHR') | Out-Null
+    return
+  }
+  $m = [regex]::Match($r.Text, 'Sent\. Transaction id:\s*(\S+)')
+  if (-not $m.Success) { $m = [regex]::Match($r.Text, 'Txid\s*:\s*(\S+)') }
+  if (-not $m.Success) {
+    Add-Log 'Sent, but the wallet printed no transaction id.'
+    Show-Popup 'Send ZTHR' "The wallet says it sent the coins but printed no transaction id.`r`n`r`n$($r.Text)" '' ''
+    return
+  }
+  $txid = $m.Groups[1].Value
+  Add-Log "Sent. Transaction id: $txid"
+  $script:balDue = (Get-Date)   # ask the node for the new balance on the next tick
+  Show-Popup 'Send ZTHR' "Sent $amount ZTHR.`r`n`r`nTransaction id:`r`n$txid`r`n`r`nIt shows in your balance after one confirmation (a few seconds on testnet)." $txid 'COPY ID'
+})
 
 $btn.Add_Click({ if ($script:node) { Stop-All } else { $script:restarts = 0; Start-All } })
 

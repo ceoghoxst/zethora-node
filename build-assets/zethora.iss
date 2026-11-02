@@ -29,7 +29,13 @@ WizardStyle=modern
 UninstallDisplayName=Zethora (testnet)
 
 [Files]
-Source: "..\bin\*"; DestDir: "{app}"; Flags: ignoreversion
+; Everything in bin\ ships: the node, the miner, the wallet and this window.
+; Logs and the miner key file are left out on purpose: they belong to whoever
+; mined on this machine, and a key file must never travel inside an installer.
+Source: "..\bin\*"; DestDir: "{app}"; Flags: ignoreversion; Excludes: "*.log,*.log.err,zethora-miner-key-testnet.txt,zethora-wallet.exe"
+; The wallet CLI, listed on its own so this file stops the build if the wallet
+; was never compiled or copied into bin\, instead of shipping a dead button.
+Source: "..\bin\zethora-wallet.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autodesktop}\Zethora"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\Zethora.ps1"""; WorkingDir: "{app}"; Comment: "Zethora testnet miner"

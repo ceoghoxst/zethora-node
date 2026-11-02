@@ -41,9 +41,11 @@ jobs:
         run: |
           cargo build --bin kaspad --release
           cargo build --release -p zethora-miner
+          cargo build --release -p zethora-wallet
           mkdir -p bin
           cp target/release/kaspad.exe bin/zethora-node.exe
           cp target/release/zethora-miner.exe bin/
+          cp target/release/zethora-wallet.exe bin/
           cp build-assets/README.txt bin/
           cp build-assets/LICENSE.txt bin/
           cp build-assets/THIRD-PARTY-NOTICES.txt bin/
@@ -53,7 +55,7 @@ jobs:
           cp build-assets/Zethora.cmd bin/
           cp build-assets/Zethora.ps1 bin/
           cd bin
-          sha256sum zethora-node.exe zethora-miner.exe README.txt LICENSE.txt THIRD-PARTY-NOTICES.txt THIRD-PARTY-CRATES.txt Start-Zethora.cmd Stop-Zethora.cmd Zethora.cmd Zethora.ps1 > SHA256SUMS.txt
+          sha256sum zethora-node.exe zethora-miner.exe zethora-wallet.exe README.txt LICENSE.txt THIRD-PARTY-NOTICES.txt THIRD-PARTY-CRATES.txt Start-Zethora.cmd Stop-Zethora.cmd Zethora.cmd Zethora.ps1 > SHA256SUMS.txt
           cd ..
           archive="zethora-windows-x64-${{ github.ref_name }}.zip"
           (cd bin && 7z a -tzip "../${archive}" *)
