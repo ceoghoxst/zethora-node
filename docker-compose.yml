@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  zethora-node:
+    build: .
+    image: zethora:latest
+    container_name: zethora-node
+    ports:
+      - "16211:16211"
+      - "26210:26210"
+    command: "--testnet --utxoindex"
+    restart: unless-stopped
+    volumes:
+      - zethora-node-data:/root/.zethora
+
+  zethora-miner:
+    build: .
+    image: zethora:latest
+    container_name: zethora-miner
+    depends_on:
+      - zethora-node
+    entrypoint: ["zethora-miner"]
+    command: "--testnet"
+    # zethora-miner has no --node flag: it always dials grpc://127.0.0.1:26210.
+    # Sharing the node's network namespace makes 127.0.0.1 inside this
+    # container mean the node container, so the miner can reach it.
+    network_mode: "service:zethora-node"
+    # The node may still be loading its database when the miner starts, and
+    # the miner exits if the first connection fails, so keep restarting it.
+    restart: unless-stopped
+    volumes:
+      # The miner writes its key file to the working directory, and the
+      # wallet reads the same file back. Share it so both see one key.
+      - zethora-miner-keys:/data
+    working_dir: /data
+
+volumes:
+  zethora-node-data:
+  zethora-miner-keys:
