@@ -4,6 +4,7 @@
 //!
 //!     zethora-wallet balance --testnet                    show your balance
 //!     zethora-wallet receive --testnet                    print your zethoratest: address
+//!     zethora-wallet exchange-deposit --testnet           print the transparent address to deposit from an exchange
 //!     zethora-wallet send <address> <amount> --testnet    build, sign and submit a payment
 //!     zethora-wallet history [--limit <n>] [--json]       list what this wallet has done
 //!     zethora-wallet sync --testnet                       record incoming coins that are not in the ledger yet
@@ -355,6 +356,17 @@ async fn cmd_receive(key_file: &str) -> Result<(), WalletError> {
     Ok(())
 }
 
+/// Placeholder for the exchange bridge: it prints the transparent address an exchange would pay into, and says
+/// plainly that the privacy layer is off. No bridge exists yet - nothing is generated or registered anywhere, the
+/// address is just this wallet's own testnet address, so coins sent to it arrive in this wallet as usual.
+async fn cmd_exchange_deposit(key_file: &str) -> Result<(), WalletError> {
+    let key = load_key(key_file)?;
+    let address = testnet_address(&key);
+    println!("Exchange Bridge generated. Your transparent deposit address is: {address}");
+    println!("NOTE: Zethora privacy is currently disabled pending audit. This address is your standard transparent address.");
+    Ok(())
+}
+
 async fn cmd_send(node_url: &str, key_file: &str, to: &str, amount: &str, dry_run: bool) -> Result<(), WalletError> {
     let amount_zets = parse_amount(amount)?;
     let destination = parse_testnet_address(to)?;
@@ -478,6 +490,7 @@ const USAGE: &str = "zethora-wallet - the Zethora testnet wallet (Testnet Phase 
 USAGE:
     zethora-wallet balance --testnet [--node <url>] [--key-file <path>]
     zethora-wallet receive --testnet [--key-file <path>]
+    zethora-wallet exchange-deposit --testnet [--key-file <path>]
     zethora-wallet send <address> <amount> --testnet [--node <url>] [--key-file <path>] [--dry-run]
     zethora-wallet history [--limit <n>] [--json]
     zethora-wallet sync --testnet [--node <url>] [--key-file <path>]
@@ -556,7 +569,7 @@ fn parse_args(argv: &[String]) -> Result<Args, WalletError> {
     }
     if command.is_empty() {
         return Err(WalletError::Usage(
-            "no command given. Use balance, receive, send, history or sync.".to_string(),
+            "no command given. Use balance, receive, exchange-deposit, send, history or sync.".to_string(),
         ));
     }
     Ok(Args { command, positionals, testnet, node_url, key_file, dry_run, json, limit })
@@ -613,6 +626,10 @@ async fn run(argv: &[String]) -> Result<(), WalletError> {
             };
             cmd_send(&args.node_url, &args.key_file, to, amount, args.dry_run).await
         }
+        "exchange-deposit" => {
+            expect_no_positionals(&args)?;
+            cmd_exchange_deposit(&args.key_file).await
+        }
         "history" => {
             expect_no_positionals(&args)?;
             cmd_history(args.limit, args.json).await
@@ -622,7 +639,7 @@ async fn run(argv: &[String]) -> Result<(), WalletError> {
             cmd_sync(&args.node_url, &args.key_file).await
         }
         other => Err(WalletError::Usage(format!(
-            "unknown command \"{other}\". Use balance, receive, send, history or sync."
+            "unknown command \"{other}\". Use balance, receive, exchange-deposit, send, history or sync."
         ))),
     }
 }
