@@ -146,9 +146,16 @@ fn private_payment_verifying_key() -> &'static zethora_shielded::orchard::circui
 /// NO private payment is accepted (no shielding, no spend, no unshield). The refusal fires before decode and proof, so no proof work is spent on testnet. When it is true (devnet, simnet), spends are allowed here and their
 /// chain rules are checked in UTXO context: every coin tag unspent (§6.3) and the anchor a matured snapshot of the
 /// chain's own coin list (§6.2), which is what keeps a spend from pointing at a made-up coin list.
+///
+/// A coinbase is never itself a private payment (its payload is the supply ledger and coin list seal, read through
+/// `zethora_private::private_payload`, which returns nothing for a coinbase). It can only ask for a reward to go to a
+/// private address, with the miner tag `SHD1 | pool version | Orchard address` (ZTH-SPEC-006 §7.4). That is a private
+/// payment the node would have to make on the miner's behalf, so when the switch is off it is refused exactly like
+/// one, before any other work. When the switch is on the tag is accepted: paying it out is not implemented yet, so
+/// the reward still goes to the transparent script the miner named.
 fn check_private_payment(tx: &Transaction, spends_enabled: bool, genesis_hash: &kaspa_hashes::Hash) -> TxResult<()> {
     if tx.is_coinbase() {
-        return Ok(());
+        return check_coinbase_shielded_tag(tx, spends_enabled);
     }
     let Some(encoded) =
         kaspa_consensus_core::zethora_private::private_payment_bytes(kaspa_consensus_core::zethora_private::private_payload(tx))
@@ -182,6 +189,101 @@ fn check_private_payment(tx: &Transaction, spends_enabled: bool, genesis_hash: &
         zethora_shielded::VerifyError::Commitment => invalid(format!("{e:?}")),
         _ => forged(format!("{e:?}")),
     })
+}
+
+/// First four bytes of the miner tag a coinbase carries when the miner wants its reward paid to a private address.
+/// `zethora-miner` writes `SHD1 | pool version | Orchard address` as its extra data (ZTH-SPEC-006 §7.4); the node
+/// side of that agreement lives here, in consensus.
+const SHIELDED_TAG_PREFIX: [u8; 4] = *b"SHD1";
+
+/// Where the miner tag starts in a coinbase payload: after the supply ledger, the coin list root, the private state
+/// fingerprint, the script public key version and length, and the script public key itself
+/// (`CoinbaseManager::serialize_coinbase_payload`). Read from the lengths rather than a constant, so a change to any of
+/// them can never make this silently read the wrong window.
+///
+/// The length byte is *checked*, not trusted. The payload is written by the miner, so a hostile one can declare a script
+/// length that does not match the bytes it carries, which is enough to make a naive window skip over the miner tag and
+/// land on harmlessly-looking bytes: the `SHD1` request is then never read and a shielded reward slips past a network
+/// that has private payments off. Two checks close that:
+///
+/// * A coinbase pays exactly one output and the payload carries exactly that output's script public key (the node
+///   writes `miner_data.script_public_key`, which is the script of the coin that pays the miner), so both the declared
+///   length and the script bytes must be the ones in the coinbase's own output. Anything else is a lie by the only
+///   party who writes the payload, and nothing is read through it (see `check_coinbase_shielded_tag`).
+/// * Neither the version nor the script may run past the end of the payload: a script public key that does not fit is
+///   not a script, and there is no miner tag behind it.
+fn coinbase_miner_tag<'a>(tx: &'a Transaction, payload: &'a [u8]) -> Option<&'a [u8]> {
+    /// Blue score (8) + subsidy (8) + pool state (5 × 8) + coin list root (32) + private state (32) + script public key
+    /// version (2)
+    const COINBASE_HEAD_LEN: usize = 8 + 8 + 5 * 8 + 32 + 32 + 2;
+    let script_len = *payload.get(COINBASE_HEAD_LEN)? as usize;
+    let script = tx.outputs.first()?.script_public_key.script();
+    if script_len != script.len() || payload.get(COINBASE_HEAD_LEN + 1..COINBASE_HEAD_LEN + 1 + script_len) != Some(script) {
+        return None;
+    }
+    payload.get(COINBASE_HEAD_LEN + 1 + script_len..)
+}
+
+/// Zethora (ZTH-SPEC-006 §7.4): a coinbase whose miner tag asks for a private reward (`SHD1`) needs private payments,
+/// so when `spends_enabled` is false it is refused like any other private payment: a plain refusal, not a proof error,
+/// so no peer is banned for it (nodes on different rule versions may disagree about it).
+///
+/// The tag is looked for anywhere in the miner tag, not only at its start: the node's own version string comes first
+/// (`version()` in the RPC data flow), and a miner that renames itself must not slip a private reward past this check.
+/// Matching the miner rather than a fixed offset also keeps an ordinary reward whose script happens to contain the
+/// four bytes from being refused.
+///
+/// A payload that carries the tag where this node cannot place it is refused, so a script length the coinbase does not
+/// have can never hide a request (`coinbase_miner_tag`). The length byte alone does not decide either way: a payload
+/// whose only `SHD1` bytes are inside its own payout script asks for nothing, and a payload with no tag in it at all is
+/// never refused, so "never refuse a flag we cannot read" holds for everything that is not a request.
+fn check_coinbase_shielded_tag(tx: &Transaction, spends_enabled: bool) -> TxResult<()> {
+    if spends_enabled {
+        return Ok(());
+    }
+    // The miner tag carries no payload the parser has to reach, so the whole payload may be searched for the prefix.
+    let carries_tag = contains_tag(&tx.payload);
+    if !carries_tag {
+        return Ok(());
+    }
+    let refused = || {
+        TxRuleError::InvalidPrivatePayment(
+            "a private (shielded) coinbase reward needs private payments, which are disabled on this network (ZTH-SPEC-006 §7.3/§7.4)"
+                .to_string(),
+        )
+    };
+    // The usual case: the miner tag is where `CoinbaseManager` puts it, and a request there is a request.
+    if coinbase_miner_tag(tx, &tx.payload).is_some_and(contains_tag) {
+        return Err(refused());
+    }
+    // The tag is in the payload but not in a miner tag the parser can locate, so this node cannot say what it means.
+    // Whether a miner could have written it on purpose decides:
+    // * The only `SHD1` is inside the payout script. A miner tag lives after the script public key and never inside it,
+    //   so this is not a request, and refusing it would let one miner's address decide whether another miner's block is
+    //   valid.
+    if let Some(script) = tx.outputs.first().map(|output| output.script_public_key.script())
+        && contains_tag(script)
+        && !tag_outside_script(&tx.payload, script)
+    {
+        return Ok(());
+    }
+    // * Everything else - a tag in the extra data behind a window this node cannot place, a tag in the script *and*
+    //   outside it, a script that is not the one the payload carries - is a request this node has to read. Refused, so
+    //   no crafted length byte can make a shielded reward spendable on a network where the pool is closed.
+    Err(refused())
+}
+
+/// Whether the four bytes of the shielded miner tag appear in `bytes`.
+fn contains_tag(bytes: &[u8]) -> bool {
+    bytes.windows(SHIELDED_TAG_PREFIX.len()).any(|window| window == SHIELDED_TAG_PREFIX)
+}
+
+/// Whether `bytes` carries the tag somewhere other than inside `script`: it contains the tag, and it carries at least
+/// one more occurrence of those bytes than `script` does. Counting, rather than searching outside the script's bytes,
+/// needs no assumption about where in `bytes` the script sits.
+fn tag_outside_script(bytes: &[u8], script: &[u8]) -> bool {
+    let count = |haystack: &[u8]| haystack.windows(SHIELDED_TAG_PREFIX.len()).filter(|w| *w == SHIELDED_TAG_PREFIX).count();
+    contains_tag(bytes) && count(bytes) > count(script)
 }
 
 fn check_gas(tx: &Transaction) -> TxResult<()> {
@@ -563,7 +665,7 @@ mod zethora_private_payment_tests {
     use kaspa_consensus_core::{
         constants::TX_VERSION,
         hashing::tx::zethora_private_payment_digest,
-        subnets::SUBNETWORK_ID_NATIVE,
+        subnets::{SUBNETWORK_ID_COINBASE, SUBNETWORK_ID_NATIVE},
         tx::{ComputeCommit, ScriptPublicKey, Transaction, TransactionInput, TransactionOutpoint, TransactionOutput, scriptvec},
         zethora_private::{ACTION_SIZE, PRIVATE_PAYMENT_MAGIC},
     };
@@ -643,6 +745,95 @@ mod zethora_private_payment_tests {
         assert!(matches!(check_private_payment(&shield, false, &TEST_GENESIS), Err(TxRuleError::InvalidPrivatePayment(_))));
         let spend = fully_private_tx(1_000);
         assert!(matches!(check_private_payment(&spend, false, &TEST_GENESIS), Err(TxRuleError::InvalidPrivatePayment(_))));
+    }
+
+    /// Zethora (ZTH-SPEC-006 §7.4): a coinbase that asks for its reward in a private address carries `SHD1` in its
+    /// miner tag. Paying it is a private payment the node makes, so with private payments off it is refused like any
+    /// other: `InvalidPrivatePayment`, never a proof error (no peer is banned for it), and without any other work.
+    #[test]
+    fn shielded_coinbase_reward_is_refused_when_spends_off() {
+        let coinbase = shielded_coinbase_tx(true);
+        assert!(coinbase.is_coinbase());
+        assert_eq!(check_private_payment(&coinbase, true, &TEST_GENESIS), Ok(()));
+        assert!(matches!(check_private_payment(&coinbase, false, &TEST_GENESIS), Err(TxRuleError::InvalidPrivatePayment(_))));
+
+        // The whole isolation check (the one a node runs on every block's coinbase) refuses it too
+        let tv = crate::processes::transaction_validator::TransactionValidator::new_for_tests(
+            1000,
+            1000,
+            10_000,
+            150,
+            150,
+            100,
+            18,
+            Default::default(),
+        )
+        .with_zethora_genesis(TEST_GENESIS)
+        .with_private_spends(false);
+        assert!(matches!(tv.validate_tx_in_isolation(&coinbase), Err(TxRuleError::InvalidPrivatePayment(_))));
+    }
+
+    /// The other side of the rule: an ordinary coinbase is untouched on a network with private payments off, and a
+    /// shielded one is accepted on a network with them on.
+    #[test]
+    fn ordinary_coinbase_rewards_are_untouched_when_spends_off() {
+        let ordinary = shielded_coinbase_tx(false);
+        assert_eq!(check_private_payment(&ordinary, false, &TEST_GENESIS), Ok(()));
+        // The four bytes inside the script public key (a miner address that looks like `SHD1`) are not a request:
+        // only the miner tag decides
+        assert!(ordinary.outputs[0].script_public_key.script().windows(4).any(|w| w == SHIELDED_TAG_PREFIX));
+        assert_eq!(check_private_payment(&ordinary, true, &TEST_GENESIS), Ok(()));
+
+        // The node's own version string comes before the miner's, so the tag is found anywhere in the miner tag
+        let mut renamed = shielded_coinbase_tx(true);
+        renamed.payload.splice(coinbase_miner_tag_start()..coinbase_miner_tag_start(), b"rusty-kaspad/v1.0.0".iter().copied());
+        assert!(matches!(check_private_payment(&renamed, false, &TEST_GENESIS), Err(TxRuleError::InvalidPrivatePayment(_))));
+    }
+
+    /// First four bytes of the shielded miner tag (ZTH-SPEC-006 §7.4). Defined here, not shared with the miner, so
+    /// these tests pin the bytes the two sides agreed on: if either side renames the tag, a test fails.
+    const SHIELDED_TAG_PREFIX: [u8; 4] = *b"SHD1";
+
+    /// First bytes of the miner tag in a coinbase payload: blue score (8) + subsidy (8) + pool state (5 × 8) +
+    /// coin list root (32) + private state (32) + script public key version (2) + script public key length (1), then
+    /// the script public key, then the miner tag (consensus/src/processes/coinbase.rs).
+    const COINBASE_MINER_TAG_AT: usize = 8 + 8 + 5 * 8 + 32 + 32 + 2 + 1;
+
+    fn coinbase_miner_tag_start() -> usize {
+        COINBASE_MINER_TAG_AT + 25 // the script public key below is 25 bytes (a pay-to-pubkey-hash script)
+    }
+
+    /// A coinbase shaped the way `CoinbaseManager` writes one. `shielded` puts the miner's `SHD1 | pool version |
+    /// Orchard address` tag in the extra data, exactly as `zethora-miner --shielded` does.
+    fn shielded_coinbase_tx(shielded: bool) -> Transaction {
+        // A pay-to-pubkey-hash script that itself contains "SHD1": the rule must look at the miner tag, not the script
+        let script = scriptvec![0xa9, 0x14, b'S', b'H', b'D', b'1', 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8,
+            0u8, 0u8, 0u8, 0u8, 0u8];
+        let mut payload = Vec::with_capacity(123 + 25 + 48);
+        payload.extend_from_slice(&9u64.to_le_bytes()); // blue score
+        payload.extend_from_slice(&1_000_000u64.to_le_bytes()); // subsidy
+        payload.extend_from_slice(&[0u8; 5 * 8]); // Zethora pool state
+        payload.extend_from_slice(&[0x11u8; 32]); // coin list root
+        payload.extend_from_slice(&[0x22u8; 32]); // private state fingerprint
+        payload.extend_from_slice(&0u16.to_le_bytes()); // script public key version
+        payload.push(script.len() as u8);
+        payload.extend_from_slice(&script);
+        if shielded {
+            payload.extend_from_slice(&SHIELDED_TAG_PREFIX);
+            payload.push(1); // Orchard pool version
+            payload.extend_from_slice(&[0x33u8; 43]); // Orchard address: diversifier (11) + transmission key (32)
+        } else {
+            payload.extend_from_slice(b"zethora-miner");
+        }
+        Transaction::new(
+            TX_VERSION,
+            vec![],
+            vec![TransactionOutput { value: 1_000_000, script_public_key: ScriptPublicKey::new(0, script), covenant: None }],
+            0,
+            SUBNETWORK_ID_COINBASE,
+            0,
+            payload,
+        )
     }
 
     /// A fully private payment (ZTH-SPEC-006 §9): no visible input or output; `fee` zets leave the private pool
@@ -819,3 +1010,287 @@ mod zethora_private_payment_tests {
         assert!(matches!(check_private_payment(&tx, false, &TEST_GENESIS), Err(TxRuleError::InvalidPrivatePayment(_))));
     }
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Adversarial tests (red team) against the coinbase payload parser that reads the shielded miner tag
+// (ZTH-SPEC-006 §7.4). Every payload below is attacker-controlled: a miner writes its own coinbase, so this parser
+// must never panic, must never read past the payload, and must never let a crafted length byte hide an `SHD1` tag
+// from the `private_spends_enabled = false` rejection.
+//
+// Run: cargo test -p kaspa-consensus --lib zethora_private_payment_tests
+// ---------------------------------------------------------------------------------------------------------------
+#[cfg(test)]
+mod zethora_coinbase_parser_attack_tests {
+    use super::{TransactionValidator, TxRuleError, check_private_payment};
+    use kaspa_consensus_core::{
+        constants::TX_VERSION,
+        subnets::SUBNETWORK_ID_COINBASE,
+        tx::{ScriptPublicKey, Transaction, TransactionOutput},
+    };
+    use kaspa_hashes::Hash;
+
+    /// The genesis hash this test's "network" signs (the same value the rest of the isolation tests use).
+    const TEST_GENESIS: Hash = Hash::from_bytes([0x6E; 32]);
+
+    /// First four bytes of the shielded miner tag (ZTH-SPEC-006 §7.4).
+    const SHIELDED_TAG_PREFIX: [u8; 4] = *b"SHD1";
+
+    /// Blue score (8) + subsidy (8) + pool state (5 × 8) + coin list root (32) + private state (32) + script public key
+    /// version (2): the fixed-width head of a coinbase payload, which ends with the script public key *length* byte
+    /// (consensus/src/processes/coinbase.rs, `serialize_coinbase_payload`/`deserialize_coinbase_payload`).
+    const COINBASE_HEAD_LEN: usize = 8 + 8 + 5 * 8 + 32 + 32 + 2;
+
+    /// The miner tag a miner writes when it asks for its reward in a private address:
+    /// `SHD1 | pool version | Orchard address`.
+    fn shielded_tag() -> Vec<u8> {
+        let mut tag = SHIELDED_TAG_PREFIX.to_vec();
+        tag.push(1); // Orchard pool version
+        tag.extend_from_slice(&[0x33u8; 43]); // Orchard address: diversifier (11) + transmission key (32)
+        tag
+    }
+
+    /// The payout script of every coinbase below: 25 bytes, and it does *not* contain `SHD1`. A test that sees the tag
+    /// refused therefore knows the miner tag was the reason, and every byte the parser's `COINBASE_HEAD_LEN` reads is
+    /// taken from the real payload.
+    fn payout_script() -> Vec<u8> {
+        vec![0x76, 0xa9, 0x14, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+             0x11, 0x12, 0x13, 0x14, 0x15, 0x16]
+    }
+
+    /// A well-formed coinbase payload, laid out byte for byte like `CoinbaseManager::serialize_coinbase_payload`: the
+    /// fixed head, the script public key version, the script length byte, the script, then `miner_tag`.
+    fn payload_with_tag(script: &[u8], miner_tag: &[u8]) -> Vec<u8> {
+        let mut payload = Vec::with_capacity(COINBASE_HEAD_LEN + 1 + script.len() + miner_tag.len());
+        payload.extend_from_slice(&9u64.to_le_bytes()); // blue score
+        payload.extend_from_slice(&1_000_000u64.to_le_bytes()); // subsidy
+        payload.extend_from_slice(&[0u8; 5 * 8]); // Zethora pool state
+        payload.extend_from_slice(&[0x11u8; 32]); // coin list root
+        payload.extend_from_slice(&[0x22u8; 32]); // private state fingerprint
+        payload.extend_from_slice(&0u16.to_le_bytes()); // script public key version
+        payload.push(script.len() as u8);
+        payload.extend_from_slice(script);
+        payload.extend_from_slice(miner_tag);
+        payload
+    }
+
+    fn coinbase_with_payload(payload: Vec<u8>) -> Transaction {
+        let output = TransactionOutput {
+            value: 1_000_000,
+            script_public_key: ScriptPublicKey::from_vec(0, payout_script()),
+            covenant: None,
+        };
+        Transaction::new(TX_VERSION, vec![], vec![output], 0, SUBNETWORK_ID_COINBASE, 0, payload)
+    }
+
+    /// The validator a testnet node builds: private payments off (ZTH-SPEC-006 §7.3 level (a)).
+    fn testnet_validator() -> TransactionValidator {
+        TransactionValidator::new_for_tests(1000, 1000, 10_000, 150, 150, 100, 18, Default::default())
+            .with_zethora_genesis(TEST_GENESIS)
+            .with_private_spends(false)
+    }
+
+    /// The exact refusal a shielded coinbase must get on a network with private payments off, byte for byte.
+    fn shielded_refusal() -> TxRuleError {
+        TxRuleError::InvalidPrivatePayment(
+            "a private (shielded) coinbase reward needs private payments, which are disabled on this network (ZTH-SPEC-006 §7.3/§7.4)"
+                .to_string(),
+        )
+    }
+
+    /// Control, and the premise of every attack below: an honest shielded coinbase is refused by the *whole*
+    /// isolation check on a network with private payments off. If this ever passes, the attacks prove nothing.
+    #[test]
+    fn control_honest_shielded_coinbase_is_refused_when_spends_off() {
+        let coinbase = coinbase_with_payload(payload_with_tag(&payout_script(), &shielded_tag()));
+        assert!(coinbase.is_coinbase());
+        assert!(!coinbase.outputs[0].script_public_key.script().windows(4).any(|w| w == SHIELDED_TAG_PREFIX));
+        assert_eq!(check_private_payment(&coinbase, false, &TEST_GENESIS), Err(shielded_refusal()));
+        assert_eq!(testnet_validator().validate_tx_in_isolation(&coinbase), Err(shielded_refusal()));
+    }
+
+    /// Control: an ordinary coinbase is untouched, so the refusals above are about the tag and not about coinbases.
+    #[test]
+    fn control_ordinary_coinbase_is_accepted_when_spends_off() {
+        let coinbase = coinbase_with_payload(payload_with_tag(&payout_script(), b"zethora-miner/v1"));
+        assert_eq!(check_private_payment(&coinbase, false, &TEST_GENESIS), Ok(()));
+        assert_eq!(testnet_validator().validate_tx_in_isolation(&coinbase), Ok(()));
+    }
+
+    /// ATTACK 1: out-of-bounds panic. A payload shorter than the fixed head is the state a truncated or hostile
+    /// coinbase is in, so the parser must answer `Ok`/`Err` and never panic. Every length from empty up to one byte
+    /// short of the head is tried, because a short payload can be *any* length.
+    #[test]
+    fn attack_short_payload_never_panics() {
+        for len in 0..COINBASE_HEAD_LEN {
+            // Filled with 0xFF, the worst case: every byte the parser might use as a length is 255.
+            let payload = vec![0xFFu8; len];
+            let coinbase = coinbase_with_payload(payload);
+            assert_eq!(
+                check_private_payment(&coinbase, false, &TEST_GENESIS),
+                Ok(()),
+                "a payload of {len} bytes carries no miner tag, so there is nothing to refuse"
+            );
+            assert_eq!(
+                testnet_validator().validate_tx_in_isolation(&coinbase),
+                Ok(()),
+                "the whole isolation check must survive a {len}-byte payload"
+            );
+        }
+
+        // The head itself with no script length byte, no script and no tag is the last short case.
+        let mut head_only = payload_with_tag(&[], &[]);
+        head_only.truncate(COINBASE_HEAD_LEN);
+        assert_eq!(head_only.len(), COINBASE_HEAD_LEN);
+        assert_eq!(check_private_payment(&coinbase_with_payload(head_only), false, &TEST_GENESIS), Ok(()));
+    }
+
+    /// ATTACK 2: malicious script length. The length byte claims 255 bytes of script while the payload ends far
+    /// earlier, so a naive slice from `head + 1 + script_len` is out of bounds. A panic here is a node any miner can
+    /// crash with one block, so the parser must handle the missing window safely: a plain `Ok`, never a panic.
+    #[test]
+    fn attack_lying_script_length_never_panics() {
+        let honest = payload_with_tag(&payout_script(), b"");
+        assert_eq!(honest.len(), COINBASE_HEAD_LEN + 1 + 25);
+
+        // The attack payload: the head, a length byte that lies (255) and the 25 real script bytes, so the payload ends
+        // long before the 255 bytes the length byte claims are before the miner tag.
+        let lying: Vec<u8> = honest.iter().copied().enumerate().map(|(i, b)| if i == COINBASE_HEAD_LEN { 255 } else { b }).collect();
+        assert_eq!(lying.len(), COINBASE_HEAD_LEN + 1 + 25);
+        assert_eq!(lying[COINBASE_HEAD_LEN], 255);
+        // Nothing follows the script, so there is no miner tag: the parser must say so, not slice out of bounds.
+        assert_eq!(check_private_payment(&coinbase_with_payload(lying), false, &TEST_GENESIS), Ok(()));
+
+        // Every length byte 0..=255 on the same tags-free payload: no value may panic, and none may be refused, since
+        // there is never a request to read.
+        for script_len in 0u8..=255 {
+            let mut payload = payload_with_tag(&payout_script(), b"zethora-miner/v1");
+            payload[COINBASE_HEAD_LEN] = script_len;
+            assert_eq!(
+                check_private_payment(&coinbase_with_payload(payload), false, &TEST_GENESIS),
+                Ok(()),
+                "script_len byte {script_len} panicked or refused a payload with no tag in it"
+            );
+        }
+    }
+
+    /// ATTACK 3: tag smuggling. The attacker writes a `script_len` that makes the parser *skip over* the `SHD1` tag and
+    /// land on harmless bytes, hoping the `private_spends_enabled = false` rejection never sees the request.
+    ///
+    /// The rule that has to hold: a length byte is not what decides. If the payload asks for a private reward, it is
+    /// refused whatever the length byte says, and the length byte itself is never a reason to refuse a payload that asks
+    /// for nothing. A payload whose only `SHD1` bytes are somewhere a miner tag never is (inside the payout script)
+    /// stays accepted, so the fix for this attack must not turn into a rule that punishes an unlucky miner address.
+    #[test]
+    fn attack_tag_smuggling_cannot_bypass_the_rejection() {
+        let script = payout_script();
+        let tag = shielded_tag();
+        let honest_len = script.len() as u8;
+
+        // (a) The minimal smuggle: the length byte claims 5 bytes of script, so a parser that trusts it lands inside the
+        //     payout script and walks 20 bytes short of the tag - and never sees it.
+        let mut smuggled = payload_with_tag(&script, &tag);
+        smuggled[COINBASE_HEAD_LEN] = 5;
+        assert!(smuggled.windows(4).any(|w| w == SHIELDED_TAG_PREFIX), "precondition: the tag bytes are in the payload");
+        assert_eq!(
+            check_private_payment(&coinbase_with_payload(smuggled.clone()), false, &TEST_GENESIS),
+            Err(shielded_refusal()),
+            "a script length that hides the tag from the window must not hide the request"
+        );
+        assert_eq!(
+            testnet_validator().validate_tx_in_isolation(&coinbase_with_payload(smuggled)),
+            Err(shielded_refusal()),
+            "and the whole isolation check must refuse it too"
+        );
+
+        // (b) Every single-byte lie, in a payload that really does carry the tag in the miner tag position:
+        //     {script} + `SHD1` + pool version + address, which is what `zethora-miner --shielded` writes. The true
+        //     length is refused for the request it makes; every other value puts the tag out of view, which is exactly
+        //     what the lie is for, so it is refused too - with the same plain refusal, so no peer is banned for a block
+        //     that a rule change could make valid.
+        for script_len in 0u8..=255 {
+            let mut payload = payload_with_tag(&script, &tag);
+            payload[COINBASE_HEAD_LEN] = script_len;
+            assert_eq!(
+                check_private_payment(&coinbase_with_payload(payload), false, &TEST_GENESIS),
+                Err(shielded_refusal()),
+                "script_len byte {script_len} smuggled a shielded request past the rejection"
+            );
+        }
+
+        // (c) The one case that is *not* refused, so the fix cannot be "search for SHD1 anywhere and refuse": a payload
+        //     that puts the four bytes inside its own payout script, where a miner tag never lives. That is an address,
+        //     not a request - covered end to end by `tag_bytes_inside_the_payout_script_are_not_a_request`.
+        //
+        //     A tag *after* an honest script length is not that case: the miner tag is *extra data*, so a payload whose
+        //     extra data carries `SHD1` asks for a private reward even though every byte of it is well formed. Nothing
+        //     there has to be refused for being malformed - it is refused for the request it carries, which is the
+        //     ordinary rule (`control_honest_shielded_coinbase_is_refused_when_spends_off`). Counting the occurrences in
+        //     the script is what keeps these two apart: a plain "search anywhere" would refuse the address in (c)'s
+        //     neighbour, and "search only the first bytes after the script" would miss a renamed miner tag.
+        let mut later_tag = payload_with_tag(&script, b"zethora-miner/v1");
+        later_tag.extend_from_slice(&tag);
+        assert_eq!(later_tag[COINBASE_HEAD_LEN], honest_len, "the payload is well formed: it declares its real length");
+        assert!(later_tag.windows(4).any(|w| w == SHIELDED_TAG_PREFIX));
+        assert_eq!(
+            check_private_payment(&coinbase_with_payload(later_tag), false, &TEST_GENESIS),
+            Err(shielded_refusal()),
+            "a request in the extra data is a request, however well formed the payload is"
+        );
+    }
+
+    /// The other direction of attack 3, which must NOT become a false refusal: `SHD1` bytes inside the payout script
+    /// public key are not a request. An honest miner whose address happens to contain those four bytes keeps its
+    /// reward; only the miner tag decides.
+    #[test]
+    fn tag_bytes_inside_the_payout_script_are_not_a_request() {
+        let mut script_with_tag = script_tagged();
+        assert_eq!(&script_with_tag[2..6], &SHIELDED_TAG_PREFIX);
+        let payload = payload_with_tag(&script_with_tag, b"zethora-miner");
+        let output = TransactionOutput {
+            value: 1_000_000,
+            script_public_key: ScriptPublicKey::from_vec(0, std::mem::take(&mut script_with_tag)),
+            covenant: None,
+        };
+        let coinbase = Transaction::new(TX_VERSION, vec![], vec![output], 0, SUBNETWORK_ID_COINBASE, 0, payload);
+        assert!(coinbase.outputs[0].script_public_key.script().windows(4).any(|w| w == SHIELDED_TAG_PREFIX));
+        assert_eq!(check_private_payment(&coinbase, false, &TEST_GENESIS), Ok(()));
+        assert_eq!(testnet_validator().validate_tx_in_isolation(&coinbase), Ok(()));
+
+        // The same script behind a length byte this node cannot use to place the miner tag (255 rather than 25): the
+        // miner tag is unreadable, but the only `SHD1` bytes in the payload are the ones inside the payout script, where
+        // a miner tag never starts. So it stays a reward, not a request. A refusal here would let one miner's address
+        // decide whether another miner's block is valid.
+        let mut lying = payload_with_tag(&script_tagged(), b"zethora-miner");
+        lying[COINBASE_HEAD_LEN] = 255;
+        let output = TransactionOutput {
+            value: 1_000_000,
+            script_public_key: ScriptPublicKey::from_vec(0, script_tagged()),
+            covenant: None,
+        };
+        assert_eq!(
+            check_private_payment(&Transaction::new(TX_VERSION, vec![], vec![output], 0, SUBNETWORK_ID_COINBASE, 0, lying), false, &TEST_GENESIS),
+            Ok(())
+        );
+    }
+
+    /// The same 25-byte payout script, with `SHD1` moved into bytes 2..6, the position of a real address's hash data.
+    fn script_tagged() -> Vec<u8> {
+        let mut script = payout_script();
+        script[2..6].copy_from_slice(&SHIELDED_TAG_PREFIX);
+        script
+    }
+
+    /// A payload cut off in the middle of its script has no miner tag at all, so it is ignored: a truncated block body is
+    /// a separate rule, not this one. This is the case that keeps the fix for attack 3 honest - a payload that carries no
+    /// request is not refused, whatever its length byte says.
+    #[test]
+    fn a_payload_cut_before_the_miner_tag_is_ignored() {
+        let script = payout_script();
+        let mut truncated = payload_with_tag(&script, &shielded_tag());
+        truncated.truncate(COINBASE_HEAD_LEN + 1 + script.len());
+        assert_eq!(truncated.len(), COINBASE_HEAD_LEN + 1 + script.len());
+        assert!(!truncated.windows(4).any(|w| w == SHIELDED_TAG_PREFIX), "precondition: the tag is gone");
+        assert_eq!(check_private_payment(&coinbase_with_payload(truncated), false, &TEST_GENESIS), Ok(()));
+    }
+}
+
