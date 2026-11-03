@@ -1,0 +1,48 @@
+[package]
+name = "zethora-prover"
+description = "Zethora zkEVM prover: proves EVM batch execution (zethora-evm) with the SP1 zkVM."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# `main.rs` is the host: it owns the SP1 client and generates the proof. The
+# library in `src/lib.rs` is the *guest*: it is compiled to RISC-V and executed
+# inside the zkVM, where it runs the EVM batch and commits the resulting state
+# root to the public values.
+[[bin]]
+name = "zethora-prover"
+path = "src/main.rs"
+
+[dependencies]
+# revm (via zethora-evm) resolves the gas parameters of the active hardfork
+# through this crate. Its `portable` feature keeps the arithmetic in plain Rust
+# instead of KECCAK-256 hardware intrinsics, which is what the zkVM target
+# needs, so the feature is switched on from here. Cargo unions this with the
+# features zethora-evm asks for.
+alloy-primitives = { version = "1", features = ["rlp", "k256", "portable"] }
+# The SP1 zkVM syscalls (`sp1_zkvm::io::read_vec` / `commit_slice`) the guest
+# uses. The dependency is unconditional because the same library both runs
+# in-VM and is exercised by the host-side test in this crate: under a non-zkVM
+# target sp1-zkvm's syscalls are no-ops that read empty input and discard
+# commits.
+sp1-zkvm = "4.0.0"
+# The host side of SP1: `ProverClient`, the proof types and `include_elf!` that
+# `src/main.rs` uses. Default features are left on, which is what enables the
+# `network` prover.
+sp1-sdk = "4.0.0"
+zethora-evm = { path = "../zethora-evm" }
+
+[build-dependencies]
+# Builds the guest (this crate's library target, as a RISC-V ELF) and exports
+# its path to the host as `SP1_ELF_zethora-prover`. Set `SP1_SKIP_PROGRAM_BUILD=true`
+# to skip that step.
+sp1-build = "4.0.0"
+
+[dev-dependencies]
+# Signs the sample transactions the host test proves.
+alloy-consensus = { version = "2.5.0", default-features = false, features = ["k256"] }
+alloy-eips = { version = "2.5.0", default-features = false }
+alloy-signer = { version = "2.5.0", default-features = false }
+alloy-signer-local = { version = "2.5.0", default-features = false }
+# `tests/prove_batch.rs` drives the same prover the binary does.
+sp1-sdk = "4.0.0"

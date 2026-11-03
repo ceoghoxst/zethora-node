@@ -4,6 +4,7 @@ exclude = ["fuzz", "tools/reference/emission", "tools/reference/fees"]
 members = [
     "zethora-miner",
     "zethora-evm",
+    "zethora-prover",
     "zethora-shield",
     "zethora-shielded",
     "zethora-shielded/layout",
