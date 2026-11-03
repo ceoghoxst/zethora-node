@@ -8,10 +8,15 @@
 //! Usage:
 //!   zethora-miner             devnet (node must run with: --devnet --enable-unsynced-mining)
 //!   zethora-miner --testnet   testnet (node must run with: --testnet --enable-unsynced-mining)
+//!   zethora-miner --shielded <zs...>  pay rewards to a private (Orchard) address instead of the key's address
 //!   zethora-miner bench       RandomZ speed test; no node needed, stop the real miner first
 //!
 //! Key files: zethora-miner-key.txt (devnet) and zethora-miner-key-testnet.txt (testnet).
 //! Keys are never shared between networks.
+//!
+//! Pillar 2 (shielded coinbase): a `zs...` address is accepted, and its bytes are put into the coinbase the miner
+//! asks the node for, but the node does not route the reward into the private pool yet (that is a consensus change,
+//! tracked separately). Until then a shielded run still credits the key's ordinary address and says so on screen.
 
 use kaspa_addresses::{Address, Prefix, Version};
 use kaspa_consensus_core::{header::Header, network::NetworkType};
@@ -78,6 +83,160 @@ fn write_private_file(path: &str, contents: &str) -> std::io::Result<()> {
         options.mode(0o600);
     }
     options.open(path)?.write_all(contents.as_bytes())
+}
+
+// --- Pillar 2: shielded coinbase addresses ---
+
+/// First bytes of the miner tag in the coinbase payload when the reward goes to a private address:
+/// `SHD1`, then the private pool version (ZTH-SPEC-006 §7.4), then the raw Orchard address.
+const SHIELDED_TAG_PREFIX: [u8; 4] = *b"SHD1";
+const SHIELDED_POOL_ORCHARD1: u8 = 1;
+/// An Orchard address is a diversifier (11 bytes) plus a diversified transmission key (32 bytes).
+const ORCHARD_ADDRESS_LEN: usize = 43;
+/// A `zs...` string longer than this cannot be an Orchard address, so a stray word is never mined to.
+const MAX_SHIELDED_ALIAS_LEN: usize = 256;
+/// Characters of a private address shown in the startup banner (the rest would only add noise on screen).
+const SHIELDED_ADDRESS_SHOWN: usize = 26;
+
+/// The `zs...` aliases this miner accepts. `zs1...` is Zcash's own form; `zs...` is the native form in
+/// docs/ARCHITECTURE.md. In both, everything after the alias is the address itself. This miner, not the address
+/// crate, owns these names, so nothing here touches consensus. The longest alias comes first, so a `zs1...` text is
+/// never read as `zs` followed by a payload starting with `1`.
+fn shielded_addresses() -> [&'static str; 2] {
+    ["zs1", "zs"]
+}
+
+/// The raw Orchard address bytes behind a `zs...` address.
+///
+/// Returns `None` when the text is not an Orchard address, so the caller can refuse it instead of crediting a
+/// damaged string. The text is read exactly the way the address crate writes a `zethoratest:` address: 5-bit
+/// groups, a one-byte version and an 8-character (40-bit) checksum. For a private address the version is
+/// `ORCHARD_ADDRESS_LEN`, so a typed `zs...` string is checked even though the alias is not a network prefix.
+/// The 5-bit encoding gives the last data group 2 spare bits; they must be zero, otherwise two different strings
+/// would mean the same address and a typo could pass unnoticed.
+fn payload_from_shielded_address(text: &str) -> Option<[u8; ORCHARD_ADDRESS_LEN]> {
+    const CHARSET: &[u8; 32] = b"qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+    const CHECKSUM_CHARS: usize = 8;
+
+    /// Bech32's 5-bit checksum, the same one the address crate uses.
+    fn polymod(chars: &[u8]) -> u32 {
+        const GEN: [u32; 5] = [0x3b6a_57b2, 0x2650_8e6d, 0x1ea1_19fa, 0x3d42_33dd, 0x2a14_62b3];
+        let mut c: u32 = 1;
+        for &ch in chars {
+            let top = c >> 25;
+            c = ((c & 0x1ff_ffff) << 5) ^ u32::from(ch);
+            for (i, g) in GEN.iter().enumerate() {
+                if (top >> i) & 1 == 1 {
+                    c ^= g;
+                }
+            }
+        }
+        c
+    }
+
+    // A `zs` address is mostly lowercase; an uppercase spelling is accepted the way the address crate accepts it.
+    let lowered = text.to_ascii_lowercase();
+    let (alias, rest) = shielded_addresses().into_iter().find_map(|alias| {
+        let rest = lowered.strip_prefix(alias)?;
+        (rest.len() <= MAX_SHIELDED_ALIAS_LEN).then_some((alias, rest))
+    })?;
+
+    let mut groups = Vec::with_capacity(rest.len());
+    for ch in rest.bytes() {
+        groups.push(CHARSET.iter().position(|&c| c == ch)? as u8);
+    }
+    let (payload_groups, _checksum) = groups.split_at(groups.len().checked_sub(CHECKSUM_CHARS)?);
+
+    let mut checksum_input: Vec<u8> = alias.as_bytes().iter().map(|c| c & 0x1f).collect();
+    checksum_input.extend_from_slice(&groups);
+    // A checksum of 1 is bech32; anything else is bech32m, which marks a payload that was upgraded exactly
+    // because the old encoding was ambiguous. A miner must never guess between the two.
+    if polymod(&checksum_input) != 1 {
+        return None;
+    }
+
+    let mut bytes = Vec::with_capacity(payload_groups.len() * 5 / 8 + 1);
+    let (mut acc, mut bits) = (0u32, 0u32);
+    for &group in payload_groups {
+        acc = (acc << 5) | u32::from(group);
+        bits += 5;
+        while bits >= 8 {
+            bits -= 8;
+            bytes.push((acc >> bits) as u8);
+        }
+    }
+    // Leftover bits must be zero padding, or the string is not a canonical address.
+    if bits >= 5 || (acc & ((1 << bits) - 1)) != 0 {
+        return None;
+    }
+
+    let (version, payload) = bytes.split_first()?;
+    if usize::from(*version) != ORCHARD_ADDRESS_LEN {
+        return None;
+    }
+    payload.try_into().ok()
+}
+
+/// A 32-byte commitment to a private address, for the `zethoratest:` address the node insists on. The private
+/// address itself travels in the coinbase tag (miner extra data), never in this transparent anchor.
+fn shielded_reward_anchor(address: &[u8; ORCHARD_ADDRESS_LEN]) -> [u8; 32] {
+    let hash = blake2b_simd::Params::new()
+        .hash_length(32)
+        .personal(b"ZethoraShieldCb1")
+        .to_state()
+        .update(address)
+        .finalize();
+    hash.as_bytes().try_into().expect("32-byte hash")
+}
+
+/// Where this run's rewards go, and what the miner asks the node for.
+struct RewardRoute {
+    /// The `zethoratest:` address sent to the node: the key's own address, or the commitment to a private one.
+    pay_address: Address,
+    /// Miner tag (`extra_data`) the node copies into the coinbase payload.
+    coinbase_tag: Vec<u8>,
+    /// Printed at startup, so the screen never suggests a privacy that is not there yet.
+    banner: Vec<String>,
+    /// The private address being mined to, when there is one.
+    shielded: Option<[u8; ORCHARD_ADDRESS_LEN]>,
+}
+
+/// Builds the reward route. `shielded` is the parsed `--shielded` address, if any.
+fn reward_route(key_address: Address, network: NetworkType, shielded: Option<[u8; ORCHARD_ADDRESS_LEN]>) -> RewardRoute {
+    let mut banner = vec![format!("Paying rewards to: {key_address}")];
+    let Some(private) = shielded else {
+        return RewardRoute { pay_address: key_address, coinbase_tag: b"zethora-miner".to_vec(), banner, shielded: None };
+    };
+    let shown: String = private.iter().take(SHIELDED_ADDRESS_SHOWN).map(|b| format!("{b:02x}")).collect();
+    banner.push("Mining to shielded address (Note: privacy is currently disabled on the network)".to_string());
+    banner.push(format!("                  {shown}... ({} bytes; the whole address goes into the coinbase)", private.len()));
+    banner.push(
+        "                  The node still credits the key file's address above until the shielded-coinbase \
+         consensus change lands."
+            .to_string(),
+    );
+    let mut coinbase_tag = Vec::with_capacity(SHIELDED_TAG_PREFIX.len() + 1 + ORCHARD_ADDRESS_LEN);
+    coinbase_tag.extend_from_slice(&SHIELDED_TAG_PREFIX);
+    coinbase_tag.push(SHIELDED_POOL_ORCHARD1);
+    coinbase_tag.extend_from_slice(&private);
+    let pay_address = Address::new(Prefix::from(network), Version::PubKey, &shielded_reward_anchor(&private));
+    RewardRoute { pay_address, coinbase_tag, banner, shielded: Some(private) }
+}
+
+/// The shielded tag a node actually sealed into a coinbase payload, if any.
+///
+/// The node writes the payload as `blue-score(8) | subsidy(8) | pool(40) | note root(32) | private state(32) |
+/// script-public-key length(1) | script public key | miner tag` (consensus/src/processes/coinbase.rs), with the
+/// node's own version string at the start of the miner tag. The tag is found by its `SHD1` first bytes instead of
+/// a fixed offset, so a node that adds fields to the payload only moves the window.
+fn coinbase_shielded_tag(payload: &[u8]) -> Option<Vec<u8>> {
+    let start = payload.windows(SHIELDED_TAG_PREFIX.len()).position(|w| w == SHIELDED_TAG_PREFIX)?;
+    // The pool byte must be one this miner understands; other versions are a different format, not a typo.
+    if payload.get(start + SHIELDED_TAG_PREFIX.len()).copied() != Some(SHIELDED_POOL_ORCHARD1) {
+        return None;
+    }
+    let span = SHIELDED_TAG_PREFIX.len() + 1 + ORCHARD_ADDRESS_LEN;
+    payload.get(start..start + span).map(<[u8]>::to_vec)
 }
 
 /// RandomZ speed test (step 6): what checking mining work costs a node, and how fast this PC mines.
@@ -168,24 +327,66 @@ fn bench() {
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let usage = "Usage:\n  zethora-miner             devnet (node: --devnet --enable-unsynced-mining)\n  zethora-miner --testnet   testnet (node: --testnet --enable-unsynced-mining)\n  zethora-miner bench       RandomZ speed test (no node)\n  zethora-miner balance     devnet balance of your mining address (node needs --utxoindex)\n  zethora-miner --testnet balance   testnet balance (node needs --testnet --utxoindex)";
+    let usage = "Usage:\n  zethora-miner             devnet (node: --devnet --enable-unsynced-mining)\n  zethora-miner --testnet   testnet (node: --testnet --enable-unsynced-mining)\n  zethora-miner --shielded <zs...>   devnet, paying rewards to a private address\n  zethora-miner --testnet --shielded <zs...>   testnet, paying rewards to a private address\n  zethora-miner bench       RandomZ speed test (no node)\n  zethora-miner balance     devnet balance of your transparent mining address (node needs --utxoindex)\n  zethora-miner --testnet balance   testnet balance (node needs --testnet --utxoindex)";
     #[derive(PartialEq)]
     enum Mode {
         Mine,
         Bench,
         Balance,
     }
-    let (testnet, mode) = match args.as_slice() {
+    // `--shielded <address>` may sit before or after `--testnet`; everything else must match exactly.
+    let mut rest: Vec<&str> = Vec::with_capacity(args.len());
+    let mut shielded_arg: Option<String> = None;
+    let mut remaining = args.iter().map(String::as_str);
+    while let Some(arg) = remaining.next() {
+        match arg {
+            "--shielded" => shielded_arg = remaining.next().map(str::to_string),
+            _ if arg.starts_with("--shielded=") => shielded_arg = Some(arg["--shielded=".len()..].to_string()),
+            _ => rest.push(arg),
+        }
+    }
+    // Exit codes: usage and a private address the miner cannot read are both "the caller asked for something the
+    // tool does not do", so they share code 2, exactly as every other bad argument does today.
+    let usage_or_exit = |problem: Option<String>| {
+        if let Some(problem) = problem {
+            eprintln!("{problem}");
+        }
+        eprintln!("{usage}");
+        std::process::exit(2);
+    };
+    if shielded_arg.is_none() && args.iter().any(|a| a.starts_with("--shielded")) {
+        usage_or_exit(Some("--shielded needs a private address after it, for example: zethora-miner --shielded zs...".into()));
+    }
+    let shielded = match shielded_arg {
+        None => None,
+        Some(text) => match payload_from_shielded_address(text.trim()) {
+            Some(bytes) => Some(bytes),
+            None => usage_or_exit(Some(format!(
+                "That is not a readable private address: \"{text}\". A private address starts with zs... (or zs1...) \
+                 and carries an Orchard address. Check for a missing or extra character and try again."
+            ))),
+        },
+    };
+    let (testnet, mode) = match rest.as_slice() {
         [] => (false, Mode::Mine),
-        [a] if a == "--testnet" => (true, Mode::Mine),
-        [a] if a == "bench" => (false, Mode::Bench),
-        [a] if a == "balance" => (false, Mode::Balance),
-        [a, b] if a == "--testnet" && b == "balance" => (true, Mode::Balance),
-        _ => {
-            eprintln!("{usage}");
-            std::process::exit(2);
+        ["--testnet"] => (true, Mode::Mine),
+        ["bench"] => (false, Mode::Bench),
+        ["balance"] => (false, Mode::Balance),
+        ["--testnet", "balance"] => (true, Mode::Balance),
+                _ => {
+            usage_or_exit(None);
+            (false, Mode::Mine) // unreachable, satisfies the compiler
         }
     };
+    // `balance` asks the node for the coins of a transparent address; a private balance needs the private wallet,
+    // which the miner does not carry. Refuse before touching the node or the key file.
+    if mode == Mode::Balance && shielded.is_some() {
+        eprintln!(
+            "balance works on a transparent (zethoratest:) address, so it cannot be combined with --shielded. \
+             A private balance is read with the private wallet tools."
+        );
+        std::process::exit(2);
+    }
     if mode == Mode::Bench {
         return tokio::task::spawn_blocking(bench).await.expect("speed test");
     }
@@ -200,13 +401,17 @@ async fn main() {
     }
     let kp = load_or_create_key(key_file);
     let address = Address::new(Prefix::from(network), Version::PubKey, &kp.x_only_public_key().0.serialize());
+    // Pillar 2: with `--shielded` the coinbase carries the private address instead of the key's own.
+    let route = reward_route(address.clone(), network, shielded);
     println!("Zethora {network_name} miner");
     println!("Network:  {network_name}");
     println!("Key file: {key_file}");
     println!("Node URL: {node_url}");
-    println!("Paying rewards to: {address}");
+    for line in &route.banner {
+        println!("{line}");
+    }
     // Defensive check: refuse to mine if the address prefix does not match the network.
-    let addr_str = address.to_string();
+    let addr_str = route.pay_address.to_string();
     let expected_prefix = if testnet { "zethoratest:" } else { "zethoradev:" };
     if !addr_str.starts_with(expected_prefix) {
         eprintln!(
@@ -246,8 +451,9 @@ async fn main() {
     let mut prebuild_task: Option<tokio::task::JoinHandle<(u64, Option<kaspa_pow::randomz::SharedDataset>)>> = None;
 
     let mut warned_unsynced: Option<Instant> = None;
+    let mut warned_shielded_route = false;
     loop {
-        let template = match client.get_block_template(address.clone(), b"zethora-miner".to_vec()).await {
+        let template = match client.get_block_template(route.pay_address.clone(), route.coinbase_tag.clone()).await {
             Ok(t) => t,
             Err(e) => {
                 println!("Waiting for node: {e}");
@@ -255,6 +461,23 @@ async fn main() {
                 continue;
             }
         };
+        // Pillar 2: the private address now travels in the coinbase the node builds. Saying it once, next to the
+        // block we actually asked for, keeps the screen honest: the node still pays the transparent address.
+        if route.shielded.is_some() && !warned_shielded_route {
+            let seal = coinbase_shielded_tag(&template.block.transactions[0].payload);
+            match seal {
+                Some(tag) if tag == route.coinbase_tag => println!(
+                    "Coinbase carries the shielded address ({} bytes of miner tag). The reward is still credited to \
+                     {addr_str}.",
+                    tag.len()
+                ),
+                _ => println!(
+                    "Note: this node does not put the shielded address into the coinbase (shielded coinbase is not \
+                     implemented in consensus yet), so the reward stays with {addr_str}."
+                ),
+            }
+            warned_shielded_route = true;
+        }
         // Seam review P4-10: say so when the node is not synced (mining then builds on a chain that may be stale). The
         // miner still mines: a brand-new network starts "not synced" until its first blocks, and refusing would stall it.
         if !template.is_synced && warned_unsynced.is_none_or(|t| t.elapsed() > Duration::from_secs(60)) {
