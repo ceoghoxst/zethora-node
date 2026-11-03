@@ -3,75 +3,149 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Zethora</title>
-<meta name="description" content="Zethora: a fair-launch Layer-1 proof-of-work blockchain you can mine at home with a CPU. No premine, no presale. Testnet coming soon.">
+<title>Zethora: The Private Execution Layer for Proof-of-Work</title>
+<meta name="description" content="Zethora is a fair-launch, RandomZ proof-of-work Layer 1 with 1-second GHOSTDAG blocks, Zcash Orchard (Halo2) privacy, and a native Rust zkEVM Layer 2 proven with SP1. No premine, no presale.">
 <style>
-:root{--bg:#121218;--panel:#1e1e28;--fg:#ebebf0;--dim:#9696a5;--accent:#8c6eff;--green:#46d278}
+:root{--bg:#0b0b10;--bg2:#101018;--panel:#15151f;--panel2:#1a1a26;--line:#26262f;--fg:#ecedf3;--dim:#9c9db0;--accent:#8c6eff;--accent2:#6d4bff;--green:#46d278;--amber:#e0b64a}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 "Segoe UI",system-ui,-apple-system,sans-serif}
-main{max-width:860px;margin:0 auto;padding:48px 16px 64px}
-h1{font-size:56px;letter-spacing:2px;margin:0;color:var(--accent);font-weight:800}
-.tag{color:var(--dim);margin:4px 0 32px;font-size:18px}
-.hero{font-size:24px;line-height:1.4;margin:0 0 28px;max-width:640px}
-.btn{display:inline-block;padding:14px 28px;border-radius:6px;font-weight:700;text-decoration:none;margin:0 10px 10px 0}
-.btn.off{background:#2c2c38;color:var(--dim);cursor:not-allowed}
-.btn.ghost{border:1px solid var(--accent);color:var(--fg)}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin:40px 0}
-.card{background:var(--panel);padding:20px;border-radius:8px}
-.card h3{margin:0 0 6px;font-size:17px}
-.card p{margin:0;color:var(--dim);font-size:15px}
+html{scroll-behavior:smooth}
+body{margin:0;background:radial-gradient(1200px 600px at 50% -200px,#1b1633 0%,var(--bg) 60%) no-repeat,var(--bg);color:var(--fg);font:16px/1.65 "Segoe UI",system-ui,-apple-system,sans-serif;-webkit-font-smoothing:antialiased}
+main{max-width:960px;margin:0 auto;padding:64px 20px 72px}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+.pill{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line);background:var(--panel);color:var(--dim);font-size:13px;letter-spacing:.04em;padding:6px 14px;border-radius:999px;margin-bottom:26px}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 10px var(--green)}
+h1{font-size:52px;line-height:1.12;letter-spacing:-.5px;margin:0 0 20px;font-weight:800;background:linear-gradient(180deg,#fff 20%,#b7a9ff 130%);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.sub{color:var(--dim);font-size:19px;margin:0 0 34px;max-width:720px}
+.sub b{color:var(--fg);font-weight:600}
+.btn{display:inline-block;padding:15px 30px;border-radius:8px;font-weight:700;text-decoration:none;margin:0 10px 10px 0;border:1px solid transparent;transition:transform .12s ease,opacity .12s ease}
+.btn:hover{text-decoration:none;transform:translateY(-1px);opacity:.92}
+.btn.primary{background:linear-gradient(135deg,var(--accent2),var(--accent));color:#fff;box-shadow:0 8px 26px rgba(109,75,255,.28)}
+.btn.ghost{border-color:var(--line);color:var(--fg);background:var(--panel)}
+.meta{color:var(--dim);font-size:13px;margin:2px 0 0}
+h2{margin:64px 0 8px;font-size:13px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim);font-weight:700}
+.lede{margin:0 0 22px;color:var(--dim);font-size:15px;max-width:680px}
+.stack{display:flex;align-items:center;gap:10px;flex-wrap:wrap;color:var(--dim);font-size:13px;margin:22px 0 0}
+.stack span.tag{border:1px solid var(--line);background:var(--panel);padding:4px 10px;border-radius:6px;color:var(--fg);font-weight:600}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(258px,1fr));gap:16px;margin:18px 0 0}
+.card{background:linear-gradient(180deg,var(--panel2),var(--panel));border:1px solid var(--line);padding:24px;border-radius:12px}
+.card .num{font-size:11px;letter-spacing:.16em;color:var(--accent);font-weight:700;text-transform:uppercase}
+.card h3{margin:8px 0 14px;font-size:19px;font-weight:700}
+.card ul{list-style:none;padding:0;margin:0}
+.card li{color:var(--dim);font-size:14.5px;padding:7px 0 7px 18px;position:relative;border-top:1px solid rgba(255,255,255,.05)}
+.card li:first-child{border-top:0}
+.card li:before{content:"";position:absolute;left:2px;top:16px;width:6px;height:6px;border-radius:2px;background:var(--accent);opacity:.85}
+.card li b{color:var(--fg);font-weight:600}
+.status{background:var(--bg2);border:1px solid var(--line);border-radius:12px;padding:22px 24px;margin:18px 0 0}
+.status table{width:100%;border-collapse:collapse;font-size:14.5px}
+.status td{padding:9px 0;border-top:1px solid rgba(255,255,255,.05);vertical-align:top}
+.status tr:first-child td{border-top:0}
+.status td:first-child{color:var(--fg);font-weight:600}
+.status td:last-child{color:var(--dim)}
 .ok{color:var(--green);font-weight:700}
-h2{margin:44px 0 12px;font-size:22px}
-ul{padding-left:20px;color:var(--dim)} li{margin:4px 0}
-a{color:var(--accent)}
-footer{color:var(--dim);font-size:13px;margin-top:56px;border-top:1px solid #2c2c38;padding-top:16px}
-@media(max-width:520px){h1{font-size:42px}.hero{font-size:20px}}
+.warn{color:var(--amber);font-weight:700}
+.links{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin:18px 0 0}
+.link{display:block;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px;transition:border-color .12s ease}
+.link:hover{border-color:var(--accent);text-decoration:none}
+.link b{display:block;color:var(--fg);font-size:15px;margin-bottom:3px}
+.link span{color:var(--dim);font-size:13px}
+code{font-family:Consolas,"Cascadia Mono",monospace;font-size:13px;background:var(--panel2);border:1px solid var(--line);padding:2px 6px;border-radius:5px;color:#cfc7ff}
+footer{color:var(--dim);font-size:13px;margin-top:64px;border-top:1px solid var(--line);padding-top:20px}
+footer a{color:var(--dim)}
+@media(max-width:560px){h1{font-size:35px}.sub{font-size:17px}main{padding:44px 16px 56px}}
 </style>
 </head>
 <body>
 <main>
-  <h1>ZETHORA</h1>
-  <div class="tag">Self-custodied digital property &middot; fair launch &middot; privacy after review</div>
-  <p class="hero">Zethora is a Layer-1 proof-of-work blockchain built from Kaspa&rsquo;s open-source BlockDAG node. It is mined at home with RandomZ, a CPU algorithm, and includes Zcash Orchard privacy that stays switched off on mainnet until an independent review.</p>
-  <a class="btn" href="https://tinyurl.com/Zethora-Testnet" style="background:var(--accent); color:white;">Download Testnet v0.1.0</a>
-  <a class="btn ghost" href="https://github.com/ceoghoxst/zethora-node/blob/zethora/Zethora_Lightpaper_v0.4.md">Read the Lightpaper</a>
-  <a class="btn ghost" href="https://github.com/ceoghoxst/zethora-node">Source code</a>
-  <div class="grid">
-    <div class="card"><h3>Fair launch</h3><p>No premine. No presale. 100M cap; every coin comes from mining. The team mines like everyone else.</p></div>
-    <div class="card"><h3>Supply check on every block</h3><p>After every block the miner checks the total supply is exactly right: <span class="ok">BALANCED</span>.</p></div>
-    <div class="card"><h3>Mine at home</h3><p>One download, one icon, one window. The launcher is a plain text script you can read in Notepad; the miner&rsquo;s source is on GitHub.</p></div>
-    <div class="card"><h3>Testnet privacy</h3><p>Testnet will include experimental, unreviewed private payments to help find bugs. Mainnet privacy stays off until independent review.</p></div>
+
+  <div class="pill"><span class="dot"></span> Public Testnet &middot; v0.1.2 &middot; Mining &amp; Syncing</div>
+
+  <h1>Zethora: The Private Execution Layer for Proof-of-Work.</h1>
+  <p class="sub"><b>Bitcoin Scarcity + Kaspa Speed + Monero Privacy + Ethereum Programmability.</b></p>
+
+  <div class="cta">
+    <a class="btn primary" href="https://github.com/ceoghoxst/zethora-node/releases/tag/v0.1.2-testnet.4">Download v0.1.2 Testnet</a>
+    <a class="btn ghost" href="https://github.com/ceoghoxst/zethora-node/blob/zethora-wallet-cli/docs/WHITEPAPER.md">Read the Whitepaper</a>
+    <a class="btn ghost" href="https://github.com/ceoghoxst/zethora-node">Source code</a>
+  </div>
+  <p class="meta">Windows and Linux builds. Every release lists a SHA256 checksum for each file &mdash; verify before you run.</p>
+
+  <div class="stack">
+    <span class="tag">100,000,000 ZTHR hard cap</span>
+    <span class="tag">No premine</span>
+    <span class="tag">No presale</span>
+    <span class="tag">No admin key</span>
   </div>
 
-  <p style="color:var(--dim)">We are in the devnet phase. There is no token and no presale. Testnet coins will be worth zero.</p>
+  <h2>Architecture</h2>
+  <p class="lede">One chain, three layers: a fast proof-of-work base, a privacy pool that is private by default, and an execution layer that proves its work instead of trusting a sequencer.</p>
 
-  <h2>How to start (about 10 minutes)</h2>
-  <ol style="color:var(--dim);padding-left:20px">
-    <li><b>Download</b> <i>Zethora-Setup</i> from the releases page (button above).</li>
-    <li>If your browser warns the file is uncommon or unsafe: that is expected for a new, unsigned program. In Edge: Downloads &rarr; &hellip; &rarr; <b>Keep</b> &rarr; Show more &rarr; <b>Keep anyway</b>.</li>
-    <li><b>Open it.</b> If Windows shows "Windows protected your PC": <b>More info</b> &rarr; <b>Run anyway</b>.</li>
-    <li>Click <b>Next</b> until it installs, then <b>Finish</b>. A Zethora icon appears on your desktop.</li>
-    <li>Click <b>START MINING</b>. When Windows Security asks, tick <b>Private networks</b> and click <b>Allow</b>.</li>
-    <li>Wait 1&ndash;2 minutes: Status turns <b>Mining</b> and the supply check turns green: <b>BALANCED</b>.</li>
-    <li>Click <b>BACK UP MY KEY</b> and copy your key file somewhere safe.</li>
-  </ol>
-  <p><a href="https://github.com/ceoghoxst/zethora-node/blob/zethora/docs/TESTNET-GUIDE.md">Full step-by-step guide</a></p>
+  <div class="grid">
 
-  <h2>Verify your download</h2>
-  <p style="color:var(--dim)">Only download from the GitHub releases page linked here. Every release lists a SHA256 checksum for each file. Before running anything, open PowerShell in your Downloads folder and run <code>Get-FileHash Zethora-Setup*</code>. The hash must match the <b>.sha256</b> file on the release page and the hash posted below. If they don't match, delete the files and report it.<br><br><b>v0.1.0-testnet.1 SHA256:</b><br><code style="word-break:break-all;">AD2CE375044790B9CD8867C0A3CEB29D6D708531E2ED7191E2A06D4B156CA491</code></p>
+    <div class="card">
+      <div class="num">Pillar 1 &middot; L1 Base</div>
+      <h3>Consensus &amp; Mining</h3>
+      <ul>
+        <li><b>GHOSTDAG PoW</b> &mdash; parallel BlockDAG consensus, forked from Kaspa's Rust node rather than reinvented.</li>
+        <li><b>1-second blocks</b> &mdash; a cadence fast enough to settle ZK proofs without waiting on a 12-second slot.</li>
+        <li><b>RandomZ CPU mining</b> &mdash; a RandomX variant tuned for Zethora: ASIC-resistant and built for home machines.</li>
+        <li><b>Smooth-decay emission</b> &mdash; the reward shrinks every block. No halving cliff, no founder allocation, 100M cap.</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <div class="num">Pillar 2 &middot; Privacy</div>
+      <h3>Private by Default</h3>
+      <ul>
+        <li><b>Orchard Halo2 (Private by Default)</b> &mdash; upstream Zcash Orchard 0.16.0, used unmodified. Wallets default to shielded addresses.</li>
+        <li><b>Shielded Coinbase</b> &mdash; consensus rules let miners route block rewards straight into a shielded address, so fresh supply is never exposed.</li>
+        <li><b>Exchange Compliance Bridge</b> &mdash; <code>exchange-deposit</code> unshields to a transparent address, and View Keys prove source of funds without exposing wallet history.</li>
+        <li><b>Gated today</b> &mdash; the privacy flag is locked on testnet and mainnet until an independent cryptographic review is complete.</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <div class="num">Pillar 3 &middot; L2 Execution</div>
+      <h3>zkEVM Layer 2</h3>
+      <ul>
+        <li><b>Native Rust zkEVM</b> &mdash; the <code>zethora-evm</code> crate runs a full EVM through <code>revm</code>, decoupled from consensus and P2P.</li>
+        <li><b>EIP-1559</b> &mdash; Ethereum fee semantics, native signature recovery, batch state transitions with rollback protection.</li>
+        <li><b>SP1 ZK-Prover integration</b> &mdash; the <code>zethora-prover</code> crate proves each batch inside the SP1 zkVM and commits its state root.</li>
+        <li><b>Status</b> &mdash; execution engine and prover are built and integrated. The L1 settlement bridge is next.</li>
+      </ul>
+    </div>
+
+  </div>
 
   <h2>Honest status</h2>
-  <ul>
-    <li>Public testnet: OPEN NOW. Non-technical testers successfully set it up alone.</li>
-    <li>Private payments: built in, switched <b>off</b> today. Testnet turns them on as an <b>experimental, unreviewed</b> feature after current hardening. Mainnet keeps them off until an independent review.</li>
-    <li>Not audited yet. Binaries are not code-signed yet.</li>
-    <li>Testnet coins are worth zero. Nothing is for sale.</li>
-  </ul>
-  <p><a href="https://github.com/ceoghoxst/zethora-node/blob/zethora/docs/STATUS.md">Full status and known risks</a> &middot;
-     <a href="https://github.com/ceoghoxst/zethora-node/blob/zethora/docs/FAQ.md">FAQ</a> &middot;
-     <a href="https://github.com/ceoghoxst/zethora-node/blob/zethora/press/README.md">Press kit</a></p>
+  <div class="status">
+    <table>
+      <tr><td>L1 consensus (GHOSTDAG, 1 BPS)</td><td><span class="ok">LIVE</span> on public testnet</td></tr>
+      <tr><td>RandomZ CPU mining + CLI wallet</td><td><span class="ok">LIVE</span> on public testnet</td></tr>
+      <tr><td>zkEVM execution engine (<code>zethora-evm</code>)</td><td><span class="ok">BUILT</span> &mdash; revm, EIP-1559, batch state transitions</td></tr>
+      <tr><td>SP1 ZK-Prover (<code>zethora-prover</code>)</td><td><span class="ok">INTEGRATED</span> &mdash; proves the batch state root in the zkVM</td></tr>
+      <tr><td>Shielded transactions (Orchard)</td><td><span class="warn">GATED</span> &mdash; built, locked pending independent cryptographic review</td></tr>
+      <tr><td>L1 settlement bridge for the L2</td><td>In development</td></tr>
+      <tr><td>Mainnet</td><td>Not launched. No dates are promised.</td></tr>
+    </table>
+  </div>
+  <p class="meta">Testnet coins are worth zero. There is no token sale, no airdrop and no presale. Nothing here is an offer, investment advice, or a promise of value or returns.</p>
 
-  <footer><a href="https://github.com/ceoghoxst/zethora-node">GitHub</a> &middot; <a href="https://github.com/ceoghoxst/zethora-node/blob/zethora/docs/ZTH-SPEC-006.md">ZTH-SPEC-006</a> &middot; Founder <a href="https://x.com/CEOGHOXST">@CEOGHOXST</a> &middot; <a href="https://x.com/ZethoraNetwork">@ZethoraNetwork</a><br>Maintained by DeionRaven (Deion Smith), with AI; every change tested. DeionRaven Labs is a project name, not a registered company. No investment advice, no price, no promised income.</footer>
+  <h2>Documentation</h2>
+  <div class="links">
+    <a class="link" href="https://github.com/ceoghoxst/zethora-node/blob/zethora-wallet-cli/docs/WHITEPAPER.md"><b>Whitepaper</b><span>Compliance, privacy architecture, consensus, zkEVM and roadmap.</span></a>
+    <a class="link" href="https://github.com/ceoghoxst/zethora-node/blob/zethora-wallet-cli/docs/ZKEVM-LAYER.md"><b>zkEVM Layer spec</b><span>How the L2 executes, proves and settles on the Zethora L1.</span></a>
+    <a class="link" href="https://github.com/ceoghoxst/zethora-node/blob/zethora-wallet-cli/docs/LEGAL-COMPLIANCE.md"><b>Compliance &amp; the Exchange Bridge</b><span>Non-custodial design, AML tooling and View Keys.</span></a>
+    <a class="link" href="https://github.com/ceoghoxst/zethora-node/blob/zethora-wallet-cli/docs/PRIVACY-UX.md"><b>Privacy UX</b><span>Shielded default, shielded coinbase and the transparent exit path.</span></a>
+    <a class="link" href="https://github.com/ceoghoxst/zethora-node/blob/zethora-wallet-cli/docs/WINDOWS-GETTING-STARTED.md"><b>Getting started</b><span>Install the node and miner, back up your key, start mining.</span></a>
+    <a class="link" href="https://github.com/ceoghoxst/zethora-node/blob/zethora-wallet-cli/docs/STATUS.md"><b>Status &amp; known risks</b><span>What works, what is gated, and what we do not claim.</span></a>
+  </div>
+
+  <footer>
+    <a href="https://github.com/ceoghoxst/zethora-node">GitHub</a> &middot; <a href="https://github.com/ceoghoxst/zethora-node/releases/latest">Releases</a> &middot; <a href="https://github.com/ceoghoxst/zethora-node/blob/zethora-wallet-cli/docs/ZTH-SPEC-006.md">ZTH-SPEC-006</a> &middot; <a href="https://x.com/CEOGHOXST">@CEOGHOXST</a> &middot; <a href="https://x.com/ZethoraNetwork">@ZethoraNetwork</a><br>
+    Maintained by DeionRaven (Deion Smith). DeionRaven Labs is a project name, not a registered company. Zethora has not undergone an independent external review; shielded transactions stay gated until one is complete. No investment advice, no price, no promised income.
+  </footer>
+
 </main>
 </body>
 </html>

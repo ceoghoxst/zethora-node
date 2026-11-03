@@ -1,12 +1,50 @@
 # Zethora (Testnet)
 
+> **[Read the Zethora Whitepaper &rarr;](docs/WHITEPAPER.md)**
+> *Zethora: The Private Execution Layer for Proof-of-Work.* The full technical
+> case: L1 consensus, Orchard privacy, the compliance bridge, and the zkEVM L2.
+
 **Zethora Testnet is currently LIVE.**
-- **Version:** v0.1.1-testnet.1
-- **Download:** https://tinyurl.com/Zethora-Testnet
-- **Live Network Commit Hash:** e0c180c55d6094be568f73f7eebf1d6c324d1e36
+- **Version:** v0.1.2-testnet.4
+- **Download:** https://github.com/ceoghoxst/zethora-node/releases/latest
 - **Network Status:** Mining & Syncing
 - **Privacy Status:** Shielded transactions are disabled on this build. See
   [Privacy status](#privacy-status) below.
+- **Execution Layer:** zkEVM execution engine built and the SP1 ZK-Prover
+  integrated. See [What's New in v0.1.2](#whats-new-in-v012).
+
+---
+
+## What's New in v0.1.2
+
+The two pieces that turn Zethora from a payments chain into an execution layer
+are now in the tree and tested, not promised.
+
+**The EVM is built.** A new `zethora-evm` crate implements a full EVM
+execution environment on top of `revm` and `alloy-consensus`, deliberately
+decoupled from consensus and P2P so it can be exercised in isolation.
+
+- **EIP-1559 transactions** with native signature recovery (no external
+  signer round-trip), built on Section 2 of the [zkEVM spec](docs/ZKEVM-LAYER.md).
+- **Batch state transitions** with rollback protection: a batch either commits
+  its full state delta or reverts cleanly, never a half-applied intermediate.
+- **Adversarial red-team tests** accompany both: replay attempts, signature
+  malleability, and state corruption on rollback are covered as tests that fail
+  when their protection is removed.
+
+**The ZK-Prover is integrated.** A new `zethora-prover` crate proves EVM batch
+execution with the [SP1](https://github.com/succinctlabs/sp1) zkVM.
+
+- The EVM runs **inside the guest**, and the prover commits the resulting state
+  root as public output, so the proof attests to the executed transition rather
+  than to a trusted claim about it.
+- The guest ELF is rebuilt automatically when `zethora-evm` changes, so a stale
+  binary can never silently prove an old execution engine.
+- The proof test is gated on the SP1 toolchain: without it the crate still
+  compiles and its pure tests still run, so CI stays green without RISC-V.
+
+**Not done yet:** the L1 settlement bridge that posts these proofs back to
+GHOSTDAG is still in development. Nothing here is a claim that the L2 is live.
 
 ---
 
@@ -14,8 +52,9 @@
 
 Zethora is a proof-of-work Layer 1 derived from the Kaspa codebase. It keeps
 Kaspa's GHOSTDAG BlockDAG consensus and 1 block-per-second cadence, and adds
-its own emission schedule, a RandomZ proof-of-work algorithm, and an optional
-shielded-transaction layer built on Zcash Orchard.
+its own emission schedule, a RandomZ proof-of-work algorithm, an optional
+shielded-transaction layer built on Zcash Orchard, and a native Rust zkEVM
+execution layer.
 
 - **Supply:** 100,000,000 ZTHR hard cap, enforced by consensus rules. No
   premine, no allocation, no owner.
@@ -24,8 +63,10 @@ shielded-transaction layer built on Zcash Orchard.
   ASIC-resistant by design.
 - **Base layer:** Kaspa's Rust implementation. Zethora forks it rather than
   reimplementing consensus.
+- **Execution:** `zethora-evm` (revm, EIP-1559, batch state transitions) and
+  `zethora-prover` (SP1 zkVM), as an L2 that settles onto this L1.
 
-No token sale, no presale, no smart contracts.
+No token sale, no presale. There is no premine and no allocation.
 
 ---
 
@@ -61,9 +102,13 @@ on testnet and mainnet; see [Privacy status](#privacy-status).
 second on the public networks. Kaspa's Rust codebase is the base; Zethora
 forks it rather than reinventing consensus.
 
-**Programmability from Ethereum: future research, not built.** Private
-payments come first. Contracts may never come. We will not promise what we
-cannot deliver.
+**Programmability from Ethereum: an L2, built and proving.** Zethora does not
+force the EVM onto the UTXO base layer; that would break the parallel BlockDAG.
+Instead, `zethora-evm` runs a native Rust EVM (revm, EIP-1559, batch state
+transitions) and `zethora-prover` proves each batch with the SP1 zkVM, committing
+the state root as public output. The proofs are destined for GHOSTDAG
+settlement; the settlement bridge itself is still in development. See
+[docs/ZKEVM-LAYER.md](docs/ZKEVM-LAYER.md).
 
 ---
 
@@ -112,8 +157,15 @@ This behavior is emergency switch level (a) as described in ZTH-SPEC-006 Section
 **Live on testnet:**
 - Full node with GHOSTDAG consensus at 1 BPS
 - CPU mining with RandomZ
-- `zethora-wallet` CLI: `balance`, `receive`, `send`, `history`, `sync`
+- `zethora-wallet` CLI: `balance`, `receive`, `exchange-deposit`, `send`,
+  `history`, `sync`
 - Tabbed Windows GUI (Miner Dashboard + Wallet) with a transaction-history grid
+
+**Built and integrated, not yet served to users:**
+- `zethora-evm`: the zkEVM execution engine (revm, EIP-1559 signature
+  recovery, batch state transitions with rollback protection)
+- `zethora-prover`: batch proofs in the SP1 zkVM, committing the state root
+- Shielded coinbase validation in consensus
 
 **Live on devnet only:**
 - Shielding (transparent to private)
@@ -122,10 +174,11 @@ This behavior is emergency switch level (a) as described in ZTH-SPEC-006 Section
 **Not live:**
 - **Shielded transactions on testnet and mainnet.** See
   [Privacy status](#privacy-status).
+- **The L2 as a usable network.** The execution engine and prover exist; the
+  L1 settlement bridge that would make the rollup live is still in development.
 - **Mainnet.** Not launched.
 - **Any token.** There is no token. There will be no presale. There will be
   no airdrop. ZTHR is created only by mining.
-- **Smart contracts.** Not built, not planned. Future research only.
 
 ---
 
@@ -155,6 +208,7 @@ other network unless `--testnet` is passed.
 | --- | --- |
 | `balance` | Current spendable balance, read from the node |
 | `receive` | Prints your address; derived from your key file, never changes |
+| `exchange-deposit` | Prints the transparent address to use when depositing to a centralized exchange |
 | `send <address> <amount>` | Sends ZTHR; supports `--dry-run` |
 | `history` | Transaction ledger; `--limit N` and `--json` supported |
 | `sync` | Reconciles local wallet state with the chain |
@@ -170,6 +224,40 @@ The GUI's history grid is driven by `history --limit 50 --json`. Amounts are
 printed newest first, with the full transaction id available on hover.
 
 Wallet and GUI walkthrough: [docs/WALLET-WALKTHROUGH.md](docs/WALLET-WALKTHROUGH.md)
+
+---
+
+## Compliance
+
+Private-by-default payments are useless if the coin cannot be listed. Exchanges
+are required by the FATF to run Anti-Money Laundering checks, and pure shielded
+chains like Monero cannot satisfy them, so they get delisted. Zethora is built so
+that privacy is the default and a verifiable exit still exists. This is the
+**Exchange Bridge**.
+
+**The bridge, concretely:**
+- **Exchanges integrate only with the transparent address format** (`zethoratest:`).
+  They never need to understand Orchard to list ZTHR.
+- **`zethora-wallet exchange-deposit`** prints the transparent address to use
+  when moving funds to a centralized exchange, so the exit path is a documented
+  command rather than a manual workaround.
+- **The exchange sees a standard, traceable UTXO transaction**, which is what its
+  compliance obligations require.
+- **View Keys provide selective disclosure.** A user can reveal the sender,
+  receiver and amount of a specific transaction, or a specific timeframe, to an
+  auditor or an exchange, proving source of funds without doxxing the rest of
+  their wallet history to the public.
+- **No custody, no seizure surface.** Zethora is open-source, non-custodial
+  software. The core developers hold no user funds, operate no money
+  transmitter business, and cannot freeze or move a balance.
+
+**What this does not claim.** The bridge is a compliance *mechanism*, not a
+listing. No exchange has agreed to list ZTHR, and no regulator has endorsed this
+design. The privacy flag is still locked on testnet and mainnet (see
+[Privacy status](#privacy-status)), so on today's public networks the shielded
+side of the bridge is not yet reachable by users. Full write-up:
+[docs/LEGAL-COMPLIANCE.md](docs/LEGAL-COMPLIANCE.md) and
+[docs/PRIVACY-UX.md](docs/PRIVACY-UX.md).
 
 ---
 
@@ -248,6 +336,11 @@ are not from us:
 
 ## Documentation
 
+- **Whitepaper: [docs/WHITEPAPER.md](docs/WHITEPAPER.md)** — the full
+  architecture: L1, privacy, compliance, zkEVM L2, and the roadmap.
+- zkEVM execution layer: [docs/ZKEVM-LAYER.md](docs/ZKEVM-LAYER.md)
+- Compliance and the Exchange Bridge: [docs/LEGAL-COMPLIANCE.md](docs/LEGAL-COMPLIANCE.md)
+- Privacy UX (shielded default, shielded coinbase): [docs/PRIVACY-UX.md](docs/PRIVACY-UX.md)
 - Getting started (Windows): docs/WINDOWS-GETTING-STARTED.md
 - Mining walkthrough: docs/MINING-WALKTHROUGH.md
 - Wallet and GUI walkthrough: docs/WALLET-WALKTHROUGH.md

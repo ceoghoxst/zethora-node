@@ -26,7 +26,7 @@ Zethora integrates the upstream Zcash Orchard (Halo2) library.
 Zethora is developing a native Rust zkEVM (Zero-Knowledge Ethereum Virtual Machine) as a Layer 2.
 - **Execution Engine:** The `zethora-evm` crate implements a full EVM execution environment using `revm` and `alloy-consensus`. It supports EIP-1559 transactions, native signature recovery, and batch state transitions.
 - **Security:** The execution engine has been subjected to internal adversarial red-teaming (including replay attacks, signature malleability, and state corruption on rollback).
-- **Status:** The execution engine is functional. The Zero-Knowledge Prover (using SP1) and L1 settlement bridge are currently in development.
+- **Status:** The execution engine is functional. The SP1 Zero-Knowledge Prover is integrated. The L1 settlement bridge is currently in development.
 
 ## 5. Security and Auditing
 - **Adversarial Testing:** The Orchard integration and consensus rules have undergone internal adversarial testing. A critical consensus bypass (allowing shielded coinbases when privacy was disabled) was discovered and patched during this process.
