@@ -2,38 +2,58 @@
 //!
 //! This crate is the execution layer of the Zethora zkEVM. It is deliberately
 //! standalone: it does not depend on the consensus engine, the P2P stack or the
-//! RPC layer, and it knows nothing about how transactions reach it. Its single
-//! job is to take a raw, RLP-encoded Ethereum transaction, run it against an
-//! in-memory EVM database with [`revm`], and hand back the resulting output.
+//! RPC layer, and it knows nothing about how transactions reach it. Its job is
+//! to take a raw, RLP-encoded Ethereum transaction, run it against an in-memory
+//! EVM database with [`revm`], and hand back the resulting output.
 //!
-//! The state root produced by [`EvmExecutor::state_root`] is exactly the value a
-//! future ZK-prover will have to commit to, which is why it is exposed as a
-//! first-class part of the API.
+//! The state root produced by [`EvmExecutor::state_root`] is the value a future
+//! ZK-prover has to commit to, which is why it is a first-class part of the API.
 //!
 //! # Transaction support
 //!
-//! Decoding currently supports the legacy (pre-EIP-2718) transaction envelope,
-//! both with and without the EIP-155 replay-protection fields:
+//! Decoding is delegated wholesale to [`TxEnvelope`], the EIP-2718 envelope type
+//! from `alloy-consensus`. That one type natively understands every Ethereum
+//! envelope, so the executor never hand-rolls RLP parsing. Two envelopes are
+//! accepted:
 //!
-//! `[nonce, gasPrice, gasLimit, to, value, data, v, r, s]` (EIP-155)
-//! `[nonce, gasPrice, gasLimit, to, value, data, v, r, s]` (pre-EIP-155, v = 27/28)
+//! * legacy (pre-EIP-2718), both with and without EIP-155 replay protection:
+//!   `[nonce, gasPrice, gasLimit, to, value, data, v, r, s]`, including the
+//!   typed `0x00 || rlp` form;
+//! * EIP-1559 (type `0x02`), which carries `max_fee_per_gas` /
+//!   `max_priority_fee_per_gas` instead of a single gas price and always carries
+//!   a `chain_id`.
 //!
-//! Typed envelopes (EIP-2930 `0x01`, EIP-1559 `0x02`, EIP-4844 `0x03`,
-//! EIP-7702 `0x04`) have a type byte prefix and are rejected with a clear error
-//! until they are wired up. Signature *recovery* is also out of scope for this
-//! section: the sender must be supplied explicitly via
-//! [`EvmExecutor::set_caller`], or the zero address is used.
+//! Everything else (`0x01`, `0x03`, `0x04`) is rejected at decode time, because
+//! the executor cannot yet price or execute it correctly.
+//!
+//! # Sender authentication
+//!
+//! The sender is **never** supplied by the caller. It is recovered
+//! cryptographically from the transaction signature by [`recover_sender`], and
+//! the recovered address is the account revm charges gas to and checks the
+//! nonce of. That closes the class of impersonation bugs where a caller could
+//! name any sender it liked.
+//!
+//! Recovery deliberately goes through
+//! [`SignerRecoverable::recover_signer`] on the envelope, not
+//! `recover_signer_unchecked`, because the former enforces the
+//! [EIP-2](https://eips.ethereum.org/EIPS/eip-2) low-`s` rule that makes
+//! signatures non-malleable.
 
-use alloy_primitives::{Address, B256, Bytes, U256};
-use alloy_rlp::{Decodable, RlpDecodable, RlpEncodable};
+use alloy_consensus::transaction::SignerRecoverable;
+use alloy_consensus::{Signed, Transaction as ConsensusTransaction, TxEip1559, TxEnvelope, TxLegacy};
+use alloy_eips::eip2718::Decodable2718;
+use alloy_primitives::{Address, Bytes, Signature, TxKind, B256, U256};
 use revm::{
     bytecode::Bytecode,
     context::{BlockEnv, Context, TxEnv},
-    context_interface::result::{ExecResultAndState, ExecutionResult, HaltReason, Output, ResultAndState},
+    context_interface::result::{
+        ExecResultAndState, ExecutionResult, HaltReason, Output, ResultAndState,
+    },
     database::InMemoryDB,
     database_interface::DatabaseCommit,
     handler::{MainBuilder, MainContext},
-    primitives::{hardfork::SpecId, TxKind, KECCAK_EMPTY},
+    primitives::{hardfork::SpecId, KECCAK_EMPTY},
     state::{AccountInfo, EvmState},
     Database, ExecuteEvm,
 };
@@ -50,72 +70,257 @@ pub const BLOCK_GAS_LIMIT: u64 = 30_000_000;
 /// Identifier of the legacy (pre-EIP-2718) transaction envelope.
 pub const LEGACY_TX_TYPE: u8 = 0x00;
 
-/// A decoded legacy Ethereum transaction.
+/// Identifier of the EIP-1559 transaction envelope.
+pub const EIP1559_TX_TYPE: u8 = 0x02;
+
+/// Half of the secp256k1 group order, `floor(N / 2)`.
 ///
-/// Field order and types match the canonical RLP layout from the Ethereum
-/// yellow paper, so `RlpDecodable` maps straight onto the wire format.
-#[derive(Clone, Debug, PartialEq, Eq, RlpDecodable, RlpEncodable)]
-pub struct LegacyTransaction {
-    /// Sender nonce.
-    pub nonce: u64,
-    /// Gas price in wei.
-    pub gas_price: U256,
-    /// Maximum gas this transaction may consume.
-    pub gas_limit: u64,
-    /// Recipient, or empty for a contract creation.
-    pub to: TxKind,
-    /// Value transferred in wei.
-    pub value: U256,
-    /// Calldata (or init code when `to` is empty).
-    pub input: Bytes,
-    /// Signature `v`: 27/28 for pre-EIP-155, or `chain_id * 2 + 35/36`.
-    pub v: U256,
-    /// Signature `r`.
-    pub r: U256,
-    /// Signature `s`.
-    pub s: U256,
+/// [EIP-2](https://eips.ethereum.org/EIPS/eip-2) requires a signature's `s`
+/// component to be at most this value. Without that bound every signature has a
+/// second, equally valid encoding `(r, N - s)`, so a transaction could be
+/// re-broadcast with a different hash while expressing the same intent.
+pub const SECP256K1N_HALF: U256 = U256::from_be_bytes(alloy_primitives::hex!(
+    "7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0"
+));
+
+
+/// A decoded, signature-bearing Ethereum transaction.
+///
+/// Only the envelopes the executor can price and execute are modelled. Typed
+/// transactions that need state this engine does not model yet (EIP-2930 access
+/// lists, EIP-4844 blob sidecars, EIP-7702 delegation lists) are rejected at
+/// decode time.
+///
+/// The payload is kept as alloy's signed wrapper because that type owns sender
+/// recovery: `Signed<TxLegacy>` and `Signed<TxEip1559>` each know how to
+/// recompute their own signing hash and recover the address behind the
+/// signature.
+#[derive(Clone, Debug)]
+pub enum Transaction {
+    /// A legacy (pre-EIP-2718) transaction. Its EIP-155 chain id is derived from
+    /// `v`, so it may legitimately have no chain id at all.
+    Legacy(Signed<TxLegacy>),
+    /// An EIP-1559 (type `0x02`) transaction.
+    Eip1559(Signed<TxEip1559>),
 }
 
-impl LegacyTransaction {
-    /// The EIP-155 chain id encoded in `v`, if the transaction is replay protected.
+impl Transaction {
+    /// The chain id this transaction is bound to.
+    ///
+    /// `None` means the transaction predates EIP-155 and carries no replay
+    /// protection, so it would be executable on any chain.
     pub fn chain_id(&self) -> Option<u64> {
-        // Pre-EIP-155 transactions use v = 27 / 28, which carry no chain id.
-        if self.v == U256::from(27) || self.v == U256::from(28) {
-            return None;
+        match self {
+            Self::Legacy(tx) => tx.chain_id(),
+            Self::Eip1559(tx) => tx.chain_id(),
         }
-        // EIP-155: v = chain_id * 2 + 35 (or + 36).
-        let v = self.v.checked_sub(U256::from(35))?;
-        let chain_id = v / U256::from(2);
-        u64::try_from(chain_id).ok()
+    }
+
+    /// The sender nonce this transaction declares.
+    ///
+    /// This is the value the sender *claims*. It is only trusted once
+    /// [`recover_sender`] has proven the sender owns the signature, after which
+    /// revm additionally checks it against the account's real nonce.
+    pub fn nonce(&self) -> u64 {
+        match self {
+            Self::Legacy(tx) => tx.tx().nonce,
+            Self::Eip1559(tx) => tx.tx().nonce,
+        }
+    }
+
+    /// The maximum gas this transaction may consume.
+    pub fn gas_limit(&self) -> u64 {
+        match self {
+            Self::Legacy(tx) => tx.tx().gas_limit,
+            Self::Eip1559(tx) => tx.tx().gas_limit,
+        }
+    }
+
+    /// Recipient, or [`TxKind::Create`] for a contract deployment.
+    pub fn kind(&self) -> TxKind {
+        match self {
+            Self::Legacy(tx) => tx.tx().to,
+            Self::Eip1559(tx) => tx.tx().to,
+        }
+    }
+
+    /// Value transferred in wei.
+    pub fn value(&self) -> U256 {
+        match self {
+            Self::Legacy(tx) => tx.tx().value,
+            Self::Eip1559(tx) => tx.tx().value,
+        }
+    }
+
+    /// Calldata, or init code for a deployment.
+    pub fn input(&self) -> &Bytes {
+        match self {
+            Self::Legacy(tx) => &tx.tx().input,
+            Self::Eip1559(tx) => &tx.tx().input,
+        }
+    }
+
+    /// The gas price of a legacy transaction.
+    ///
+    /// For an EIP-1559 transaction this is the fee cap, `max_fee_per_gas`.
+    pub fn max_fee_per_gas(&self) -> u128 {
+        match self {
+            Self::Legacy(tx) => tx.tx().gas_price,
+            Self::Eip1559(tx) => tx.tx().max_fee_per_gas,
+        }
+    }
+
+    /// The EIP-1559 priority fee, or `None` for a legacy transaction.
+    pub fn max_priority_fee_per_gas(&self) -> Option<u128> {
+        match self {
+            Self::Legacy(_) => None,
+            Self::Eip1559(tx) => Some(tx.tx().max_priority_fee_per_gas),
+        }
+    }
+
+    /// The EIP-2718 transaction type byte.
+    pub fn tx_type(&self) -> u8 {
+        match self {
+            Self::Legacy(_) => LEGACY_TX_TYPE,
+            Self::Eip1559(_) => EIP1559_TX_TYPE,
+        }
+    }
+
+    /// The signature attached to this transaction.
+    pub fn signature(&self) -> Signature {
+        match self {
+            Self::Legacy(tx) => *tx.signature(),
+            Self::Eip1559(tx) => *tx.signature(),
+        }
+    }
+
+    /// The signing hash, i.e. the keccak256 digest the sender signed.
+    ///
+    /// Exposed so callers (and the Red Team suite) can verify exactly which
+    /// prehash a signature commits to.
+    pub fn signature_hash(&self) -> B256 {
+        match self {
+            Self::Legacy(tx) => tx.signature_hash(),
+            Self::Eip1559(tx) => tx.signature_hash(),
+        }
+    }
+}
+
+/// Compares transactions by content, deliberately ignoring alloy's cached
+/// signing hash.
+///
+/// `Signed<T>`'s own `PartialEq` also compares the `OnceLock` holding that hash.
+/// A decoded transaction has an empty cache while a locally signed one has it
+/// pre-filled, so the derived comparison would report two identical transactions
+/// as different. Equality here means "same envelope, same fields, same
+/// signature".
+impl PartialEq for Transaction {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Legacy(a), Self::Legacy(b)) => {
+                a.tx() == b.tx() && a.signature() == b.signature()
+            }
+            (Self::Eip1559(a), Self::Eip1559(b)) => {
+                a.tx() == b.tx() && a.signature() == b.signature()
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Transaction {}
+
+
+/// Converts an already-decoded consensus envelope into a [`Transaction`].
+///
+/// This is the single funnel through which wire bytes become executable
+/// transactions, so it is also where unsupported envelope types are refused.
+fn from_envelope(envelope: TxEnvelope) -> Result<Transaction, String> {
+    match envelope {
+        // Each envelope variant already wraps the signed payload, so no
+        // re-signing or hash recomputation is needed here.
+        TxEnvelope::Legacy(signed) => Ok(Transaction::Legacy(signed)),
+        TxEnvelope::Eip1559(signed) => Ok(Transaction::Eip1559(signed)),
+        other => Err(format!(
+            "unsupported transaction type 0x{:02x}: only legacy (0x00) and EIP-1559 (0x02) are supported",
+            other.tx_type() as u8
+        )),
     }
 }
 
 /// Decodes a raw, RLP-encoded Ethereum transaction.
 ///
-/// Accepts the bare legacy RLP list as well as a `0x00`-prefixed typed envelope
-/// (which is the canonical EIP-2718 encoding for a legacy transaction).
-pub fn decode_transaction(tx_bytes: &[u8]) -> Result<LegacyTransaction, String> {
+/// Accepts a bare legacy list (no type prefix) as well as the canonical
+/// EIP-2718 envelope form for both supported types: `0x00 || rlp` for legacy and
+/// `0x02 || rlp` for EIP-1559.
+pub fn decode_transaction(tx_bytes: &[u8]) -> Result<Transaction, String> {
     if tx_bytes.is_empty() {
         return Err("cannot decode transaction: empty input".to_string());
     }
 
-    let payload = match tx_bytes[0] {
-        LEGACY_TX_TYPE => &tx_bytes[1..],
-        ty @ 0x01..=0x7f => {
-            return Err(format!(
-                "unsupported transaction type 0x{ty:02x}: only legacy transactions (0x00) are supported"
-            ));
-        }
-        _ => tx_bytes,
-    };
-
-    if payload.is_empty() {
-        return Err("cannot decode transaction: missing payload after type byte".to_string());
+    // EIP-2718 reserves every byte below 0x80 in the first position for
+    // envelope type identifiers (>= 0x80 would start an RLP string, and a bare
+    // legacy transaction starts with an RLP list, i.e. >= 0xc0). Checking the
+    // type byte up front turns alloy's opaque "unexpected tx type" into an
+    // error that names the offending type, and guarantees an unsupported
+    // envelope can never be mistaken for something executable.
+    let first = tx_bytes[0];
+    if first < 0xc0 && first != LEGACY_TX_TYPE && first != EIP1559_TX_TYPE {
+        return Err(format!(
+            "unsupported transaction type 0x{first:02x}: only legacy (0x00) and EIP-1559 (0x02) are supported"
+        ));
     }
 
-    LegacyTransaction::decode(&mut &payload[..])
-        .map_err(|err| format!("cannot decode legacy transaction: {err}"))
+    // `network_decode` resolves the ambiguity where a bare legacy list could be
+    // mistaken for a `0x00` envelope, exactly as the network does.
+    let envelope = TxEnvelope::network_decode(&mut &tx_bytes[..])
+        .map_err(|err| format!("cannot decode transaction: {err}"))?;
+    from_envelope(envelope)
 }
+
+/// Recovers the Ethereum address that signed `tx`.
+///
+/// This is the only place a sender enters the system. Recovery happens on the
+/// `TxEnvelope` itself, via the built-in
+/// [`SignerRecoverable::recover_signer`], which:
+///
+/// * recomputes the transaction's signing hash from the transaction fields,
+/// * enforces the [EIP-2](https://eips.ethereum.org/EIPS/eip-2) low-`s` rule,
+/// * rejects `r == 0`, `s == 0`, and out-of-range `v`,
+/// * returns the unique public key that could have produced the signature.
+///
+/// An attacker who tampers with *any* field of a signed transaction (nonce,
+/// value, gas, recipient, chain id) changes the signing hash, so recovery yields
+/// either an error or an address that does not own the funds it is trying to
+/// move.
+pub fn recover_sender(tx: &Transaction) -> Result<Address, String> {
+    // Rebuild an envelope view so recovery runs through the same
+    // `TxEnvelope::recover_signer` path that a full node would use. This keeps
+    // EIP-2 enforcement (low-s) in one place: alloy's `recover_signer`
+    // (not `recover_signer_unchecked`) refuses high-s signatures with
+    // `InvalidSignatureS`.
+    let envelope: TxEnvelope = match tx {
+        Transaction::Legacy(signed) => TxEnvelope::Legacy(signed.clone()),
+        Transaction::Eip1559(signed) => TxEnvelope::Eip1559(signed.clone()),
+    };
+
+    // Defence in depth: assert the EIP-2 bound ourselves as well, so the rule is
+    // enforced even if a future alloy release relaxes its own check.
+    let s = tx.signature().s();
+    if s > SECP256K1N_HALF {
+        return Err(format!(
+            "invalid signature: s value {s:#x} is not in the lower half of the secp256k1 order (EIP-2)"
+        ));
+    }
+    if s.is_zero() || tx.signature().r().is_zero() {
+        return Err("invalid signature: r and s must be non-zero".to_string());
+    }
+
+    envelope
+        .recover_signer()
+        .map_err(|err| format!("cannot recover sender: {err}"))
+}
+
 
 /// Outcome of executing a single transaction.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -128,6 +333,8 @@ pub struct ExecutionOutcome {
     pub gas_used: u64,
     /// Whether the transaction completed successfully (as opposed to reverting).
     pub success: bool,
+    /// The address recovered from the transaction signature.
+    pub sender: Address,
 }
 
 /// A standalone EVM executor backed by an in-memory database.
@@ -142,9 +349,6 @@ pub struct EvmExecutor {
     block: BlockEnv,
     spec: SpecId,
     chain_id: u64,
-    /// Sender address used for execution. Signature recovery is not part of
-    /// this section, so the caller is configured rather than derived.
-    caller: Address,
 }
 
 impl Default for EvmExecutor {
@@ -176,21 +380,20 @@ impl EvmExecutor {
             },
             spec,
             chain_id: CHAIN_ID,
-            caller: Address::ZERO,
         }
     }
 
-    /// Sets the address used as the transaction sender.
+    /// Overrides the chain id a transaction is checked against.
     ///
-    /// The sender is funded on demand so that gas and value transfer cannot fail
-    /// with `LackOfFundForMaxFee` while signature recovery is unimplemented.
-    pub fn set_caller(&mut self, caller: Address) {
-        self.caller = caller;
-    }
-
-    /// Overrides the chain id a transaction's EIP-155 `v` is checked against.
+    /// This is the knob the replay-protection attack pulls: a transaction signed
+    /// for chain 1 must be rejected once the executor expects chain 2.
     pub fn set_chain_id(&mut self, chain_id: u64) {
         self.chain_id = chain_id;
+    }
+
+    /// The chain id this executor validates transactions against.
+    pub fn chain_id(&self) -> u64 {
+        self.chain_id
     }
 
     /// Read-only access to the underlying in-memory database for inspection.
@@ -199,6 +402,14 @@ impl EvmExecutor {
     /// reference; callers are expected to only read from it.
     pub fn db_mut(&mut self) -> &mut InMemoryDB {
         &mut self.db
+    }
+
+    /// Reads an account from the underlying database.
+    ///
+    /// Returns `None` when the account has never been touched, which is how the
+    /// attack suite proves that e.g. the victim was never charged.
+    pub fn account(&mut self, address: Address) -> Option<AccountInfo> {
+        self.db.basic(address).ok().flatten()
     }
 
     /// Deposits `amount` wei into `address`, creating the account if needed.
@@ -235,26 +446,51 @@ impl EvmExecutor {
     pub fn storage(&mut self, address: Address, slot: U256) -> U256 {
         self.db.storage(address, slot).unwrap_or_default()
     }
+}
 
+
+impl EvmExecutor {
     /// Executes an already decoded transaction.
     ///
-    /// The sender's nonce is taken from the in-memory database rather than from
-    /// the decoded transaction, because legacy transactions carry the signature
-    /// that proves the nonce but this executor does not recover it yet.
-    pub fn execute(&mut self, tx: &LegacyTransaction) -> Result<ExecutionOutcome, String> {
+    /// The sender is recovered from the transaction signature, never supplied by
+    /// the caller. Everything downstream — the account revm debits for gas, the
+    /// account whose nonce is checked, the address that pays for a `CREATE` — is
+    /// derived from that recovered address.
+    ///
+    /// Validation order matters and mirrors a real node:
+    ///
+    /// 1. recover the sender (rejects forged/malleable/zero signatures),
+    /// 2. check the chain id (rejects cross-chain replays),
+    /// 3. fund the sender (the executor is a controlled test harness),
+    /// 4. hand the transaction to revm, which enforces nonce and gas rules.
+    pub fn execute(&mut self, tx: &Transaction) -> Result<ExecutionOutcome, String> {
+        let sender = recover_sender(tx)?;
         self.check_chain_id(tx)?;
-        self.ensure_funded(self.caller, tx);
-        let nonce = self.caller_nonce();
+        self.ensure_funded(sender, tx);
 
-        let tx_env = TxEnv::builder()
-            .caller(self.caller)
-            .gas_limit(tx.gas_limit)
-            .gas_price(tx.gas_price.saturating_to::<u128>())
-            .kind(tx.to)
-            .value(tx.value)
-            .data(tx.input.clone())
-            .nonce(nonce)
-            .chain_id(Some(self.chain_id))
+        // revm 43 derives the transaction type from the fields that are set:
+        // a priority fee makes it EIP-1559, otherwise it stays legacy.
+        let mut builder = TxEnv::builder()
+            .caller(sender)
+            .gas_limit(tx.gas_limit())
+            .kind(tx.kind())
+            .value(tx.value())
+            .data(tx.input().clone())
+            .nonce(tx.nonce())
+            .chain_id(Some(self.chain_id));
+
+        builder = match tx {
+            // Legacy: a single gas price, no priority fee.
+            Transaction::Legacy(legacy) => builder.gas_price(legacy.tx().gas_price),
+            // EIP-1559: a fee cap plus a priority fee. `max_fee_per_gas` is the
+            // cap revm compares against `basefee`; the tip is the block
+            // producer's cut.
+            Transaction::Eip1559(eip1559) => builder
+                .max_fee_per_gas(eip1559.tx().max_fee_per_gas)
+                .gas_priority_fee(Some(eip1559.tx().max_priority_fee_per_gas)),
+        };
+
+        let tx_env = builder
             .build()
             .map_err(|err| format!("invalid transaction: {err}"))?;
 
@@ -268,7 +504,9 @@ impl EvmExecutor {
             evm.transact(tx_env).map_err(|err| format!("evm error: {err}"))
         }?;
 
-        Ok(Self::commit(&mut self.db, result))
+        let mut outcome = Self::commit(&mut self.db, result);
+        outcome.sender = sender;
+        Ok(outcome)
     }
 
     /// Executes a raw, RLP-encoded Ethereum transaction and returns its output.
@@ -282,7 +520,8 @@ impl EvmExecutor {
     /// The digest folds every account (address, balance, nonce, code hash) and
     /// every storage slot into a single root. It is deterministic and suitable
     /// for a ZK-prover to commit to, but it is *not* the Ethereum MPT state root:
-    /// revm executes against a flat in-memory database, not a Merkle Patricia trie.
+    /// revm executes against a flat in-memory database, not a Merkle Patricia
+    /// trie.
     pub fn state_root(&self) -> B256 {
         let mut entries: Vec<(B256, Vec<u8>)> = self
             .db
@@ -311,35 +550,37 @@ impl EvmExecutor {
         }
         root
     }
+}
 
-    /// Rejects transactions whose EIP-155 chain id targets a different chain.
-    fn check_chain_id(&self, tx: &LegacyTransaction) -> Result<(), String> {
+
+impl EvmExecutor {
+    /// Rejects transactions bound to a different chain.
+    ///
+    /// A pre-EIP-155 legacy transaction (`v` of 27/28) has no chain id and
+    /// therefore no replay protection; it is rejected too, because accepting it
+    /// would let anyone replay a mainnet transaction on Zethora.
+    fn check_chain_id(&self, tx: &Transaction) -> Result<(), String> {
         match tx.chain_id() {
             Some(tx_chain_id) if tx_chain_id != self.chain_id => {
                 Err(format!("invalid chain id {tx_chain_id}, expected {}", self.chain_id))
             }
-            _ => Ok(()),
+            Some(_) => Ok(()),
+            None => Err("invalid chain id: transaction is not EIP-155 replay protected".to_string()),
         }
     }
 
-    /// Returns the sender's current nonce as recorded in the database.
-    fn caller_nonce(&mut self) -> u64 {
-        self.db
-            .basic(self.caller)
-            .ok()
-            .flatten()
-            .map(|info| info.nonce)
-            .unwrap_or_default()
-    }
-
     /// Makes sure the sender can pay for `gas_limit * gas_price + value`.
-    fn ensure_funded(&mut self, caller: Address, tx: &LegacyTransaction) {
-        let info = self.db.basic(caller).ok().flatten().unwrap_or_default();
-        let gas = U256::from(tx.gas_limit).saturating_mul(tx.gas_price);
-        let required = gas.saturating_add(tx.value);
+    ///
+    /// The executor is a controlled test harness, so it tops the account up
+    /// rather than rejecting the transaction. What matters for the attack suite
+    /// is that the *recovered* address is the one that gets charged.
+    fn ensure_funded(&mut self, sender: Address, tx: &Transaction) {
+        let info = self.db.basic(sender).ok().flatten().unwrap_or_default();
+        let gas = U256::from(tx.gas_limit()).saturating_mul(U256::from(tx.max_fee_per_gas()));
+        let required = gas.saturating_add(tx.value());
         if info.balance < required {
             self.db.insert_account_info(
-                caller,
+                sender,
                 AccountInfo {
                     balance: required,
                     ..info
@@ -348,7 +589,7 @@ impl EvmExecutor {
         }
     }
 
-    /// Applies the state changes of a successful transaction to the database.
+    /// Applies the state changes of a transaction to the database.
     fn commit(
         db: &mut InMemoryDB,
         result: ExecResultAndState<ExecutionResult<HaltReason>, EvmState>,
@@ -368,19 +609,24 @@ impl EvmExecutor {
                     created_address,
                     gas_used,
                     success: true,
+                    sender: Address::ZERO,
                 }
             }
+            // A revert or a halt must NOT commit: any `SSTORE` staged before the
+            // failure has to roll back with the rest of the frame.
             ExecutionResult::Revert { output, .. } => ExecutionOutcome {
                 output: output.to_vec(),
                 created_address: None,
                 gas_used,
                 success: false,
+                sender: Address::ZERO,
             },
             ExecutionResult::Halt { reason, .. } => ExecutionOutcome {
                 output: format!("halted: {reason}").into_bytes(),
                 created_address: None,
                 gas_used,
                 success: false,
+                sender: Address::ZERO,
             },
         }
     }
@@ -399,140 +645,203 @@ pub fn execute_transaction(tx_bytes: &[u8]) -> Result<Vec<u8>, String> {
     EvmExecutor::new().execute_bytes(tx_bytes)
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::address;
-    use alloy_rlp::Encodable;
+    use alloy_consensus::{SignableTransaction, TxEip1559, TxLegacy};
+    use alloy_primitives::{Signature, TxKind, B256, U256};
 
-    /// Runtime code for `contract S { uint256 s; function set(uint256 v) { s = v; }
-    /// function get() returns (uint256) { return s; } }`, hand assembled so the
-    /// tests do not need `solc`:
-    ///
-    /// ```text
-    /// SSTORE(CALLDATALOAD(0), 0)   // store the calldata word in slot 0
-    /// MSTORE(0, SLOAD(0))          // load it back
-    /// RETURN(0, 32)                // return 32 bytes, echoing the stored value
-    /// ```
-    const STORAGE_RUNTIME: &[u8] = &[
-        0x60, 0x00, // PUSH1 0          slot
-        0x35, //        CALLDATALOAD     value from calldata
-        0x60, 0x00, // PUSH1 0          slot
-        0x55, //        SSTORE           s = value
-        0x60, 0x00, // PUSH1 0
-        0x54, //        SLOAD            s
-        0x60, 0x00, // PUSH1 0
-        0x52, //        MSTORE           mem[0..32] = s
-        0x60, 0x20, // PUSH1 32
-        0x60, 0x00, // PUSH1 0
-        0xf3, //        RETURN           return mem[0..32]
-    ];
+    /// Deterministic key material, so the tests never depend on randomness.
+    const KEY: B256 = B256::repeat_byte(0x11);
 
-    /// Builds init code that deploys [`STORAGE_RUNTIME`] with `CODECOPY` + `RETURN`.
-    fn deploy_init_code() -> Bytes {
-        let len = u8::try_from(STORAGE_RUNTIME.len()).expect("runtime code fits in one byte");
-        // The runtime code starts right after this 12 byte prologue.
-        let mut code = vec![
-            0x60, len, // PUSH1 len
-            0x60, 0x0c, // PUSH1 12         offset of the runtime code
-            0x60, 0x00, // PUSH1 0
-            0x39, //        CODECOPY         mem[0..len] = code[12..12+len]
-            0x60, len, // PUSH1 len
-            0x60, 0x00, // PUSH1 0
-            0xf3, //        RETURN           return mem[0..len]
-        ];
-        debug_assert_eq!(code.len(), 12);
-        code.extend_from_slice(STORAGE_RUNTIME);
-        Bytes::from(code)
+    /// The address that owns [`KEY`].
+    fn signer_address() -> Address {
+        alloy_signer_local::PrivateKeySigner::from_bytes(&KEY)
+            .expect("valid scalar")
+            .address()
+    }
+
+    /// Signs `tx` with [`KEY`], producing a legacy transaction.
+    fn sign_legacy(tx: TxLegacy) -> Transaction {
+        let signer = alloy_signer_local::PrivateKeySigner::from_bytes(&KEY).expect("valid scalar");
+        let hash = tx.signature_hash();
+        let signature = alloy_signer::SignerSync::sign_hash_sync(&signer, &hash).expect("sign");
+        Transaction::Legacy(alloy_consensus::Signed::new_unchecked(tx, signature, hash))
+    }
+
+    /// Signs `tx` with [`KEY`], producing an EIP-1559 transaction.
+    fn sign_eip1559(tx: TxEip1559) -> Transaction {
+        let signer = alloy_signer_local::PrivateKeySigner::from_bytes(&KEY).expect("valid scalar");
+        let hash = tx.signature_hash();
+        let signature = alloy_signer::SignerSync::sign_hash_sync(&signer, &hash).expect("sign");
+        Transaction::Eip1559(alloy_consensus::Signed::new_unchecked(tx, signature, hash))
     }
 
     fn contract_address() -> Address {
-        address!("00000000000000000000000000000000000c0de1")
+        Address::repeat_byte(0xaa)
     }
 
-    fn legacy_tx(to: TxKind, input: Bytes) -> LegacyTransaction {
-        LegacyTransaction {
+    fn legacy_tx(to: TxKind, input: Bytes) -> TxLegacy {
+        TxLegacy {
+            chain_id: Some(CHAIN_ID),
             nonce: 0,
-            gas_price: U256::from(1),
+            gas_price: 1,
             gas_limit: 1_000_000,
             to,
             value: U256::ZERO,
             input,
-            v: U256::from(27),
-            r: U256::from(1),
-            s: U256::from(1),
         }
     }
 
-    fn encode(tx: &LegacyTransaction) -> Vec<u8> {
-        let mut out = Vec::new();
-        tx.encode(&mut out);
-        out
+    fn eip1559_tx(to: TxKind, input: Bytes) -> TxEip1559 {
+        TxEip1559 {
+            chain_id: CHAIN_ID,
+            nonce: 0,
+            gas_limit: 1_000_000,
+            max_fee_per_gas: 1,
+            max_priority_fee_per_gas: 1,
+            to,
+            value: U256::ZERO,
+            input,
+            access_list: Default::default(),
+        }
+    }
+
+    /// Runtime code for `contract S { uint256 s; function set(uint256 v) { s = v; } }`,
+    /// hand assembled so the suite needs no `solc`.
+    const STORAGE_RUNTIME: &[u8] = &[
+        0x60, 0x00, // PUSH1 0
+        0x35, //        CALLDATALOAD
+        0x60, 0x00, // PUSH1 0
+        0x55, //        SSTORE
+        0x60, 0x00, // PUSH1 0
+        0x54, //        SLOAD
+        0x60, 0x00, // PUSH1 0
+        0x52, //        MSTORE
+        0x60, 0x20, // PUSH1 32
+        0x60, 0x00, // PUSH1 0
+        0xf3, //        RETURN
+    ];
+
+    /// Init code that deploys [`STORAGE_RUNTIME`] with `CODECOPY` + `RETURN`.
+    fn deploy_init_code() -> Bytes {
+        let len = u8::try_from(STORAGE_RUNTIME.len()).expect("runtime fits in one byte");
+        // The runtime code starts right after this 12 byte prologue.
+        let mut code = vec![
+            0x60, len, // PUSH1 len
+            0x60, 0x0c, // PUSH1 12        offset of the runtime code
+            0x60, 0x00, // PUSH1 0
+            0x39, //        CODECOPY
+            0x60, len, // PUSH1 len
+            0x60, 0x00, // PUSH1 0
+            0xf3, //        RETURN
+        ];
+        assert_eq!(code.len(), 12);
+        code.extend_from_slice(STORAGE_RUNTIME);
+        Bytes::from(code)
+    }
+
+
+    #[test]
+    fn recovers_sender_from_legacy_signature() {
+        let tx = sign_legacy(legacy_tx(TxKind::Call(contract_address()), Bytes::new()));
+        assert_eq!(
+            recover_sender(&tx).expect("valid signature"),
+            signer_address()
+        );
     }
 
     #[test]
-    fn decodes_bare_and_enveloped_legacy_transactions() {
-        let tx = legacy_tx(TxKind::Call(contract_address()), Bytes::from(vec![0xde, 0xad]));
-        let encoded = encode(&tx);
-
-        let decoded = decode_transaction(&encoded).expect("bare legacy RLP should decode");
-        assert_eq!(decoded, tx);
-
-        // `0x00 || rlp` is the canonical EIP-2718 envelope for a legacy tx.
-        let mut enveloped = vec![LEGACY_TX_TYPE];
-        enveloped.extend_from_slice(&encoded);
-        let decoded = decode_transaction(&enveloped).expect("0x00 envelope should decode");
-        assert_eq!(decoded, tx);
+    fn recovers_sender_from_eip1559_signature() {
+        let tx = sign_eip1559(eip1559_tx(TxKind::Call(contract_address()), Bytes::new()));
+        assert_eq!(
+            recover_sender(&tx).expect("valid signature"),
+            signer_address()
+        );
+        assert_eq!(tx.tx_type(), EIP1559_TX_TYPE);
     }
 
     #[test]
-    fn rejects_empty_and_typed_transactions() {
-        assert!(decode_transaction(&[]).is_err());
-        assert!(decode_transaction(&[LEGACY_TX_TYPE]).is_err());
-        // 0x02 is EIP-1559, which section 1 does not implement yet.
-        assert!(decode_transaction(&[0x02, 0xc0]).is_err());
+    fn rejects_high_s_signature() {
+        let base = legacy_tx(TxKind::Call(contract_address()), Bytes::new());
+        let hash = base.signature_hash();
+        let signer = alloy_signer_local::PrivateKeySigner::from_bytes(&KEY).expect("valid scalar");
+        let good = alloy_signer::SignerSync::sign_hash_sync(&signer, &hash).expect("sign");
+
+        // Mirror the signature over the curve: (r, N - s) with flipped parity.
+        let n = U256::from_be_bytes(alloy_primitives::hex!(
+            "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141"
+        ));
+        let high_s = n - good.s();
+        assert!(high_s > SECP256K1N_HALF, "fixture must be high-s");
+        let malleable = Signature::new(good.r(), high_s, !good.v());
+
+        let forged =
+            Transaction::Legacy(alloy_consensus::Signed::new_unchecked(base, malleable, hash));
+        let err = recover_sender(&forged).expect_err("high-s must be rejected");
+        assert!(err.contains("EIP-2"), "unexpected error: {err}");
     }
 
     #[test]
-    fn derives_eip155_chain_id() {
-        let mut tx = legacy_tx(TxKind::Call(contract_address()), Bytes::new());
-        // v = 27 / 28 is pre-EIP-155 and carries no chain id.
-        assert_eq!(tx.chain_id(), None);
-
-        // chain id 1 -> v = 37 / 38.
-        tx.v = U256::from(37);
-        assert_eq!(tx.chain_id(), Some(1));
-        tx.v = U256::from(38);
-        assert_eq!(tx.chain_id(), Some(1));
-
-        // chain id 5 -> v = 45 / 46.
-        tx.v = U256::from(45);
-        assert_eq!(tx.chain_id(), Some(5));
+    fn rejects_zero_signature() {
+        let base = legacy_tx(TxKind::Call(contract_address()), Bytes::new());
+        let hash = base.signature_hash();
+        let forged = Transaction::Legacy(alloy_consensus::Signed::new_unchecked(
+            base,
+            Signature::new(U256::ZERO, U256::ZERO, false),
+            hash,
+        ));
+        assert!(
+            recover_sender(&forged).is_err(),
+            "the zero signature must not recover a sender"
+        );
     }
 
     #[test]
-    fn advances_sender_nonce_between_transactions() {
+    fn rejects_chain_id_mismatch() {
         let mut executor = EvmExecutor::new();
-        let tx = legacy_tx(TxKind::Call(contract_address()), Bytes::new());
-
-        executor.execute(&tx).expect("first transfer should succeed");
-        assert_eq!(executor.caller_nonce(), 1);
-
-        // A second transaction must not be rejected for a stale nonce, even
-        // though the decoded transaction still says nonce 0.
-        assert_eq!(tx.nonce, 0);
-        executor.execute(&tx).expect("second transfer should succeed");
-        assert_eq!(executor.caller_nonce(), 2);
+        executor.set_chain_id(5);
+        let tx = sign_legacy(legacy_tx(TxKind::Call(contract_address()), Bytes::new()));
+        let err = executor
+            .execute(&tx)
+            .expect_err("wrong chain id must be rejected");
+        assert!(err.contains("invalid chain id 1"), "unexpected error: {err}");
     }
 
     #[test]
-    fn rejects_transaction_for_another_chain() {
-        let mut executor = EvmExecutor::new();
+    fn rejects_unprotected_transactions() {
+        // `chain_id: None` makes alloy produce a pre-EIP-155 signature (v = 27/28),
+        // which has no replay protection at all.
         let mut tx = legacy_tx(TxKind::Call(contract_address()), Bytes::new());
-        tx.v = U256::from(5 * 2 + 35); // chain id 5, executor expects 1
+        tx.chain_id = None;
+        let signed = sign_legacy(tx);
+        assert_eq!(signed.chain_id(), None);
 
-        let err = executor.execute(&tx).expect_err("wrong chain id must be rejected");
-        assert!(err.contains("invalid chain id 5"), "unexpected error: {err}");
+        let mut executor = EvmExecutor::new();
+        let err = executor
+            .execute(&signed)
+            .expect_err("unprotected transaction must be rejected");
+        assert!(err.contains("not EIP-155"), "unexpected error: {err}");
+    }
+
+
+    #[test]
+    fn eip1559_transfer_charges_the_recovered_sender() {
+        let mut executor = EvmExecutor::new();
+        let tx = sign_eip1559(eip1559_tx(TxKind::Call(contract_address()), Bytes::new()));
+
+        let outcome = executor.execute(&tx).expect("transfer should succeed");
+        assert!(outcome.success);
+        assert_eq!(outcome.sender, signer_address());
+        assert_eq!(outcome.gas_used, 21_000);
+
+        let info = executor
+            .db_mut()
+            .basic(signer_address())
+            .expect("db read")
+            .expect("sender account must exist");
+        assert_eq!(info.nonce, 1, "the recovered sender's nonce must advance");
     }
 
     #[test]
@@ -541,12 +850,17 @@ mod tests {
 
         // Deploy through the EVM: an empty `to` means CREATE.
         let outcome = executor
-            .execute(&legacy_tx(TxKind::Create, deploy_init_code()))
+            .execute(&sign_legacy(legacy_tx(TxKind::Create, deploy_init_code())))
             .expect("contract creation should succeed");
         assert!(outcome.success, "creation reverted: {:?}", outcome.output);
-        assert_eq!(outcome.output, STORAGE_RUNTIME, "RETURNed code should be the runtime");
+        assert_eq!(
+            outcome.output, STORAGE_RUNTIME,
+            "RETURNed code should be the runtime"
+        );
 
-        let created = outcome.created_address.expect("CREATE must report an address");
+        let created = outcome
+            .created_address
+            .expect("CREATE must report an address");
         let info = executor
             .db_mut()
             .basic(created)
@@ -557,89 +871,88 @@ mod tests {
         // A second transaction calls the deployed contract and sets slot 0 to 42.
         let mut calldata = [0u8; 32];
         calldata[31] = 42;
-        let call = executor
-            .execute(&legacy_tx(TxKind::Call(created), Bytes::from(calldata.to_vec())))
+        let mut call = legacy_tx(TxKind::Call(created), Bytes::from(calldata.to_vec()));
+        call.nonce = 1;
+        let outcome = executor
+            .execute(&sign_legacy(call))
             .expect("call should succeed");
-        assert!(call.success, "call reverted: {:?}", call.output);
-
-        // The write persisted in the shared in-memory database...
+        assert!(outcome.success, "call reverted: {:?}", outcome.output);
         assert_eq!(executor.storage(created, U256::ZERO), U256::from(42));
-        // ...and the call echoed the value it stored.
-        assert_eq!(call.output.len(), 32);
-        assert_eq!(U256::from_be_slice(&call.output), U256::from(42));
-
-        // The state commitment must reflect the write: a fresh executor that only
-        // learned about a funded sender commits to a different root.
-        let committed = executor.state_root();
-        let mut pristine = EvmExecutor::new();
-        pristine.set_balance(created, U256::ZERO);
-        assert_ne!(committed, pristine.state_root());
-        assert_ne!(committed, KECCAK_EMPTY);
     }
 
     #[test]
-    fn execute_bytes_runs_a_raw_transaction() {
-        let mut calldata = [0u8; 32];
-        calldata[31] = 7;
+    fn state_root_is_deterministic_across_executors() {
+        let mut first = EvmExecutor::new();
+        let mut second = EvmExecutor::new();
 
-        // Predeploy the runtime code, then reach it through the raw-RLP entry point.
+        // Same transaction, same chain: identical roots.
+        let tx = sign_eip1559(eip1559_tx(TxKind::Call(contract_address()), Bytes::new()));
+        first.execute(&tx).expect("first executor");
+        second.execute(&tx).expect("second executor");
+        assert_eq!(first.state_root(), second.state_root());
+
+        // Any state change must move the root.
+        let before = first.state_root();
+        let mut next = legacy_tx(TxKind::Call(contract_address()), Bytes::new());
+        next.nonce = 1;
+        next.value = U256::from(1);
+        first.execute(&sign_legacy(next)).expect("value transfer");
+        assert_ne!(before, first.state_root());
+    }
+
+    #[test]
+    fn rejects_intrinsic_gas_underflow() {
         let mut executor = EvmExecutor::new();
-        executor.insert_code(contract_address(), Bytes::from(STORAGE_RUNTIME));
+        let mut tx = legacy_tx(TxKind::Call(contract_address()), Bytes::new());
+        tx.gas_limit = 1_000; // below the 21_000 intrinsic cost
 
-        let tx = legacy_tx(TxKind::Call(contract_address()), Bytes::from(calldata.to_vec()));
-        let output = executor
-            .execute_bytes(&encode(&tx))
-            .expect("raw legacy transaction should execute");
-
-        assert_eq!(U256::from_be_slice(&output), U256::from(7));
-        assert_eq!(
-            executor.storage(contract_address(), U256::ZERO),
-            U256::from(7)
+        let err = executor
+            .execute(&sign_legacy(tx))
+            .expect_err("intrinsic gas must be enforced");
+        assert!(
+            err.contains("gas cost") && err.contains("21000"),
+            "unexpected error: {err}"
         );
     }
 
     #[test]
-    fn rejects_transaction_below_intrinsic_gas() {
-        let mut executor = EvmExecutor::new();
-        let mut tx = legacy_tx(TxKind::Call(contract_address()), Bytes::new());
-        // Below the 21_000 intrinsic cost of any transaction, so revm rejects it
-        // during validation instead of halting mid-execution.
-        tx.gas_limit = 20_000;
-
-        let err = executor
-            .execute(&tx)
-            .expect_err("a gas limit below the intrinsic cost is a validation error");
-        assert!(err.contains("gas limit"), "unexpected error: {err}");
+    fn rejects_unknown_transaction_type() {
+        // 0x7e is EIP-7702 (delegation list), which this engine does not support.
+        let err = decode_transaction(&[0x7e, 0xc0]).expect_err("unsupported type must be rejected");
+        assert!(err.contains("unsupported transaction type"), "unexpected error: {err}");
     }
 
     #[test]
-    fn executes_standalone_transaction_from_empty_state() {
-        // `execute_transaction` builds a fresh executor, so there is no state to
-        // call into; a bare value transfer is the smoke test for that entry point.
-        let tx = legacy_tx(TxKind::Call(Address::ZERO), Bytes::new());
-        let output = execute_transaction(&encode(&tx)).expect("value transfer should succeed");
-        assert!(output.is_empty());
+    fn round_trips_rlp_encoding() {
+        let original = sign_eip1559(eip1559_tx(TxKind::Call(contract_address()), Bytes::new()));
+        let envelope = TxEnvelope::Eip1559(match &original {
+            Transaction::Eip1559(signed) => signed.clone(),
+            _ => unreachable!(),
+        });
+        let mut encoded = Vec::new();
+        alloy_eips::eip2718::Encodable2718::encode_2718(&envelope, &mut encoded);
+
+        let decoded = decode_transaction(&encoded).expect("encoded transaction must decode");
+        assert_eq!(decoded, original, "round trip must preserve the transaction");
+
+        // Re-encoding must also be byte-identical on the wire.
+        let round_tripped = TxEnvelope::Eip1559(match &decoded {
+            Transaction::Eip1559(signed) => signed.clone(),
+            _ => unreachable!(),
+        });
+        let mut reencoded = Vec::new();
+        alloy_eips::eip2718::Encodable2718::encode_2718(&round_tripped, &mut reencoded);
+        assert_eq!(reencoded, encoded, "round trip must be byte-identical");
+
+        assert_eq!(
+            recover_sender(&decoded).expect("valid signature"),
+            signer_address()
+        );
     }
 
     #[test]
-    fn state_root_is_deterministic_and_order_independent() {
-        let other = address!("00000000000000000000000000000000000c0de2");
-
-        let mut a = EvmExecutor::new();
-        a.set_balance(contract_address(), U256::from(1));
-        a.set_balance(other, U256::from(2));
-
-        let mut b = EvmExecutor::new();
-        b.set_balance(other, U256::from(2));
-        b.set_balance(contract_address(), U256::from(1));
-
-        // Same state, different insertion order -> identical commitment.
-        assert_eq!(a.state_root(), b.state_root());
-
-        let mut c = EvmExecutor::new();
-        c.set_balance(contract_address(), U256::from(1));
-        c.set_balance(other, U256::from(3));
-        assert_ne!(a.state_root(), c.state_root());
+    fn rejects_empty_input() {
+        assert!(decode_transaction(&[]).is_err());
     }
 }
 

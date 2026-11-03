@@ -10,7 +10,26 @@ license.workspace = true
 # libraries (for EIP-4844 blob proofs / BLS precompiles), which we do not need
 # for L2 execution yet, so we select a pure-Rust feature set instead.
 revm = { version = "43", default-features = false, features = ["std", "secp256k1", "portable"] }
-alloy-primitives = { version = "1", features = ["rlp"] }
+# `k256` adds the pure-Rust secp256k1 backend used by `Signature` and
+# `recover_address_from_prehash`. It is required here because
+# `alloy-consensus`'s `SignerRecoverable` impls are gated on
+# `cfg(any(feature = "secp256k1", feature = "k256"))`, and the `k256` flavour
+# needs the primitive type to expose the recovery helpers.
+alloy-primitives = { version = "1", features = ["rlp", "k256"] }
 # revm 43 does not ship a transaction codec, so raw Ethereum RLP transactions
 # are decoded here before being handed to revm as a `TxEnv`.
 alloy-rlp = { version = "0.3", features = ["derive"] }
+# Transaction types and signature recovery. `alloy-consensus` owns the EIP-2718
+# envelope decoding and the secp256k1 sender recovery, so we do not hand-roll
+# either. The `k256` feature (not `secp256k1`) selects the pure-Rust backend and
+# is what gates `recover_signer`, which enforces the EIP-2 low-`s` rule.
+alloy-consensus = { version = "2.5.0", default-features = false, features = ["k256"] }
+# `alloy-consensus` only defines the EIP-2718 *traits*; decoding an envelope from
+# its `0x02 || rlp` wire form is `alloy_eips::eip2718::Decodable2718`.
+alloy-eips = { version = "2.5.0", default-features = false }
+
+[dev-dependencies]
+# Signs the Red Team fixtures with a real secp256k1 key (`PrivateKeySigner`).
+alloy-signer = { version = "2.5.0", default-features = false }
+alloy-signer-local = { version = "2.5.0", default-features = false, features = ["mnemonic"] }
+
