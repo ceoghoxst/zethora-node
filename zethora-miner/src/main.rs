@@ -226,9 +226,12 @@ fn reward_route(key_address: Address, network: NetworkType, shielded: Option<[u8
 /// The shielded tag a node actually sealed into a coinbase payload, if any.
 ///
 /// The node writes the payload as `blue-score(8) | subsidy(8) | pool(40) | note root(32) | private state(32) |
-/// script-public-key length(1) | script public key | miner tag` (consensus/src/processes/coinbase.rs), with the
-/// node's own version string at the start of the miner tag. The tag is found by its `SHD1` first bytes instead of
-/// a fixed offset, so a node that adds fields to the payload only moves the window.
+/// script-public-key version(2) | script-public-key length(1) | script public key | miner tag`
+/// (consensus/src/processes/coinbase.rs), with the node's own version string at the start of the miner tag. The tag is
+/// found by its `SHD1` first bytes instead of a fixed offset, so a node that adds fields to the payload only moves the
+/// window. Searching the bytes, rather than trusting the length byte to find the window, is also what keeps this side
+/// honest about a payload whose declared script length does not match the script it carries: the miner still reads the
+/// tag it asked the node for.
 fn coinbase_shielded_tag(payload: &[u8]) -> Option<Vec<u8>> {
     let start = payload.windows(SHIELDED_TAG_PREFIX.len()).position(|w| w == SHIELDED_TAG_PREFIX)?;
     // The pool byte must be one this miner understands; other versions are a different format, not a typo.
