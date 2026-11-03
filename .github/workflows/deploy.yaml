@@ -101,14 +101,7 @@ jobs:
       - name: Install stable toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-unknown-linux-musl
-
-      - name: Install musl cross-compiler
-        run: |
-          sudo apt-get update && sudo apt-get install -y musl-tools
-          wget https://musl.cc/x86_64-linux-musl-cross.tgz
-          tar -xzf x86_64-linux-musl-cross.tgz
-          echo "$(pwd)/x86_64-linux-musl-cross/bin" >> $GITHUB_PATH
+          targets: x86_64-unknown-linux-gnu
 
       - name: Cache Cargo Build Outputs
         uses: actions/cache@v4
@@ -119,17 +112,17 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: ${{ runner.os }}-cargo-musl-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-gnu-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Build on Linux (musl)
+      - name: Build on Linux (gnu)
         run: |
-          cargo build --bin kaspad --release --target x86_64-unknown-linux-musl
-          cargo build --release -p zethora-miner --target x86_64-unknown-linux-musl
-          cargo build --release -p zethora-wallet --target x86_64-unknown-linux-musl
+          cargo build --bin kaspad --release --target x86_64-unknown-linux-gnu
+          cargo build --release -p zethora-miner --target x86_64-unknown-linux-gnu
+          cargo build --release -p zethora-wallet --target x86_64-unknown-linux-gnu
           mkdir -p bin-linux
-          cp target/x86_64-unknown-linux-musl/release/kaspad bin-linux/zethora-node
-          cp target/x86_64-unknown-linux-musl/release/zethora-miner bin-linux/
-          cp target/x86_64-unknown-linux-musl/release/zethora-wallet bin-linux/
+          cp target/x86_64-unknown-linux-gnu/release/kaspad bin-linux/zethora-node
+          cp target/x86_64-unknown-linux-gnu/release/zethora-miner bin-linux/
+          cp target/x86_64-unknown-linux-gnu/release/zethora-wallet bin-linux/
           cd bin-linux
           sha256sum zethora-node zethora-miner zethora-wallet > SHA256SUMS.txt
           cd ..
