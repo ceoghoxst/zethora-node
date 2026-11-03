@@ -4,6 +4,7 @@ exclude = ["fuzz", "tools/reference/emission", "tools/reference/fees"]
 members = [
     "zethora-miner",
     "zethora-evm",
+    "zethora-bridge",
     "zethora-prover",
     "zethora-shield",
     "zethora-shielded",
@@ -109,6 +110,9 @@ kaspa-connectionmanager = { version = "2.1.0", path = "components/connectionmana
 kaspa-consensus = { version = "2.1.0", path = "consensus" }
 kaspa-consensus-core = { version = "2.1.0", path = "consensus/core" }
 zethora-payment-layout = { path = "zethora-shielded/layout" }
+# The bridge mocks its L2 contract with alloy's Solidity ABI types, so the
+# version is pinned once here and shared with the crates that depend on it.
+alloy-sol-types = { version = "1.7.3", default-features = false, features = ["std"] }
 kaspa-consensus-client = { version = "2.1.0", path = "consensus/client" }
 kaspa-consensus-notify = { version = "2.1.0", path = "consensus/notify" }
 kaspa-consensus-wasm = { version = "2.1.0", path = "consensus/wasm" }

@@ -1,0 +1,28 @@
+[package]
+name = "zethora-bridge"
+description = "Zethora L1<->L2 bridge: the L2 wZTHR mint contract and the L1 watcher that turns locked UTXOs into mint proofs."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# The ABI codec. `sol!` generates the `mint(address,uint256,bytes)` call type
+# from the same Solidity signature a compiler would, so the selector and the
+# argument encoding are derived from one source of truth instead of hand-encoded
+# hex constants that could drift from the contract.
+alloy-sol-types.workspace = true
+# Addresses, U256 and keccak256. Re-exported by `zethora-evm`, but named here
+# because the bridge's public API speaks in these types.
+alloy-primitives = { version = "1", features = ["k256"] }
+# The L2 execution layer. The contract is executed by `EvmExecutor`, so a mint
+# is a real EVM transaction against the same engine the sequencer uses.
+zethora-evm = { path = "../zethora-evm" }
+
+[dev-dependencies]
+# Signing the fixture transactions with a real secp256k1 key, exactly as the
+# zethora-evm suite does: the bridge must work under sender recovery, not around
+# it.
+alloy-consensus = { version = "2.5.0", default-features = false, features = ["k256"] }
+alloy-eips = { version = "2.5.0", default-features = false }
+alloy-signer = { version = "2.5.0", default-features = false }
+alloy-signer-local = { version = "2.5.0", default-features = false, features = ["mnemonic"] }
