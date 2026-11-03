@@ -13,17 +13,13 @@
 //! * **unprotected replay** — pre-EIP-155 transactions must be refused;
 //! * **envelope confusion** — unknown or downgraded type bytes must be refused.
 
-use alloy_consensus::{
-    SignableTransaction, Signed, Transaction as ConsensusTransaction, TxEip1559, TxEnvelope,
-    TxLegacy,
-};
+use alloy_consensus::{SignableTransaction, Signed, Transaction as ConsensusTransaction, TxEip1559, TxEnvelope, TxLegacy};
 use alloy_eips::eip2718::{Decodable2718, Encodable2718};
-use alloy_primitives::{Address, Bytes, Signature, TxKind, B256, U256};
+use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use zethora_evm::{
-    decode_transaction, recover_sender, EvmExecutor, Transaction, CHAIN_ID, EIP1559_TX_TYPE,
-    LEGACY_TX_TYPE, SECP256K1N_HALF,
+    CHAIN_ID, EIP1559_TX_TYPE, EvmExecutor, LEGACY_TX_TYPE, SECP256K1N_HALF, Transaction, decode_transaction, recover_sender,
 };
 
 /// Attacker-controlled key material, fixed so runs are reproducible.
@@ -34,9 +30,8 @@ const ATTACKER_KEY: B256 = B256::repeat_byte(0x11);
 const VICTIM_KEY: B256 = B256::repeat_byte(0x22);
 
 /// The secp256k1 group order.
-const SECP256K1N: U256 = U256::from_be_bytes(alloy_primitives::hex!(
-    "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141"
-));
+const SECP256K1N: U256 =
+    U256::from_be_bytes(alloy_primitives::hex!("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141"));
 
 fn attacker() -> PrivateKeySigner {
     PrivateKeySigner::from_bytes(&ATTACKER_KEY).expect("valid attacker scalar")
@@ -52,15 +47,7 @@ fn target() -> Address {
 }
 
 fn legacy_tx(to: TxKind, value: U256) -> TxLegacy {
-    TxLegacy {
-        chain_id: Some(CHAIN_ID),
-        nonce: 0,
-        gas_price: 1,
-        gas_limit: 100_000,
-        to,
-        value,
-        input: Bytes::new(),
-    }
+    TxLegacy { chain_id: Some(CHAIN_ID), nonce: 0, gas_price: 1, gas_limit: 100_000, to, value, input: Bytes::new() }
 }
 
 fn eip1559_tx(to: TxKind, value: U256) -> TxEip1559 {
@@ -102,7 +89,6 @@ fn encode(tx: &Transaction) -> Vec<u8> {
     out
 }
 
-
 // ---------------------------------------------------------------------------
 // Baseline: honest transactions work.
 // ---------------------------------------------------------------------------
@@ -116,9 +102,7 @@ fn honest_legacy_and_eip1559_transactions_are_accepted() {
         sign_legacy(&attacker(), legacy_tx(TxKind::Call(target()), U256::ZERO)),
         sign_eip1559(&attacker(), eip1559_tx(TxKind::Call(target()), U256::ZERO)),
     ] {
-        let outcome = EvmExecutor::new()
-            .execute(&tx)
-            .expect("honest transaction must run");
+        let outcome = EvmExecutor::new().execute(&tx).expect("honest transaction must run");
         assert!(outcome.success, "honest transaction reverted");
         assert_eq!(outcome.sender, attacker().address());
     }
@@ -133,10 +117,7 @@ fn honest_transactions_survive_rlp_round_trip() {
         let bytes = encode(&tx);
         let decoded = decode_transaction(&bytes).expect("must decode");
         assert_eq!(decoded, tx, "round trip must be lossless");
-        assert_eq!(
-            recover_sender(&decoded).expect("must recover"),
-            attacker().address()
-        );
+        assert_eq!(recover_sender(&decoded).expect("must recover"), attacker().address());
     }
 }
 
@@ -161,10 +142,7 @@ fn attacker_cannot_forge_the_victims_signature() {
 
     // The victim's account is never touched.
     let victim_account = executor.account(victim().address());
-    assert!(
-        victim_account.is_none(),
-        "the victim's account must not be created or charged"
-    );
+    assert!(victim_account.is_none(), "the victim's account must not be created or charged");
 }
 
 #[test]
@@ -173,20 +151,10 @@ fn zero_signature_does_not_recover_a_sender() {
     // rejected rather than mapping onto some default account.
     let base = legacy_tx(TxKind::Call(target()), U256::ZERO);
     let hash = base.signature_hash();
-    let forged = Transaction::Legacy(Signed::new_unchecked(
-        base,
-        Signature::new(U256::ZERO, U256::ZERO, false),
-        hash,
-    ));
+    let forged = Transaction::Legacy(Signed::new_unchecked(base, Signature::new(U256::ZERO, U256::ZERO, false), hash));
 
-    assert!(
-        recover_sender(&forged).is_err(),
-        "zero signature must not recover"
-    );
-    assert!(
-        EvmExecutor::new().execute(&forged).is_err(),
-        "and must not execute"
-    );
+    assert!(recover_sender(&forged).is_err(), "zero signature must not recover");
+    assert!(EvmExecutor::new().execute(&forged).is_err(), "and must not execute");
 }
 
 // ---------------------------------------------------------------------------
@@ -204,10 +172,7 @@ fn malleable_high_s_signature_is_rejected() {
     let good = attacker().sign_hash_sync(&hash).expect("sign");
 
     let high_s = SECP256K1N - good.s();
-    assert!(
-        high_s > SECP256K1N_HALF,
-        "the twin must be in the upper half"
-    );
+    assert!(high_s > SECP256K1N_HALF, "the twin must be in the upper half");
     let twin = Signature::new(good.r(), high_s, !good.v());
 
     let forged = Transaction::Legacy(Signed::new_unchecked(base.clone(), twin, hash));
@@ -216,10 +181,7 @@ fn malleable_high_s_signature_is_rejected() {
 
     // The honest signature still works, proving the twin was the only problem.
     let honest = Transaction::Legacy(Signed::new_unchecked(base, good, hash));
-    assert_eq!(
-        recover_sender(&honest).expect("honest"),
-        attacker().address()
-    );
+    assert_eq!(recover_sender(&honest).expect("honest"), attacker().address());
 }
 
 #[test]
@@ -230,12 +192,8 @@ fn malleable_high_s_eip1559_signature_is_rejected() {
     let twin = Signature::new(good.r(), SECP256K1N - good.s(), !good.v());
 
     let forged = Transaction::Eip1559(Signed::new_unchecked(base, twin, hash));
-    assert!(
-        recover_sender(&forged).is_err(),
-        "high-s EIP-1559 signature must be rejected"
-    );
+    assert!(recover_sender(&forged).is_err(), "high-s EIP-1559 signature must be rejected");
 }
-
 
 // ---------------------------------------------------------------------------
 // Attack 3: mutating a signed transaction.
@@ -257,12 +215,8 @@ fn mutating_a_signed_field_invalidates_the_signature() {
     // yields a *different* address: the transfer would be debited to a random
     // account that does not own the funds. The property under test is that the
     // original sender cannot be preserved.
-        if let Ok(address) = recover_sender(&forged) {
-        assert_ne!(
-            address,
-            attacker().address(),
-            "tampering must not preserve the original sender"
-        );
+    if let Ok(address) = recover_sender(&forged) {
+        assert_ne!(address, attacker().address(), "tampering must not preserve the original sender");
     }
 }
 
@@ -311,9 +265,7 @@ fn mainnet_transaction_cannot_replay_on_zethora() {
     let mut executor = EvmExecutor::new();
     executor.set_chain_id(2);
 
-    let err = executor
-        .execute(&tx)
-        .expect_err("cross-chain replay must fail");
+    let err = executor.execute(&tx).expect_err("cross-chain replay must fail");
     assert!(err.contains("invalid chain id"), "unexpected error: {err}");
 }
 
@@ -323,9 +275,7 @@ fn eip1559_transaction_cannot_replay_on_zethora() {
     tx.chain_id = 137; // Polygon
     let signed = sign_eip1559(&attacker(), tx);
 
-    let err = EvmExecutor::new()
-        .execute(&signed)
-        .expect_err("chain 137 must not run on Zethora");
+    let err = EvmExecutor::new().execute(&signed).expect_err("chain 137 must not run on Zethora");
     assert!(err.contains("invalid chain id"), "unexpected error: {err}");
 }
 
@@ -342,12 +292,9 @@ fn pre_eip155_transaction_is_rejected() {
     let signed = sign_legacy(&attacker(), tx);
 
     assert_eq!(signed.chain_id(), None, "fixture must be unprotected");
-    let err = EvmExecutor::new()
-        .execute(&signed)
-        .expect_err("unprotected replay must fail");
+    let err = EvmExecutor::new().execute(&signed).expect_err("unprotected replay must fail");
     assert!(err.contains("not EIP-155"), "unexpected error: {err}");
 }
-
 
 // ---------------------------------------------------------------------------
 // Attack 6: envelope confusion.
@@ -361,10 +308,7 @@ fn unsupported_envelope_types_are_rejected() {
     for type_byte in [0x01u8, 0x03, 0x04, 0x05, 0x7f] {
         let bytes = [type_byte, 0xc0];
         let err = decode_transaction(&bytes).expect_err("unsupported type must be rejected");
-        assert!(
-            err.contains("unsupported transaction type"),
-            "type 0x{type_byte:02x} gave an unexpected error: {err}"
-        );
+        assert!(err.contains("unsupported transaction type"), "type 0x{type_byte:02x} gave an unexpected error: {err}");
     }
 }
 
@@ -374,15 +318,9 @@ fn empty_and_truncated_input_is_rejected() {
 
     // A transaction whose payload is cut short must not decode into a
     // "best effort" transaction.
-    let good = encode(&sign_legacy(
-        &attacker(),
-        legacy_tx(TxKind::Call(target()), U256::from(1)),
-    ));
+    let good = encode(&sign_legacy(&attacker(), legacy_tx(TxKind::Call(target()), U256::from(1))));
     for cut in 1..good.len() {
-        assert!(
-            decode_transaction(&good[..cut]).is_err(),
-            "truncating to {cut} bytes must not decode"
-        );
+        assert!(decode_transaction(&good[..cut]).is_err(), "truncating to {cut} bytes must not decode");
     }
 }
 
@@ -390,18 +328,12 @@ fn empty_and_truncated_input_is_rejected() {
 fn trailing_bytes_do_not_alter_the_decoded_transaction() {
     // Appending garbage must not change the decoded transaction: either the
     // decoder rejects it, or it decodes to exactly the original.
-    let original = sign_eip1559(
-        &attacker(),
-        eip1559_tx(TxKind::Call(target()), U256::from(1)),
-    );
+    let original = sign_eip1559(&attacker(), eip1559_tx(TxKind::Call(target()), U256::from(1)));
     let mut padded = encode(&original);
     padded.push(0xff);
 
     if let Ok(decoded) = decode_transaction(&padded) {
-        assert_eq!(
-            decoded, original,
-            "trailing garbage must not alter the transaction"
-        );
+        assert_eq!(decoded, original, "trailing garbage must not alter the transaction");
     }
 }
 
@@ -415,20 +347,12 @@ fn transaction_exceeding_block_gas_limit_is_rejected() {
     let mut tx = legacy_tx(TxKind::Call(target()), U256::ZERO);
     tx.gas_limit = zethora_evm::BLOCK_GAS_LIMIT + 1;
 
-    let err = executor
-        .execute(&sign_legacy(&attacker(), tx))
-        .expect_err("oversized gas limit must be refused");
+    let err = executor.execute(&sign_legacy(&attacker(), tx)).expect_err("oversized gas limit must be refused");
     assert!(!err.is_empty());
 
     // Nothing was committed: the attacker's nonce is still zero.
-    let nonce = executor
-        .account(attacker().address())
-        .map(|info| info.nonce)
-        .unwrap_or(0);
-    assert_eq!(
-        nonce, 0,
-        "a rejected transaction must not advance the nonce"
-    );
+    let nonce = executor.account(attacker().address()).map(|info| info.nonce).unwrap_or(0);
+    assert_eq!(nonce, 0, "a rejected transaction must not advance the nonce");
 }
 
 #[test]
@@ -437,13 +361,8 @@ fn intrinsic_gas_underflow_is_rejected() {
     let mut tx = legacy_tx(TxKind::Call(target()), U256::ZERO);
     tx.gas_limit = 1_000;
 
-    let err = executor
-        .execute(&sign_legacy(&attacker(), tx))
-        .expect_err("below intrinsic gas must fail");
-    assert!(
-        err.contains("gas cost") && err.contains("21000"),
-        "unexpected error: {err}"
-    );
+    let err = executor.execute(&sign_legacy(&attacker(), tx)).expect_err("below intrinsic gas must fail");
+    assert!(err.contains("gas cost") && err.contains("21000"), "unexpected error: {err}");
 }
 
 // ---------------------------------------------------------------------------
@@ -461,10 +380,7 @@ fn type_constants_match_eip2718() {
 fn decoding_agrees_with_alloy_envelope_decoder() {
     // Cross-check our decoder against the canonical `Decodable2718` path on the
     // same bytes, so a divergence in type handling would be caught here.
-    let tx = sign_legacy(
-        &attacker(),
-        legacy_tx(TxKind::Create, U256::ZERO),
-    );
+    let tx = sign_legacy(&attacker(), legacy_tx(TxKind::Create, U256::ZERO));
     let bytes = encode(&tx);
 
     let theirs = TxEnvelope::network_decode(&mut &bytes[..]).expect("alloy must decode");
@@ -473,4 +389,3 @@ fn decoding_agrees_with_alloy_envelope_decoder() {
     assert_eq!(ours.nonce(), theirs.nonce());
     assert_eq!(ours.gas_limit(), theirs.gas_limit());
 }
-

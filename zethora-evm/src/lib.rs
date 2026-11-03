@@ -43,19 +43,16 @@
 use alloy_consensus::transaction::SignerRecoverable;
 use alloy_consensus::{Signed, Transaction as ConsensusTransaction, TxEip1559, TxEnvelope, TxLegacy};
 use alloy_eips::eip2718::Decodable2718;
-use alloy_primitives::{Address, Bytes, Signature, TxKind, B256, U256};
+use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
 use revm::{
+    Database, ExecuteCommitEvm,
     bytecode::Bytecode,
     context::{BlockEnv, Context, TxEnv},
-    context_interface::result::{
-        ExecResultAndState, ExecutionResult, HaltReason, Output, ResultAndState,
-    },
+    context_interface::result::{ExecutionResult, HaltReason, Output},
     database::InMemoryDB,
-    database_interface::DatabaseCommit,
     handler::{MainBuilder, MainContext},
-    primitives::{hardfork::SpecId, KECCAK_EMPTY},
-    state::{AccountInfo, EvmState},
-    Database, ExecuteEvm,
+    primitives::{KECCAK_EMPTY, hardfork::SpecId},
+    state::AccountInfo,
 };
 
 /// EVM chain id the executor validates `chain_id` against.
@@ -79,10 +76,8 @@ pub const EIP1559_TX_TYPE: u8 = 0x02;
 /// component to be at most this value. Without that bound every signature has a
 /// second, equally valid encoding `(r, N - s)`, so a transaction could be
 /// re-broadcast with a different hash while expressing the same intent.
-pub const SECP256K1N_HALF: U256 = U256::from_be_bytes(alloy_primitives::hex!(
-    "7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0"
-));
-
+pub const SECP256K1N_HALF: U256 =
+    U256::from_be_bytes(alloy_primitives::hex!("7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0"));
 
 /// A decoded, signature-bearing Ethereum transaction.
 ///
@@ -217,19 +212,14 @@ impl Transaction {
 impl PartialEq for Transaction {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::Legacy(a), Self::Legacy(b)) => {
-                a.tx() == b.tx() && a.signature() == b.signature()
-            }
-            (Self::Eip1559(a), Self::Eip1559(b)) => {
-                a.tx() == b.tx() && a.signature() == b.signature()
-            }
+            (Self::Legacy(a), Self::Legacy(b)) => a.tx() == b.tx() && a.signature() == b.signature(),
+            (Self::Eip1559(a), Self::Eip1559(b)) => a.tx() == b.tx() && a.signature() == b.signature(),
             _ => false,
         }
     }
 }
 
 impl Eq for Transaction {}
-
 
 /// Converts an already-decoded consensus envelope into a [`Transaction`].
 ///
@@ -266,15 +256,12 @@ pub fn decode_transaction(tx_bytes: &[u8]) -> Result<Transaction, String> {
     // envelope can never be mistaken for something executable.
     let first = tx_bytes[0];
     if first < 0xc0 && first != LEGACY_TX_TYPE && first != EIP1559_TX_TYPE {
-        return Err(format!(
-            "unsupported transaction type 0x{first:02x}: only legacy (0x00) and EIP-1559 (0x02) are supported"
-        ));
+        return Err(format!("unsupported transaction type 0x{first:02x}: only legacy (0x00) and EIP-1559 (0x02) are supported"));
     }
 
     // `network_decode` resolves the ambiguity where a bare legacy list could be
     // mistaken for a `0x00` envelope, exactly as the network does.
-    let envelope = TxEnvelope::network_decode(&mut &tx_bytes[..])
-        .map_err(|err| format!("cannot decode transaction: {err}"))?;
+    let envelope = TxEnvelope::network_decode(&mut &tx_bytes[..]).map_err(|err| format!("cannot decode transaction: {err}"))?;
     from_envelope(envelope)
 }
 
@@ -308,19 +295,14 @@ pub fn recover_sender(tx: &Transaction) -> Result<Address, String> {
     // enforced even if a future alloy release relaxes its own check.
     let s = tx.signature().s();
     if s > SECP256K1N_HALF {
-        return Err(format!(
-            "invalid signature: s value {s:#x} is not in the lower half of the secp256k1 order (EIP-2)"
-        ));
+        return Err(format!("invalid signature: s value {s:#x} is not in the lower half of the secp256k1 order (EIP-2)"));
     }
     if s.is_zero() || tx.signature().r().is_zero() {
         return Err("invalid signature: r and s must be non-zero".to_string());
     }
 
-    envelope
-        .recover_signer()
-        .map_err(|err| format!("cannot recover sender: {err}"))
+    envelope.recover_signer().map_err(|err| format!("cannot recover sender: {err}"))
 }
-
 
 /// Outcome of executing a single transaction.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -335,6 +317,33 @@ pub struct ExecutionOutcome {
     pub success: bool,
     /// The address recovered from the transaction signature.
     pub sender: Address,
+}
+
+/// Result of executing a whole batch of transactions, in order.
+///
+/// This is the *state transition function* of the zkEVM in miniature: it is the
+/// complete public output of turning a batch of transactions into a new world
+/// state. Everything a prover has to agree with the sequencer about lives here,
+/// which is why the fields are exactly the three commitments a block carries:
+/// the resulting state root, one receipt per transaction, and the gas the batch
+/// spent.
+///
+/// The state root is the same value [`EvmExecutor::state_root`] reports, and it
+/// reverts to the pre-batch value when a batch is rejected, so comparing roots
+/// before and after a call is enough to tell whether the batch was applied.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BatchOutcome {
+    /// The final state root after all transactions in the batch have been applied.
+    pub state_root: [u8; 32],
+    /// The result of each transaction, in the order the transactions were given.
+    ///
+    /// There is exactly one entry per input transaction, including for
+    /// transactions that reverted: a revert costs gas and is part of the state
+    /// transition, so it is reported as an unsuccessful receipt rather than as
+    /// an error.
+    pub tx_receipts: Vec<ExecutionOutcome>,
+    /// Gas consumed by the entire batch, i.e. the sum of every receipt's `gas_used`.
+    pub total_gas_used: u64,
 }
 
 /// A standalone EVM executor backed by an in-memory database.
@@ -396,6 +405,14 @@ impl EvmExecutor {
         self.chain_id
     }
 
+    /// The gas limit of the batch (block) this executor is filling.
+    ///
+    /// [`EvmExecutor::execute_batch`] refuses a batch whose transactions together
+    /// consume more than this.
+    pub fn block_gas_limit(&self) -> u64 {
+        self.block.gas_limit
+    }
+
     /// Read-only access to the underlying in-memory database for inspection.
     ///
     /// revm's `Database::storage` takes `&mut self`, so this returns a mutable
@@ -416,14 +433,8 @@ impl EvmExecutor {
     ///
     /// Useful for funding accounts before sending value-bearing transactions.
     pub fn set_balance(&mut self, address: Address, amount: U256) {
-        let info = self.db.basic(address).ok().flatten().unwrap_or_default();
-        self.db.insert_account_info(
-            address,
-            AccountInfo {
-                balance: amount,
-                ..info
-            },
-        );
+        let info = self.account_info_or_default(address);
+        self.db.insert_account_info(address, AccountInfo { balance: amount, ..info });
     }
 
     /// Installs `code` at `address`.
@@ -431,14 +442,16 @@ impl EvmExecutor {
     /// This bypasses `CREATE` semantics and is intended for test fixtures and
     /// genesis-style predeploys.
     pub fn insert_code(&mut self, address: Address, code: Bytes) {
-        let info = self.db.basic(address).ok().flatten().unwrap_or_default();
+        // The account must already be known to the cache before the code goes in.
+        // `basic` reads through the database and returns `None` for an account
+        // that has never been touched, and an `AccountInfo::default()` carries
+        // the empty-code hash — passing that to `insert_account_info` would
+        // overwrite the hash of the code being installed, leaving an account that
+        // appears to hold the code but whose hash no longer matches it.
+        let info = self.account_info_or_default(address);
         self.db.insert_account_info(
             address,
-            AccountInfo {
-                code_hash: alloy_primitives::keccak256(&code),
-                code: Some(Bytecode::new_raw(code)),
-                ..info
-            },
+            AccountInfo { code_hash: alloy_primitives::keccak256(&code), code: Some(Bytecode::new_raw(code)), ..info },
         );
     }
 
@@ -447,7 +460,6 @@ impl EvmExecutor {
         self.db.storage(address, slot).unwrap_or_default()
     }
 }
-
 
 impl EvmExecutor {
     /// Executes an already decoded transaction.
@@ -463,37 +475,21 @@ impl EvmExecutor {
     /// 2. check the chain id (rejects cross-chain replays),
     /// 3. fund the sender (the executor is a controlled test harness),
     /// 4. hand the transaction to revm, which enforces nonce and gas rules.
+    ///
+    /// Steps 1 and 2 run inside [`EvmExecutor::tx_env`], so nothing is executed
+    /// before the sender is proven to own the signature. The address itself is
+    /// recovered before that call rather than returned by it: see
+    /// [`EvmExecutor::execute_batch`] for why the order matters, and note that
+    /// the step numbering above still holds for a single transaction.
     pub fn execute(&mut self, tx: &Transaction) -> Result<ExecutionOutcome, String> {
-        let sender = recover_sender(tx)?;
-        self.check_chain_id(tx)?;
-        self.ensure_funded(sender, tx);
+        let tx_env = self.tx_env(tx)?;
 
-        // revm 43 derives the transaction type from the fields that are set:
-        // a priority fee makes it EIP-1559, otherwise it stays legacy.
-        let mut builder = TxEnv::builder()
-            .caller(sender)
-            .gas_limit(tx.gas_limit())
-            .kind(tx.kind())
-            .value(tx.value())
-            .data(tx.input().clone())
-            .nonce(tx.nonce())
-            .chain_id(Some(self.chain_id));
-
-        builder = match tx {
-            // Legacy: a single gas price, no priority fee.
-            Transaction::Legacy(legacy) => builder.gas_price(legacy.tx().gas_price),
-            // EIP-1559: a fee cap plus a priority fee. `max_fee_per_gas` is the
-            // cap revm compares against `basefee`; the tip is the block
-            // producer's cut.
-            Transaction::Eip1559(eip1559) => builder
-                .max_fee_per_gas(eip1559.tx().max_fee_per_gas)
-                .gas_priority_fee(Some(eip1559.tx().max_priority_fee_per_gas)),
-        };
-
-        let tx_env = builder
-            .build()
-            .map_err(|err| format!("invalid transaction: {err}"))?;
-
+        // `transact_commit` runs the transaction and commits its state changes
+        // straight into the database. That is exactly what `transact` followed by
+        // `DatabaseCommit::commit` did, minus the intermediate `EvmState` map: the
+        // state is written into the (ordered) cache instead of being staged in a
+        // hash map first, which keeps a large batch from paying to rebuild the
+        // whole map once per transaction.
         let result = {
             let mut evm = Context::mainnet()
                 .with_db(&mut self.db)
@@ -501,11 +497,11 @@ impl EvmExecutor {
                 .modify_cfg_chained(|cfg| cfg.set_spec_and_mainnet_gas_params(self.spec))
                 .build_mainnet();
 
-            evm.transact(tx_env).map_err(|err| format!("evm error: {err}"))
+            evm.transact_commit(tx_env).map_err(|err| format!("evm error: {err}"))
         }?;
 
-        let mut outcome = Self::commit(&mut self.db, result);
-        outcome.sender = sender;
+        let mut outcome = Self::receipt(&result);
+        outcome.sender = recover_sender(tx)?;
         Ok(outcome)
     }
 
@@ -513,6 +509,97 @@ impl EvmExecutor {
     pub fn execute_bytes(&mut self, tx_bytes: &[u8]) -> Result<Vec<u8>, String> {
         let tx = decode_transaction(tx_bytes)?;
         self.execute(&tx).map(|outcome| outcome.output)
+    }
+
+    /// Executes a batch of raw, RLP-encoded transactions as one state transition.
+    ///
+    /// Transactions are applied strictly in the order given, against the state
+    /// left by the previous one, so a deployment in the first transaction is
+    /// visible to a call in the second. The batch is atomic with respect to
+    /// failure: if any transaction cannot be executed, the whole batch is rolled
+    /// back to the state it started from and the error is returned. Nothing is
+    /// half-applied.
+    ///
+    /// Two kinds of failure are distinguished, exactly as a node distinguishes
+    /// them:
+    ///
+    /// * a transaction that **cannot be admitted** (undecodable, bad signature,
+    ///   wrong chain id, nonce mismatch, not enough gas) fails the batch — this
+    ///   is a malformed batch, not a bad execution;
+    /// * a transaction that **reverts or halts** does *not* fail the batch. It
+    ///   burns gas, is recorded as an unsuccessful receipt, and execution
+    ///   continues, because that is what really happens on chain.
+    ///
+    /// The batch is also refused if its transactions could not all fit in a
+    /// block: revm only checks each transaction's gas limit against the block
+    /// limit, never the running total, so the cumulative budget is enforced here
+    /// from each receipt's `gas_used`. A batch that would overrun
+    /// [`BLOCK_GAS_LIMIT`] is rejected as a whole instead of quietly producing a
+    /// block no honest node would accept.
+    ///
+    /// # Arguments
+    ///
+    /// * `txs` - the raw EIP-2718 (or bare legacy) envelopes, in batch order.
+    ///
+    /// # Returns
+    ///
+    /// A [`BatchOutcome`] holding the post-batch state root, one receipt per
+    /// transaction and the total gas used, or a human readable error describing
+    /// why the batch was rejected.
+    pub fn execute_batch(&mut self, txs: Vec<Vec<u8>>) -> Result<BatchOutcome, String> {
+        // The rollback floor: the state the batch is about to run against. It is
+        // captured fresh for every batch and only ever used to undo *this* batch,
+        // so whatever ran before it — single transactions, funding, installed
+        // code — is part of the floor. A rejected batch therefore leaves the
+        // executor exactly as it found it, never as of some earlier batch.
+        let checkpoint = self.db.clone();
+
+        match self.apply_batch(txs) {
+            Ok(outcome) => Ok(outcome),
+            Err(err) => {
+                self.db = checkpoint;
+                Err(err)
+            }
+        }
+    }
+
+    /// The body of [`EvmExecutor::execute_batch`], run against a copy of the
+    /// pre-batch state so a failure can be undone by the caller.
+    fn apply_batch(&mut self, txs: Vec<Vec<u8>>) -> Result<BatchOutcome, String> {
+        // Recover every sender before executing anything. `execute` tops the
+        // sender up with enough funds to cover its transaction, so once the
+        // first transaction has run its sender holds more than it put in; if an
+        // unauthenticated transaction further down the batch could name that
+        // account, it would be spending money that only exists because of this
+        // batch. Requiring a recoverable signature from every transaction up
+        // front closes that hole for the whole batch at once, and charges the
+        // shortfall to the account that really signed.
+        let mut decoded = Vec::with_capacity(txs.len());
+        for (index, raw) in txs.iter().enumerate() {
+            let tx = decode_transaction(raw).map_err(|err| format!("transaction {index}: {err}"))?;
+            recover_sender(&tx).map_err(|err| format!("transaction {index}: {err}"))?;
+            decoded.push(tx);
+        }
+
+        let mut tx_receipts = Vec::with_capacity(decoded.len());
+        for (index, tx) in decoded.iter().enumerate() {
+            let receipt = self.execute(tx).map_err(|err| format!("transaction {index}: {err}"))?;
+            tx_receipts.push(receipt);
+        }
+
+        // Summing in `u128` means a batch of a few thousand transactions can
+        // never wrap a `u64` before the budget check below rejects it.
+        let spent: u128 = tx_receipts.iter().map(|receipt| u128::from(receipt.gas_used)).sum();
+        let block_limit = u128::from(self.block.gas_limit);
+        if spent > block_limit {
+            return Err(format!("batch gas used {spent} exceeds the block gas limit {block_limit}"));
+        }
+
+        Ok(BatchOutcome {
+            state_root: self.state_root().into(),
+            tx_receipts,
+            total_gas_used: u64::try_from(spent).expect("bounded by the block gas limit"),
+        })
     }
 
     /// Computes a commitment to the executor's current world state.
@@ -552,8 +639,45 @@ impl EvmExecutor {
     }
 }
 
-
 impl EvmExecutor {
+    /// Builds the revm transaction environment for `tx`.
+    ///
+    /// This is where a transaction is authorised: the sender is recovered from
+    /// the signature, the chain id is checked, and the recovered account is
+    /// funded. It deliberately returns *only* the `TxEnv`, not the sender:
+    /// callers must recover the sender themselves first, which is what stops a
+    /// batch from funding one transaction with another's fresh balance (see
+    /// [`EvmExecutor::execute_batch`]).
+    fn tx_env(&mut self, tx: &Transaction) -> Result<TxEnv, String> {
+        let sender = recover_sender(tx)?;
+        self.check_chain_id(tx)?;
+        self.ensure_funded(sender, tx);
+
+        // revm 43 derives the transaction type from the fields that are set:
+        // a priority fee makes it EIP-1559, otherwise it stays legacy.
+        let mut builder = TxEnv::builder()
+            .caller(sender)
+            .gas_limit(tx.gas_limit())
+            .kind(tx.kind())
+            .value(tx.value())
+            .data(tx.input().clone())
+            .nonce(tx.nonce())
+            .chain_id(Some(self.chain_id));
+
+        builder = match tx {
+            // Legacy: a single gas price, no priority fee.
+            Transaction::Legacy(legacy) => builder.gas_price(legacy.tx().gas_price),
+            // EIP-1559: a fee cap plus a priority fee. `max_fee_per_gas` is the
+            // cap revm compares against `basefee`; the tip is the block
+            // producer's cut.
+            Transaction::Eip1559(eip1559) => {
+                builder.max_fee_per_gas(eip1559.tx().max_fee_per_gas).gas_priority_fee(Some(eip1559.tx().max_priority_fee_per_gas))
+            }
+        };
+
+        builder.build().map_err(|err| format!("invalid transaction: {err}"))
+    }
+
     /// Rejects transactions bound to a different chain.
     ///
     /// A pre-EIP-155 legacy transaction (`v` of 27/28) has no chain id and
@@ -579,48 +703,46 @@ impl EvmExecutor {
         let gas = U256::from(tx.gas_limit()).saturating_mul(U256::from(tx.max_fee_per_gas()));
         let required = gas.saturating_add(tx.value());
         if info.balance < required {
-            self.db.insert_account_info(
-                sender,
-                AccountInfo {
-                    balance: required,
-                    ..info
-                },
-            );
+            self.db.insert_account_info(sender, AccountInfo { balance: required, ..info });
         }
     }
 
-    /// Applies the state changes of a transaction to the database.
-    fn commit(
-        db: &mut InMemoryDB,
-        result: ExecResultAndState<ExecutionResult<HaltReason>, EvmState>,
-    ) -> ExecutionOutcome {
-        let ResultAndState { result, state } = result;
+    /// Returns the account as it currently exists, or a blank one.
+    ///
+    /// Used by the fixture setters ([`EvmExecutor::set_balance`],
+    /// [`EvmExecutor::insert_code`]), which must not lose the fields they are not
+    /// changing. Asking the cache first is what keeps those fields: `basic`
+    /// reports "no such account" for anything never touched, so an untouched
+    /// account would silently lose its code hash and be reset to the default.
+    fn account_info_or_default(&mut self, address: Address) -> AccountInfo {
+        self.db.cache.accounts.get(&address).map(|account| account.info.clone()).unwrap_or_default()
+    }
+    ///
+    /// The state changes are already in the database: [`ExecuteEvm::transact_commit`]
+    /// writes them as the transaction finishes, so a successful result needs no
+    /// further work here and a failed one simply left nothing behind.
+    fn receipt(result: &ExecutionResult<HaltReason>) -> ExecutionOutcome {
         let gas_used = result.tx_gas_used();
 
         match result {
             ExecutionResult::Success { output, .. } => {
-                let created_address = match &output {
+                let created_address = match output {
                     Output::Create(_, address) => *address,
                     Output::Call(_) => None,
                 };
-                db.commit(state);
                 ExecutionOutcome {
-                    output: output.into_data().to_vec(),
+                    output: output.clone().into_data().to_vec(),
                     created_address,
                     gas_used,
                     success: true,
                     sender: Address::ZERO,
                 }
             }
-            // A revert or a halt must NOT commit: any `SSTORE` staged before the
-            // failure has to roll back with the rest of the frame.
-            ExecutionResult::Revert { output, .. } => ExecutionOutcome {
-                output: output.to_vec(),
-                created_address: None,
-                gas_used,
-                success: false,
-                sender: Address::ZERO,
-            },
+            // A revert or a halt has already been rolled back by revm, so the
+            // receipt only has to describe what happened.
+            ExecutionResult::Revert { output, .. } => {
+                ExecutionOutcome { output: output.to_vec(), created_address: None, gas_used, success: false, sender: Address::ZERO }
+            }
             ExecutionResult::Halt { reason, .. } => ExecutionOutcome {
                 output: format!("halted: {reason}").into_bytes(),
                 created_address: None,
@@ -645,21 +767,18 @@ pub fn execute_transaction(tx_bytes: &[u8]) -> Result<Vec<u8>, String> {
     EvmExecutor::new().execute_bytes(tx_bytes)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use alloy_consensus::{SignableTransaction, TxEip1559, TxLegacy};
-    use alloy_primitives::{Signature, TxKind, B256, U256};
+    use alloy_primitives::{B256, Signature, TxKind, U256};
 
     /// Deterministic key material, so the tests never depend on randomness.
     const KEY: B256 = B256::repeat_byte(0x11);
 
     /// The address that owns [`KEY`].
     fn signer_address() -> Address {
-        alloy_signer_local::PrivateKeySigner::from_bytes(&KEY)
-            .expect("valid scalar")
-            .address()
+        alloy_signer_local::PrivateKeySigner::from_bytes(&KEY).expect("valid scalar").address()
     }
 
     /// Signs `tx` with [`KEY`], producing a legacy transaction.
@@ -678,20 +797,57 @@ mod tests {
         Transaction::Eip1559(alloy_consensus::Signed::new_unchecked(tx, signature, hash))
     }
 
+    /// Re-encodes a [`Transaction`] as EIP-2718 wire bytes, i.e. exactly what a
+    /// batch arrives as.
+    fn encode(tx: &Transaction) -> Vec<u8> {
+        let envelope = match tx {
+            Transaction::Legacy(signed) => TxEnvelope::Legacy(signed.clone()),
+            Transaction::Eip1559(signed) => TxEnvelope::Eip1559(signed.clone()),
+        };
+        let mut out = Vec::new();
+        alloy_eips::eip2718::Encodable2718::encode_2718(&envelope, &mut out);
+        out
+    }
+
+    /// The contract address a first deployment from [`signer_address`] lands on.
+    fn expected_deploy_address() -> Address {
+        signer_address().create(0)
+    }
+
+    /// The calldata that makes [`STORAGE_RUNTIME`] store `value` in slot 0.
+    fn set_value_calldata(value: u8) -> Bytes {
+        let mut calldata = [0u8; 32];
+        calldata[31] = value;
+        Bytes::from(calldata.to_vec())
+    }
+
+    /// A three transaction batch that exercises ordering: deploy (nonce 0), then
+    /// a value transfer (nonce 1), then store 42 into the new contract (nonce 2).
+    ///
+    /// The last two transactions are only executable if the first one ran, so the
+    /// batch can only succeed when it is applied in order against live state.
+    fn deploy_and_call_batch() -> Vec<Vec<u8>> {
+        let deploy = sign_legacy(legacy_tx(TxKind::Create, deploy_init_code()));
+
+        let mut transfer = legacy_tx(TxKind::Call(contract_address()), Bytes::new());
+        transfer.nonce = 1;
+        transfer.value = U256::from(1);
+
+        let store = sign_legacy({
+            let mut tx = legacy_tx(TxKind::Call(expected_deploy_address()), set_value_calldata(42));
+            tx.nonce = 2;
+            tx
+        });
+
+        vec![encode(&deploy), encode(&sign_legacy(transfer)), encode(&store)]
+    }
+
     fn contract_address() -> Address {
         Address::repeat_byte(0xaa)
     }
 
     fn legacy_tx(to: TxKind, input: Bytes) -> TxLegacy {
-        TxLegacy {
-            chain_id: Some(CHAIN_ID),
-            nonce: 0,
-            gas_price: 1,
-            gas_limit: 1_000_000,
-            to,
-            value: U256::ZERO,
-            input,
-        }
+        TxLegacy { chain_id: Some(CHAIN_ID), nonce: 0, gas_price: 1, gas_limit: 1_000_000, to, value: U256::ZERO, input }
     }
 
     fn eip1559_tx(to: TxKind, input: Bytes) -> TxEip1559 {
@@ -742,23 +898,16 @@ mod tests {
         Bytes::from(code)
     }
 
-
     #[test]
     fn recovers_sender_from_legacy_signature() {
         let tx = sign_legacy(legacy_tx(TxKind::Call(contract_address()), Bytes::new()));
-        assert_eq!(
-            recover_sender(&tx).expect("valid signature"),
-            signer_address()
-        );
+        assert_eq!(recover_sender(&tx).expect("valid signature"), signer_address());
     }
 
     #[test]
     fn recovers_sender_from_eip1559_signature() {
         let tx = sign_eip1559(eip1559_tx(TxKind::Call(contract_address()), Bytes::new()));
-        assert_eq!(
-            recover_sender(&tx).expect("valid signature"),
-            signer_address()
-        );
+        assert_eq!(recover_sender(&tx).expect("valid signature"), signer_address());
         assert_eq!(tx.tx_type(), EIP1559_TX_TYPE);
     }
 
@@ -770,15 +919,12 @@ mod tests {
         let good = alloy_signer::SignerSync::sign_hash_sync(&signer, &hash).expect("sign");
 
         // Mirror the signature over the curve: (r, N - s) with flipped parity.
-        let n = U256::from_be_bytes(alloy_primitives::hex!(
-            "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141"
-        ));
+        let n = U256::from_be_bytes(alloy_primitives::hex!("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141"));
         let high_s = n - good.s();
         assert!(high_s > SECP256K1N_HALF, "fixture must be high-s");
         let malleable = Signature::new(good.r(), high_s, !good.v());
 
-        let forged =
-            Transaction::Legacy(alloy_consensus::Signed::new_unchecked(base, malleable, hash));
+        let forged = Transaction::Legacy(alloy_consensus::Signed::new_unchecked(base, malleable, hash));
         let err = recover_sender(&forged).expect_err("high-s must be rejected");
         assert!(err.contains("EIP-2"), "unexpected error: {err}");
     }
@@ -787,15 +933,9 @@ mod tests {
     fn rejects_zero_signature() {
         let base = legacy_tx(TxKind::Call(contract_address()), Bytes::new());
         let hash = base.signature_hash();
-        let forged = Transaction::Legacy(alloy_consensus::Signed::new_unchecked(
-            base,
-            Signature::new(U256::ZERO, U256::ZERO, false),
-            hash,
-        ));
-        assert!(
-            recover_sender(&forged).is_err(),
-            "the zero signature must not recover a sender"
-        );
+        let forged =
+            Transaction::Legacy(alloy_consensus::Signed::new_unchecked(base, Signature::new(U256::ZERO, U256::ZERO, false), hash));
+        assert!(recover_sender(&forged).is_err(), "the zero signature must not recover a sender");
     }
 
     #[test]
@@ -803,9 +943,7 @@ mod tests {
         let mut executor = EvmExecutor::new();
         executor.set_chain_id(5);
         let tx = sign_legacy(legacy_tx(TxKind::Call(contract_address()), Bytes::new()));
-        let err = executor
-            .execute(&tx)
-            .expect_err("wrong chain id must be rejected");
+        let err = executor.execute(&tx).expect_err("wrong chain id must be rejected");
         assert!(err.contains("invalid chain id 1"), "unexpected error: {err}");
     }
 
@@ -819,12 +957,9 @@ mod tests {
         assert_eq!(signed.chain_id(), None);
 
         let mut executor = EvmExecutor::new();
-        let err = executor
-            .execute(&signed)
-            .expect_err("unprotected transaction must be rejected");
+        let err = executor.execute(&signed).expect_err("unprotected transaction must be rejected");
         assert!(err.contains("not EIP-155"), "unexpected error: {err}");
     }
-
 
     #[test]
     fn eip1559_transfer_charges_the_recovered_sender() {
@@ -836,11 +971,7 @@ mod tests {
         assert_eq!(outcome.sender, signer_address());
         assert_eq!(outcome.gas_used, 21_000);
 
-        let info = executor
-            .db_mut()
-            .basic(signer_address())
-            .expect("db read")
-            .expect("sender account must exist");
+        let info = executor.db_mut().basic(signer_address()).expect("db read").expect("sender account must exist");
         assert_eq!(info.nonce, 1, "the recovered sender's nonce must advance");
     }
 
@@ -849,23 +980,13 @@ mod tests {
         let mut executor = EvmExecutor::new();
 
         // Deploy through the EVM: an empty `to` means CREATE.
-        let outcome = executor
-            .execute(&sign_legacy(legacy_tx(TxKind::Create, deploy_init_code())))
-            .expect("contract creation should succeed");
+        let outcome =
+            executor.execute(&sign_legacy(legacy_tx(TxKind::Create, deploy_init_code()))).expect("contract creation should succeed");
         assert!(outcome.success, "creation reverted: {:?}", outcome.output);
-        assert_eq!(
-            outcome.output, STORAGE_RUNTIME,
-            "RETURNed code should be the runtime"
-        );
+        assert_eq!(outcome.output, STORAGE_RUNTIME, "RETURNed code should be the runtime");
 
-        let created = outcome
-            .created_address
-            .expect("CREATE must report an address");
-        let info = executor
-            .db_mut()
-            .basic(created)
-            .expect("db read should succeed")
-            .expect("created account must exist");
+        let created = outcome.created_address.expect("CREATE must report an address");
+        let info = executor.db_mut().basic(created).expect("db read should succeed").expect("created account must exist");
         assert_eq!(info.code_hash, alloy_primitives::keccak256(STORAGE_RUNTIME));
 
         // A second transaction calls the deployed contract and sets slot 0 to 42.
@@ -873,9 +994,7 @@ mod tests {
         calldata[31] = 42;
         let mut call = legacy_tx(TxKind::Call(created), Bytes::from(calldata.to_vec()));
         call.nonce = 1;
-        let outcome = executor
-            .execute(&sign_legacy(call))
-            .expect("call should succeed");
+        let outcome = executor.execute(&sign_legacy(call)).expect("call should succeed");
         assert!(outcome.success, "call reverted: {:?}", outcome.output);
         assert_eq!(executor.storage(created, U256::ZERO), U256::from(42));
     }
@@ -906,13 +1025,8 @@ mod tests {
         let mut tx = legacy_tx(TxKind::Call(contract_address()), Bytes::new());
         tx.gas_limit = 1_000; // below the 21_000 intrinsic cost
 
-        let err = executor
-            .execute(&sign_legacy(tx))
-            .expect_err("intrinsic gas must be enforced");
-        assert!(
-            err.contains("gas cost") && err.contains("21000"),
-            "unexpected error: {err}"
-        );
+        let err = executor.execute(&sign_legacy(tx)).expect_err("intrinsic gas must be enforced");
+        assert!(err.contains("gas cost") && err.contains("21000"), "unexpected error: {err}");
     }
 
     #[test]
@@ -944,15 +1058,275 @@ mod tests {
         alloy_eips::eip2718::Encodable2718::encode_2718(&round_tripped, &mut reencoded);
         assert_eq!(reencoded, encoded, "round trip must be byte-identical");
 
-        assert_eq!(
-            recover_sender(&decoded).expect("valid signature"),
-            signer_address()
-        );
+        assert_eq!(recover_sender(&decoded).expect("valid signature"), signer_address());
     }
 
     #[test]
     fn rejects_empty_input() {
         assert!(decode_transaction(&[]).is_err());
     }
-}
 
+    // -----------------------------------------------------------------------
+    // Batch state transition function.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn batch_applies_transactions_in_order() {
+        let mut executor = EvmExecutor::new();
+        let outcome = executor.execute_batch(deploy_and_call_batch()).expect("batch must run");
+
+        assert_eq!(outcome.tx_receipts.len(), 3, "one receipt per transaction");
+        for receipt in &outcome.tx_receipts {
+            assert!(receipt.success, "receipt failed: {receipt:?}");
+            assert_eq!(receipt.sender, signer_address(), "receipt must name the real signer");
+        }
+
+        // The deployment only succeeded because it ran first...
+        assert_eq!(
+            outcome.tx_receipts[0].created_address,
+            Some(expected_deploy_address()),
+            "first transaction must deploy at the CREATE address"
+        );
+        // ...the transfer only succeeded because the deploy advanced the nonce...
+        assert_eq!(outcome.tx_receipts[1].gas_used, 21_000);
+        // ...and the store only succeeded because the contract now exists.
+        assert_eq!(
+            executor.storage(expected_deploy_address(), U256::ZERO),
+            U256::from(42),
+            "the batch's last transaction must have written through to the deployed contract"
+        );
+
+        assert_eq!(outcome.state_root, <[u8; 32]>::from(executor.state_root()));
+    }
+
+    #[test]
+    fn batch_total_gas_used_is_the_sum_of_its_receipts() {
+        let mut executor = EvmExecutor::new();
+        let outcome = executor.execute_batch(deploy_and_call_batch()).expect("batch must run");
+
+        let sum: u64 = outcome.tx_receipts.iter().map(|receipt| receipt.gas_used).sum();
+        assert_eq!(outcome.total_gas_used, sum);
+        assert!(sum > 0);
+        assert!(outcome.total_gas_used <= executor.block_gas_limit(), "an accepted batch can never exceed the block gas limit");
+    }
+
+    #[test]
+    fn batch_state_root_matches_replaying_the_transactions_one_by_one() {
+        // The batch STF must agree with sequential execution: same transactions,
+        // same order, same root. This is the property a prover relies on.
+        let mut batched = EvmExecutor::new();
+        let batch = deploy_and_call_batch();
+        let outcome = batched.execute_batch(batch.clone()).expect("batch must run");
+
+        let mut sequential = EvmExecutor::new();
+        for raw in &batch {
+            sequential.execute_bytes(raw).expect("sequential transaction");
+        }
+
+        assert_eq!(outcome.state_root, <[u8; 32]>::from(sequential.state_root()));
+        assert_eq!(batched.state_root(), sequential.state_root());
+    }
+
+    #[test]
+    fn batch_is_deterministic_across_executors() {
+        let mut first = EvmExecutor::new();
+        let mut second = EvmExecutor::new();
+
+        let left = first.execute_batch(deploy_and_call_batch()).expect("first batch");
+        let right = second.execute_batch(deploy_and_call_batch()).expect("second batch");
+
+        assert_eq!(left.state_root, right.state_root);
+        assert_eq!(left.total_gas_used, right.total_gas_used);
+        assert_eq!(left.tx_receipts, right.tx_receipts);
+    }
+
+    #[test]
+    fn reverted_transaction_is_a_receipt_but_does_not_fail_the_batch() {
+        let mut executor = EvmExecutor::new();
+
+        // A contract call that is given enough gas to pass the intrinsic cost but
+        // far too little to also pay for the calldata and the SSTORE, so it halts
+        // out of gas. The batch must still succeed, with that receipt failed.
+        let mut starved = legacy_tx(TxKind::Call(expected_deploy_address()), set_value_calldata(7));
+        starved.nonce = 1;
+        starved.gas_limit = 21_000 + 1_000;
+
+        let batch = vec![encode(&sign_legacy(legacy_tx(TxKind::Create, deploy_init_code()))), encode(&sign_legacy(starved))];
+
+        let outcome = executor.execute_batch(batch).expect("a failing transaction must not fail the batch");
+
+        assert!(outcome.tx_receipts[0].success, "the deploy must still succeed");
+        assert!(!outcome.tx_receipts[1].success, "the starved call must be recorded as failed: {:?}", outcome.tx_receipts[1]);
+        assert!(outcome.tx_receipts[1].gas_used > 0, "a failed transaction still burns gas");
+        // The failure rolled its own storage write back, so slot 0 is untouched.
+        assert_eq!(executor.storage(expected_deploy_address(), U256::ZERO), U256::ZERO);
+    }
+
+    #[test]
+    fn rejected_batch_leaves_the_state_untouched() {
+        let mut executor = EvmExecutor::new();
+        let before = executor.state_root();
+
+        // The deploy is valid, the second transaction reuses nonce 0. The batch is
+        // only rejected once the first transaction has already been applied, which
+        // is exactly the half-applied state the rollback has to undo.
+        let batch = vec![
+            encode(&sign_legacy(legacy_tx(TxKind::Create, deploy_init_code()))),
+            encode(&sign_legacy(legacy_tx(TxKind::Call(contract_address()), Bytes::new()))),
+        ];
+
+        let err = executor.execute_batch(batch).expect_err("nonce reuse must reject the batch");
+        assert!(err.contains("transaction 1"), "error must name the offending index: {err}");
+
+        assert_eq!(executor.state_root(), before, "a rejected batch must not change state");
+        assert!(executor.account(expected_deploy_address()).is_none(), "the deployed contract must have been rolled back");
+        assert!(
+            executor.account(signer_address()).is_none(),
+            "the sender must not keep the funding it received before the batch failed"
+        );
+    }
+
+    #[test]
+    fn batch_exceeding_the_block_gas_limit_is_rejected() {
+        let mut executor = EvmExecutor::new();
+
+        // A plain transfer costs 21k gas no matter how large a limit it declares,
+        // so the batch has to do real work to overrun the block. A `log3` loop
+        // burns gas without touching state, so the batch stays cheap to build and
+        // the per-transaction state stays O(1) instead of O(transactions).
+        let mut code = Vec::new();
+        for _ in 0..5_000 {
+            code.extend_from_slice(&[0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0xa3]); // LOG3(0,0,0)
+        }
+        executor.insert_code(contract_address(), Bytes::from(code.clone()));
+
+        // The installed code is part of the pre-batch world, so the comparison
+        // baseline is an executor carrying the same code — the empty state root
+        // would flag the fixture itself as a leak.
+        let mut pristine = EvmExecutor::new();
+        pristine.insert_code(contract_address(), Bytes::from(code.clone()));
+        let before = executor.state_root();
+        assert_eq!(before, pristine.state_root(), "the two fixtures must start identical");
+
+        // Each call spends ~1.1M gas in the loop and is capped at 2M, so no single
+        // transaction's limit is anywhere near the block limit: only the running
+        // total can cross it.
+        let per_tx = 2_000_000u64;
+        let calls = 60;
+        let batch: Vec<Vec<u8>> = (0..calls)
+            .map(|nonce| {
+                let mut tx = legacy_tx(TxKind::Call(contract_address()), Bytes::new());
+                tx.nonce = nonce;
+                tx.gas_limit = per_tx;
+                // Sign *after* setting the nonce: the nonce is part of the signed
+                // payload, so signing first would produce the same bytes for every
+                // iteration and the batch would be rejected for nonce reuse long
+                // before the gas budget was ever consulted.
+                encode(&sign_legacy(tx))
+            })
+            .collect();
+
+        let err = executor.execute_batch(batch).expect_err("over-budget batch must be refused");
+        assert!(err.contains("block gas limit"), "unexpected error: {err}");
+        assert_eq!(executor.state_root(), before, "an over-budget batch must not change state");
+        assert_eq!(
+            executor.account(signer_address()),
+            pristine.account(signer_address()),
+            "the sender's nonce and balance must be rolled back with the batch"
+        );
+    }
+
+    #[test]
+    fn inserted_code_keeps_its_hash_on_an_untouched_account() {
+        let mut executor = EvmExecutor::new();
+
+        // A fixture that ignores its calldata, stores 7 in slot 0 and returns
+        // nothing. `contract_address()` has never been touched, so the account is
+        // absent from the database before this call.
+        let runtime: &[u8] = &[
+            0x60, 0x07, // PUSH1 7       <- the value
+            0x60, 0x00, // PUSH1 0       <- the slot
+            0x55, //       SSTORE
+            0x60, 0x00, // PUSH1 0       <- size
+            0x60, 0x00, // PUSH1 0       <- offset
+            0xf3, //       RETURN
+        ];
+        executor.insert_code(contract_address(), Bytes::from(runtime));
+
+        let account = executor.account(contract_address()).expect("the account must now exist");
+        assert_eq!(
+            account.code_hash,
+            alloy_primitives::keccak256(runtime),
+            "the stored code hash must be the hash of the installed code"
+        );
+
+        // And the code has to actually run: a hash that does not match the code
+        // would leave revm with an account it considers empty, and the call would
+        // silently succeed without touching storage.
+        let receipt =
+            executor.execute(&sign_legacy(legacy_tx(TxKind::Call(contract_address()), Bytes::new()))).expect("the call must succeed");
+        assert!(receipt.success, "calling the installed code must not halt");
+        assert_eq!(
+            executor.storage(contract_address(), U256::ZERO),
+            U256::from(7),
+            "the installed code must have run and written its slot"
+        );
+    }
+
+    #[test]
+    fn batch_with_an_undecodable_transaction_is_rejected_before_running_anything() {
+        let mut executor = EvmExecutor::new();
+        let before = executor.state_root();
+
+        let batch = vec![
+            encode(&sign_legacy(legacy_tx(TxKind::Create, deploy_init_code()))),
+            vec![0x7e, 0xc0], // EIP-7702: an unsupported envelope
+        ];
+
+        let err = executor.execute_batch(batch).expect_err("unsupported type must reject the batch");
+        assert!(err.contains("transaction 1"), "error must name the offending index: {err}");
+        assert!(err.contains("unsupported transaction type"), "unexpected error: {err}");
+        assert_eq!(executor.state_root(), before);
+        assert!(
+            executor.account(expected_deploy_address()).is_none(),
+            "no transaction may run once any transaction in the batch is invalid"
+        );
+    }
+
+    #[test]
+    fn batch_with_a_forged_signature_is_rejected() {
+        let mut executor = EvmExecutor::new();
+
+        // A structurally valid transaction whose signature proves nothing: the
+        // batch must refuse it rather than let it spend the account it names.
+        let base = legacy_tx(TxKind::Call(contract_address()), Bytes::new());
+        let hash = base.signature_hash();
+        let forged =
+            Transaction::Legacy(alloy_consensus::Signed::new_unchecked(base, Signature::new(U256::ZERO, U256::ZERO, false), hash));
+
+        let err = executor.execute_batch(vec![encode(&forged)]).expect_err("a forged signature must reject the batch");
+        assert!(err.contains("transaction 0"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn empty_batch_is_the_identity_state_transition() {
+        let mut executor = EvmExecutor::new();
+        let before = executor.state_root();
+
+        let outcome = executor.execute_batch(Vec::new()).expect("an empty batch is valid");
+
+        assert!(outcome.tx_receipts.is_empty());
+        assert_eq!(outcome.total_gas_used, 0, "an empty batch spends no gas");
+        assert_eq!(outcome.state_root, <[u8; 32]>::from(before));
+        assert_eq!(executor.state_root(), before, "state must be unchanged");
+    }
+
+    #[test]
+    fn batch_state_root_is_the_byte_form_of_the_evm_root() {
+        // `BatchOutcome::state_root` must be precisely the commitment
+        // `EvmExecutor::state_root` reports, just in the form a header carries.
+        let mut executor = EvmExecutor::new();
+        let outcome = executor.execute_batch(deploy_and_call_batch()).expect("batch must run");
+        assert_eq!(B256::from(outcome.state_root), executor.state_root());
+    }
+}
