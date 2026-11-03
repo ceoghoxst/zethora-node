@@ -1,0 +1,16 @@
+[package]
+name = "zethora-evm"
+description = "Zethora L2 EVM execution engine: revm-backed standalone execution layer for the zkEVM (no consensus/P2P coupling)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# revm is the EVM itself. Default features pull in the `c-kzg` and `blst` C
+# libraries (for EIP-4844 blob proofs / BLS precompiles), which we do not need
+# for L2 execution yet, so we select a pure-Rust feature set instead.
+revm = { version = "43", default-features = false, features = ["std", "secp256k1", "portable"] }
+alloy-primitives = { version = "1", features = ["rlp"] }
+# revm 43 does not ship a transaction codec, so raw Ethereum RLP transactions
+# are decoded here before being handed to revm as a `TxEnv`.
+alloy-rlp = { version = "0.3", features = ["derive"] }

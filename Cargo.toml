@@ -3,6 +3,7 @@ resolver = "2"
 exclude = ["fuzz", "tools/reference/emission", "tools/reference/fees"]
 members = [
     "zethora-miner",
+    "zethora-evm",
     "zethora-shield",
     "zethora-shielded",
     "zethora-shielded/layout",
