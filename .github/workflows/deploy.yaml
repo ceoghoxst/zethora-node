@@ -6,7 +6,7 @@ on:
       - 'v*.*.*-testnet.*'
 
 jobs:
-  build:
+  build-windows:
     runs-on: windows-latest
     permissions:
       contents: write
@@ -74,12 +74,72 @@ jobs:
           (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower() + "  " + $setup | Out-File -Encoding ascii "$setup.sha256"
           "setup=$setup" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
 
-      - name: Upload release asset
+      - name: Upload Windows release assets
         uses: softprops/action-gh-release@v2
         with:
           files: |
             ./${{ env.archive }}
             ./${{ env.setup }}
             ./${{ env.setup }}.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-linux:
+    needs: build-windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install musl-tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Cache Cargo Build Outputs
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-musl-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build on Linux (musl)
+        run: |
+          cargo build --bin kaspad --release --target x86_64-unknown-linux-musl
+          cargo build --release -p zethora-miner --target x86_64-unknown-linux-musl
+          cargo build --release -p zethora-wallet --target x86_64-unknown-linux-musl
+          mkdir -p bin-linux
+          cp target/x86_64-unknown-linux-musl/release/kaspad bin-linux/zethora-node
+          cp target/x86_64-unknown-linux-musl/release/zethora-miner bin-linux/
+          cp target/x86_64-unknown-linux-musl/release/zethora-wallet bin-linux/
+          cd bin-linux
+          sha256sum zethora-node zethora-miner zethora-wallet > SHA256SUMS.txt
+          cd ..
+          archive="zethora-linux-x64-${{ github.ref_name }}.tar.gz"
+          tar -czvf ${archive} -C bin-linux .
+          echo "archive=${archive}" >> $GITHUB_ENV
+
+      - name: Upload Linux release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ./${{ env.archive }}
+            ./bin-linux/zethora-node
+            ./bin-linux/zethora-miner
+            ./bin-linux/zethora-wallet
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
