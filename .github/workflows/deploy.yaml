@@ -54,13 +54,14 @@ jobs:
           cp build-assets/Stop-Zethora.cmd bin/
           cp build-assets/Zethora.cmd bin/
           cp build-assets/Zethora.ps1 bin/
+          cp build-assets/XminerZ.bat bin/
+          cp build-assets/XminerZ.ps1 bin/
           cd bin
-          sha256sum zethora-node.exe zethora-miner.exe zethora-wallet.exe README.txt LICENSE.txt THIRD-PARTY-NOTICES.txt THIRD-PARTY-CRATES.txt Start-Zethora.cmd Stop-Zethora.cmd Zethora.cmd Zethora.ps1 > SHA256SUMS.txt
+          sha256sum zethora-node.exe zethora-miner.exe zethora-wallet.exe README.txt LICENSE.txt THIRD-PARTY-NOTICES.txt THIRD-PARTY-CRATES.txt Start-Zethora.cmd Stop-Zethora.cmd Zethora.cmd Zethora.ps1 XminerZ.bat XminerZ.ps1 > SHA256SUMS.txt
           cd ..
           archive="zethora-windows-x64-${{ github.ref_name }}.zip"
           (cd bin && 7z a -tzip "../${archive}" *)
           echo "archive=${archive}" >> $GITHUB_ENV
-
       - name: Build installer (Inno Setup)
         shell: pwsh
         run: |
