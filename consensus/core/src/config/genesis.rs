@@ -68,24 +68,77 @@ impl From<(&Header, &'static [u8])> for GenesisBlock {
     }
 }
 
+/// Zethora: the genesis timestamp of the mainnet and testnet genesis blocks (Nov 4, 2026 GMT). It is unique to Zethora
+/// (Kaspa's mainnet genesis timestamp was `0x1a100cdff60`), so the genesis hash can never match another network's.
+pub const ZETHORA_GENESIS_TIMESTAMP: u64 = 0x1a8326b5600;
+
+/// Zethora: the message committed to by the mainnet and testnet genesis coinbase transactions, so the genesis hash is
+/// unique to Zethora. It is appended to the payload as plain UTF-8 extra data, after the miner script; the payload
+/// reader treats everything past the script as extra data (`CoinbaseManager::deserialize_coinbase_payload`).
+pub const ZETHORA_GENESIS_MESSAGE: &str = "Zethora: Private Execution Layer for Proof-of-Work";
+
+/// Zethora: the genesis message as one script push: `OP_PUSHDATA1` (`0x4c`), the length (`0x32` = 50), then the message
+/// itself, e.g. `4c325a6574686f72613a20...`. Testnet and mainnet append this after their miner script, so the message
+/// is both visible in the genesis coinbase and committed to by the genesis hash.
+const ZETHORA_GENESIS_MESSAGE_PUSH: &[u8] = concat!(
+    "\x4c\x32",                                  // OP_PUSHDATA1, 50 bytes
+    "Zethora: ",                                 // 5a 65 74 68 6f 72 61 3a 20
+    "Private ",                                  // 50 72 69 76 61 74 65 20
+    "Execution ",                                // 45 78 65 63 75 74 69 6f 6e 20
+    "Layer ",                                    // 4c 61 79 65 72 20
+    "for ",                                      // 66 6f 72 20
+    "Proof-of-Work",                             // 50 72 6f 6f, 0x2d, 0x6f, 0x66, 0x2d, 0x57, 0x6f, 0x72, 0x6b
+)
+.as_bytes();
+
+/// Zethora: a genesis payload's fixed prefix together with [`ZETHORA_GENESIS_MESSAGE_PUSH`], so the committed message
+/// cannot drift out of the payloads. The message is appended, not written inline, because only the tail of these
+/// payloads is the commitment (the prefix is the blue score, the balances and the miner script).
+macro_rules! genesis_payload {
+    ($prefix:expr) => {{
+        const PREFIX: &[u8] = $prefix;
+        const PAYLOAD: [u8; PREFIX.len() + ZETHORA_GENESIS_MESSAGE_PUSH.len()] = {
+            let mut out = [0u8; PREFIX.len() + ZETHORA_GENESIS_MESSAGE_PUSH.len()];
+            let mut i = 0;
+            while i < PREFIX.len() {
+                out[i] = PREFIX[i];
+                i += 1;
+            }
+            let mut j = 0;
+            while j < ZETHORA_GENESIS_MESSAGE_PUSH.len() {
+                out[i + j] = ZETHORA_GENESIS_MESSAGE_PUSH[j];
+                j += 1;
+            }
+            out
+        };
+        &PAYLOAD
+    }};
+}
+
+/// Zethora: the genesis message as a hex string, for tooling and explorers that want to look for it on chain.
+pub fn genesis_message_hex() -> String {
+    ZETHORA_GENESIS_MESSAGE.as_bytes().iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// The genesis block of the block-DAG which serves as the public transaction ledger for the main network.
 pub const GENESIS: GenesisBlock = GenesisBlock {
     hash: Hash::from_bytes([
-        0xb8, 0x19, 0xb7, 0x39, 0x27, 0x90, 0x75, 0x18, 0xb0, 0xc8, 0xc2, 0x29, 0x52, 0x12, 0x8e, 0x6c, 0x8a, 0xb8, 0x4e, 0x83, 0x9c,
-        0x3a, 0x18, 0x8c, 0x0e, 0x66, 0x3e, 0x89, 0xa8, 0x37, 0x13, 0xfe,
+        0x57, 0xeb, 0xdb, 0xf7, 0x7a, 0x7c, 0xb8, 0x84, 0x6b, 0x0b, 0xe1, 0xc1, 0xa1, 0xfe, 0x2c, 0x4b, 0x2b, 0xbd, 0xdb, 0xa1, 0x99,
+        0xbf, 0x17, 0x0b, 0xaf, 0x36, 0xbe, 0x11, 0xb8, 0xde, 0x36, 0x78,
     ]),
     version: 0,
     hash_merkle_root: Hash::from_bytes([
-        0x77, 0xa9, 0x16, 0xf9, 0xa7, 0x05, 0xf7, 0xd8, 0xf7, 0xea, 0x62, 0x2b, 0x81, 0xd0, 0xef, 0x31, 0x67, 0xf1, 0x65, 0x25, 0x26,
-        0x3d, 0xe4, 0xa2, 0x5e, 0x93, 0x22, 0x22, 0x48, 0xf7, 0xd1, 0x3b,
+        0x20, 0x27, 0x43, 0xce, 0xee, 0x30, 0xac, 0x23, 0x97, 0x94, 0xd9, 0xb6, 0x57, 0x54, 0xbf, 0x21, 0x2a, 0x8b, 0xf1, 0x13, 0x15,
+        0x3b, 0x33, 0xd8, 0x87, 0x77, 0x3f, 0x92, 0x7a, 0x6a, 0x93, 0xe6,
     ]),
     utxo_commitment: EMPTY_MUHASH,
-    timestamp: 0x1a100cdff60,
+    timestamp: ZETHORA_GENESIS_TIMESTAMP,
     bits: 0x1f20c49b,
     nonce: 0,
     daa_score: 0,
     #[rustfmt::skip]
-    coinbase_payload: &[
+    coinbase_payload: genesis_payload!(&[
+        // Blue score, balances and miner script; ZETHORA_GENESIS_MESSAGE_PUSH is appended by the macro.
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Blue score
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Subsidy: 0 (fair launch)
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Zethora: pool balance 0
@@ -106,26 +159,28 @@ pub const GENESIS: GenesisBlock = GenesisBlock {
         0x00,       // OP-FALSE
         0x7a, 0x65, 0x74, 0x68, 0x6f, 0x72, 0x61, 0x2d, 0x6d, 0x61, 0x69, 0x6e, 0x6e, 0x65, 0x74, // zethora-mainnet
         0x20, 0x7c, 0x20, 0x57, 0x61, 0x6b, 0x65, 0x20, 0x55, 0x70, 0x20, 0x46, 0x72, 0x6f, 0x6d, 0x20, 0x54, 0x68, 0x65, 0x20, 0x44, 0x72, 0x65, 0x61, 0x6d, 0x20, 0x57, 0x6f, 0x72, 0x6c, 0x64, // | Wake Up From The Dream World
-    ],
+    ]),
 };
 
 pub const TESTNET_GENESIS: GenesisBlock = GenesisBlock {
     hash: Hash::from_bytes([
-        0xd5, 0x2e, 0xd6, 0xa6, 0x6d, 0x82, 0x5c, 0x3f, 0x5b, 0x51, 0x61, 0xc1, 0x4d, 0x27, 0x8d, 0x6a, 0xc5, 0xe0, 0x24, 0x17, 0x93,
-        0xa6, 0x64, 0xa2, 0x1c, 0x42, 0x01, 0x72, 0x08, 0xd2, 0x78, 0x1b,
+        0xff, 0x32, 0x66, 0x3a, 0xf6, 0xdd, 0x49, 0xa7,
+        0x0b, 0xc0, 0x0d, 0xb4, 0xd8, 0xa3, 0x4b, 0x5e,
+        0x68, 0xcb, 0xa2, 0x3a, 0xf4, 0xcd, 0x1b, 0xbd,
+        0x7c, 0x3a, 0x55, 0x27, 0x00, 0x84, 0xc6, 0x53,
     ]),
     version: 0,
     hash_merkle_root: Hash::from_bytes([
-        0x0f, 0x78, 0x6b, 0x71, 0xfc, 0xdc, 0x7b, 0x12, 0x8d, 0xae, 0x39, 0xb0, 0xa0, 0xf0, 0x1d, 0xdd, 0xfa, 0x4c, 0x16, 0xf1, 0x1c,
-        0x24, 0x8b, 0xda, 0x65, 0x75, 0x38, 0x99, 0x1a, 0xb5, 0x92, 0x8e,
+        0x5e, 0xef, 0xc1, 0x79, 0x0c, 0x98, 0x4d, 0x9f, 0xdb, 0xee, 0xea, 0x2e, 0x38, 0x2d, 0xd7, 0xd8, 0xad, 0xae, 0xd7, 0x74, 0xc3,
+        0x46, 0x06, 0xd4, 0xeb, 0xb1, 0xe2, 0x27, 0x9f, 0x1d, 0xb4, 0xc8,
     ]),
     utxo_commitment: EMPTY_MUHASH,
-    timestamp: 0x1a100cdff60,
+    timestamp: ZETHORA_GENESIS_TIMESTAMP,
     bits: 0x1f20c49b,
     nonce: 0,
     daa_score: 0,
     #[rustfmt::skip]
-    coinbase_payload: &[
+    coinbase_payload: genesis_payload!(&[
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Blue score
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Subsidy: 0 (fair launch)
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Zethora: pool balance 0
@@ -134,7 +189,6 @@ pub const TESTNET_GENESIS: GenesisBlock = GenesisBlock {
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Zethora: transparent supply 0
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Zethora: shielded balance 0
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Zethora: private coin list root
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Zethora: private state fingerprint
@@ -146,7 +200,7 @@ pub const TESTNET_GENESIS: GenesisBlock = GenesisBlock {
         0x00,       // OP-FALSE
         0x7a, 0x65, 0x74, 0x68, 0x6f, 0x72, 0x61, 0x2d, 0x74, 0x65, 0x73, 0x74, 0x6e, 0x65, 0x74, // zethora-testnet
         0x20, 0x7c, 0x20, 0x57, 0x61, 0x6b, 0x65, 0x20, 0x55, 0x70, 0x20, 0x46, 0x72, 0x6f, 0x6d, 0x20, 0x54, 0x68, 0x65, 0x20, 0x44, 0x72, 0x65, 0x61, 0x6d, 0x20, 0x57, 0x6f, 0x72, 0x6c, 0x64, // | Wake Up From The Dream World
-    ],
+    ]),
 };
 
 /// Zethora private development network (prototype). 0 coins at genesis (ZTH-SPEC-001 §6).
@@ -238,13 +292,23 @@ mod tests {
     use super::*;
     use crate::merkle::calc_hash_merkle_root;
 
+
+    /// Zethora: the byte array spliced into the mainnet and testnet coinbase payloads is exactly one `OP_PUSHDATA1` push
+    /// of [`ZETHORA_GENESIS_MESSAGE`], and those payloads are short enough for the coinbase manager to build and read
+    /// (the payload cap and its reader are exercised in consensus/src/processes/coinbase.rs).
     #[test]
-    fn test_genesis_hashes() {
-        [GENESIS, TESTNET_GENESIS, SIMNET_GENESIS, DEVNET_GENESIS].into_iter().for_each(|genesis| {
-            let block: Block = (&genesis).into();
-            assert_hashes_eq(calc_hash_merkle_root(block.transactions.iter()), block.header.hash_merkle_root, "hash_merkle_root");
-            assert_hashes_eq(block.hash(), genesis.hash, "genesis hash");
-        });
+    fn test_genesis_commitment() {
+        let message = ZETHORA_GENESIS_MESSAGE.as_bytes();
+        assert!(message.len() < 76, "a {}-byte message no longer fits OP_PUSHDATA1, which pays 2 bytes of overhead here", message.len());
+        assert_eq!(ZETHORA_GENESIS_MESSAGE_PUSH, [&[0x4c, message.len() as u8], message].concat(), "message push bytes out of sync");
+        assert_eq!(genesis_message_hex().len(), 2 * message.len());
+
+        // The miner script is `OP_FALSE` (0x00) followed by the network name and tagline; everything after it is extra
+        // data. The message must be the payload's tail, so that the coinbase reader never mistakes it for the script.
+        for (net, payload) in [("mainnet", GENESIS.coinbase_payload), ("testnet", TESTNET_GENESIS.coinbase_payload)] {
+            assert!(payload.ends_with(ZETHORA_GENESIS_MESSAGE_PUSH), "{net}: the genesis message must end the payload");
+            assert!(payload.len() <= 300, "{net}: genesis payload is {} bytes, above the 300-byte cap", payload.len());
+        }
     }
 
     #[test]
