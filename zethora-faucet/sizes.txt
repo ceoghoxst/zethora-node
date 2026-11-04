@@ -1,0 +1,2 @@
+﻿c:\Users\Rac436\zethora-node\target = 62.6 GB / 61798 files
+c:\Users\Rac436\zethora-node\zethora-faucet\target = 0.5 GB / 1539 files
