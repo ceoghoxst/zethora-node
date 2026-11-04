@@ -799,8 +799,12 @@ mod zethora_private_payment_tests {
     /// the script public key, then the miner tag (consensus/src/processes/coinbase.rs).
     const COINBASE_MINER_TAG_AT: usize = 8 + 8 + 5 * 8 + 32 + 32 + 2 + 1;
 
+    /// Length of the payout script `shielded_coinbase_tx` writes: `0xa9, 0x14`, the four `SHD1` bytes and 18 zero
+    /// bytes (a pay-to-pubkey-hash script that itself contains the tag).
+    const PAYOUT_SCRIPT_LEN: usize = 2 + 4 + 18;
+
     fn coinbase_miner_tag_start() -> usize {
-        COINBASE_MINER_TAG_AT + 25 // the script public key below is 25 bytes (a pay-to-pubkey-hash script)
+        COINBASE_MINER_TAG_AT + PAYOUT_SCRIPT_LEN
     }
 
     /// A coinbase shaped the way `CoinbaseManager` writes one. `shielded` puts the miner's `SHD1 | pool version |
@@ -809,7 +813,7 @@ mod zethora_private_payment_tests {
         // A pay-to-pubkey-hash script that itself contains "SHD1": the rule must look at the miner tag, not the script
         let script = scriptvec![0xa9, 0x14, b'S', b'H', b'D', b'1', 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8,
             0u8, 0u8, 0u8, 0u8, 0u8];
-        let mut payload = Vec::with_capacity(123 + 25 + 48);
+        let mut payload = Vec::with_capacity(COINBASE_MINER_TAG_AT + PAYOUT_SCRIPT_LEN + 48);
         payload.extend_from_slice(&9u64.to_le_bytes()); // blue score
         payload.extend_from_slice(&1_000_000u64.to_le_bytes()); // subsidy
         payload.extend_from_slice(&[0u8; 5 * 8]); // Zethora pool state

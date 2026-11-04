@@ -29,6 +29,9 @@ const LENGTH_OF_PRIVATE_STATE: usize = 32;
 const LENGTH_OF_SCRIPT_PUB_KEY_VERSION: usize = size_of::<u16>();
 const LENGTH_OF_SCRIPT_PUB_KEY_LENGTH: usize = size_of::<u8>();
 
+/// Zethora extended payload layout:
+///     blue score (8) | subsidy (8) | pool state (40) | coin list root (32) | private state (32) | spk version (2) |
+///     spk length (1) | spk | extra data
 const MIN_PAYLOAD_LENGTH: usize = LENGTH_OF_BLUE_SCORE
     + LENGTH_OF_SUBSIDY
     + LENGTH_OF_POOL_STATE
@@ -36,6 +39,27 @@ const MIN_PAYLOAD_LENGTH: usize = LENGTH_OF_BLUE_SCORE
     + LENGTH_OF_PRIVATE_STATE
     + LENGTH_OF_SCRIPT_PUB_KEY_VERSION
     + LENGTH_OF_SCRIPT_PUB_KEY_LENGTH;
+
+/// Standard Kaspa payload layout, as built by third-party mining software (e.g. the Kaspa stratum bridge in `bridge/`),
+/// which knows nothing about the Zethora fields:
+///     blue score (8) | subsidy (8) | spk version (2) | spk length (1) | spk | extra data
+///
+/// A standard payload can be ANY length (it is 19 bytes plus a script of up to 255 bytes plus any extra data), so its
+/// length says nothing about which layout it is. The two layouts are told apart by trying the extended reading first
+/// and falling back to this one only when that reading cannot be exact (see `deserialize_coinbase_payload`).
+const MIN_STANDARD_PAYLOAD_LENGTH: usize = LENGTH_OF_BLUE_SCORE
+    + LENGTH_OF_SUBSIDY
+    + LENGTH_OF_SCRIPT_PUB_KEY_VERSION
+    + LENGTH_OF_SCRIPT_PUB_KEY_LENGTH;
+
+/// Zethora: what a standard (non-Zethora) payload says about the pool. Such a payload carries no supply ledger, so it
+/// counts as a block that creates and destroys nothing: every ledger field is zero.
+const ZERO_POOL_STATE: PoolState =
+    PoolState { pool_balance: 0, total_burned: 0, total_issued: 0, transparent_supply: 0, shielded_balance: 0 };
+
+/// Zethora: the coin list root and private state fingerprint of a standard (non-Zethora) payload. Such a payload seals
+/// neither, so it counts as sealing the empty tree and the empty fingerprint.
+const ZERO_PRIVATE_STATE: [u8; 32] = [0u8; 32];
 
 // We define a year as 365.25 days and a month as 365.25 / 12 = 30.4375
 // SECONDS_PER_MONTH = 30.4375 * 24 * 60 * 60
@@ -69,11 +93,13 @@ impl<'a> PayloadParser<'a> {
         Self { remaining: data }
     }
 
-    /// Returns a slice with the first `n` bytes of `remaining`, while setting `remaining` to the remaining part
-    fn take(&mut self, n: usize) -> &[u8] {
-        let (segment, remaining) = self.remaining.split_at(n);
+    /// Zethora: a strict read of the first `n` bytes of `remaining`, while setting `remaining` to the remaining part.
+    /// Returns `None` instead of panicking when `remaining` is too short, so every layout reading is exact: a payload
+    /// that cannot hold `n` more bytes is refused, never read past its end.
+    fn try_take(&mut self, n: usize) -> Option<&'a [u8]> {
+        let (segment, remaining) = self.remaining.split_at_checked(n)?;
         self.remaining = remaining;
-        segment
+        Some(segment)
     }
 }
 
@@ -244,28 +270,62 @@ impl CoinbaseManager {
         Ok(payload)
     }
 
+    /// Zethora: reads BOTH coinbase payload layouts, so Zethora's own miners (`zethora-miner`, which submits the
+    /// extended layout) and third-party Kaspa mining software (`bridge/`, which submits the standard layout) can mine
+    /// the same chain.
+    ///
+    /// A payload can be ANY length in either layout, so no reading is chosen by length: a payload of at least
+    /// [`MIN_PAYLOAD_LENGTH`] (the shortest possible extended payload) is tried as extended first. The extended reading
+    /// is strict (every field bounds-checked, a script that does not fit is refused), so it accepts exactly the payloads
+    /// it can read completely.
+    ///
+    /// Only one failure means "this is not an extended payload": `PayloadCantContainScriptPublicKey`, raised when the
+    /// script length read from the extended positions runs past the end of the payload -- the structure is that of a
+    /// standard payload. Every other extended error (an oversized script length, say) is a validation failure of a
+    /// payload that *is* extended, so it is returned as is instead of being masked by a fallback reading.
     pub fn deserialize_coinbase_payload<'a>(&self, payload: &'a [u8]) -> CoinbaseResult<CoinbaseData<&'a [u8]>> {
-        if payload.len() < MIN_PAYLOAD_LENGTH {
-            return Err(CoinbaseError::PayloadLenBelowMin(payload.len(), MIN_PAYLOAD_LENGTH));
-        }
-
         if payload.len() > self.max_coinbase_payload_len {
             return Err(CoinbaseError::PayloadLenAboveMax(payload.len(), self.max_coinbase_payload_len));
         }
 
+        if payload.len() >= MIN_PAYLOAD_LENGTH {
+            match self.deserialize_zethora_coinbase_payload(payload) {
+                Ok(data) => return Ok(data),
+                // The payload cannot hold the script the extended layout claims: it is not an extended payload
+                Err(CoinbaseError::PayloadCantContainScriptPublicKey(..)) => {}
+                // A genuine validation error of an extended payload: refuse it, do not fall back
+                Err(e) => return Err(e),
+            }
+        }
+
+        // Standard Kaspa layout: the block carries no supply ledger, so it seals an all-zero pool and no private state.
+        // A payload too short or too long for a standard layout is refused here with the usual errors.
+        self.deserialize_standard_coinbase_payload(payload)
+    }
+
+    /// Zethora extended layout (built by `serialize_coinbase_payload`, `zethora-miner`) -- see [`MIN_PAYLOAD_LENGTH`].
+    ///
+    /// Strict: a field, the script or the script length that the payload cannot hold refuses the reading at once with
+    /// `Err` and never panics, so a payload of any other shape (a standard one, say) fails here instead of being read
+    /// as garbage.
+    fn deserialize_zethora_coinbase_payload<'a>(&self, payload: &'a [u8]) -> CoinbaseResult<CoinbaseData<&'a [u8]>> {
         let mut parser = PayloadParser::new(payload);
 
-        let blue_score = u64::from_le_bytes(parser.take(LENGTH_OF_BLUE_SCORE).try_into().unwrap());
-        let subsidy = u64::from_le_bytes(parser.take(LENGTH_OF_SUBSIDY).try_into().unwrap());
-        let pool_balance = u64::from_le_bytes(parser.take(8).try_into().unwrap());
-        let total_burned = u64::from_le_bytes(parser.take(8).try_into().unwrap());
-        let total_issued = u64::from_le_bytes(parser.take(8).try_into().unwrap());
-        let transparent_supply = u64::from_le_bytes(parser.take(8).try_into().unwrap());
-        let shielded_balance = u64::from_le_bytes(parser.take(8).try_into().unwrap());
-        let note_root: [u8; 32] = parser.take(LENGTH_OF_NOTE_ROOT).try_into().unwrap();
-        let private_state: [u8; 32] = parser.take(LENGTH_OF_PRIVATE_STATE).try_into().unwrap();
-        let script_pub_key_version = u16::from_le_bytes(parser.take(LENGTH_OF_SCRIPT_PUB_KEY_VERSION).try_into().unwrap());
-        let script_pub_key_len = u8::from_le_bytes(parser.take(LENGTH_OF_SCRIPT_PUB_KEY_LENGTH).try_into().unwrap());
+        // A field that runs past the end of the payload means the payload is not an extended one
+        let too_short = || CoinbaseError::PayloadLenBelowMin(payload.len(), MIN_PAYLOAD_LENGTH);
+        let blue_score = u64::from_le_bytes(parser.try_take(LENGTH_OF_BLUE_SCORE).ok_or_else(too_short)?.try_into().unwrap());
+        let subsidy = u64::from_le_bytes(parser.try_take(LENGTH_OF_SUBSIDY).ok_or_else(too_short)?.try_into().unwrap());
+        let pool_balance = u64::from_le_bytes(parser.try_take(8).ok_or_else(too_short)?.try_into().unwrap());
+        let total_burned = u64::from_le_bytes(parser.try_take(8).ok_or_else(too_short)?.try_into().unwrap());
+        let total_issued = u64::from_le_bytes(parser.try_take(8).ok_or_else(too_short)?.try_into().unwrap());
+        let transparent_supply = u64::from_le_bytes(parser.try_take(8).ok_or_else(too_short)?.try_into().unwrap());
+        let shielded_balance = u64::from_le_bytes(parser.try_take(8).ok_or_else(too_short)?.try_into().unwrap());
+        let note_root: [u8; 32] = parser.try_take(LENGTH_OF_NOTE_ROOT).ok_or_else(too_short)?.try_into().unwrap();
+        let private_state: [u8; 32] = parser.try_take(LENGTH_OF_PRIVATE_STATE).ok_or_else(too_short)?.try_into().unwrap();
+        let script_pub_key_version =
+            u16::from_le_bytes(parser.try_take(LENGTH_OF_SCRIPT_PUB_KEY_VERSION).ok_or_else(too_short)?.try_into().unwrap());
+        let script_pub_key_len =
+            u8::from_le_bytes(parser.try_take(LENGTH_OF_SCRIPT_PUB_KEY_LENGTH).ok_or_else(too_short)?.try_into().unwrap());
 
         if script_pub_key_len > self.coinbase_payload_script_public_key_max_len {
             return Err(CoinbaseError::PayloadScriptPublicKeyLenAboveMax(
@@ -274,16 +334,14 @@ impl CoinbaseManager {
             ));
         }
 
-        if parser.remaining.len() < script_pub_key_len as usize {
+        // The script length says how many bytes follow it: when the payload cannot hold that many, the payload is not an
+        // extended one, and nothing is read past its end.
+        let Some(script) = parser.try_take(script_pub_key_len as usize) else {
             return Err(CoinbaseError::PayloadCantContainScriptPublicKey(
-                payload.len(),
-                MIN_PAYLOAD_LENGTH + script_pub_key_len as usize,
+                script_pub_key_len as usize,
+                payload.len() - parser.remaining.len(),
             ));
-        }
-
-        let script_public_key =
-            ScriptPublicKey::new(script_pub_key_version, ScriptVec::from_slice(parser.take(script_pub_key_len as usize)));
-        let extra_data = parser.remaining;
+        };
 
         Ok(CoinbaseData {
             blue_score,
@@ -291,7 +349,58 @@ impl CoinbaseManager {
             pool: PoolState { pool_balance, total_burned, total_issued, transparent_supply, shielded_balance },
             note_root,
             private_state,
-            miner_data: MinerData { script_public_key, extra_data },
+            miner_data: MinerData {
+                script_public_key: ScriptPublicKey::new(script_pub_key_version, ScriptVec::from_slice(script)),
+                extra_data: parser.remaining,
+            },
+        })
+    }
+
+    /// Standard Kaspa layout (built by third-party mining software such as the stratum bridge in `bridge/`) -- see
+    /// [`MIN_STANDARD_PAYLOAD_LENGTH`]. The Zethora-only fields default to zero.
+    ///
+    /// Strict: every read is bounds-checked, so no payload of any length can panic here.
+    fn deserialize_standard_coinbase_payload<'a>(&self, payload: &'a [u8]) -> CoinbaseResult<CoinbaseData<&'a [u8]>> {
+        if payload.len() < MIN_STANDARD_PAYLOAD_LENGTH {
+            return Err(CoinbaseError::PayloadLenBelowMin(payload.len(), MIN_STANDARD_PAYLOAD_LENGTH));
+        }
+
+        let mut parser = PayloadParser::new(payload);
+
+        let too_short = || CoinbaseError::PayloadLenBelowMin(payload.len(), MIN_STANDARD_PAYLOAD_LENGTH);
+        let blue_score = u64::from_le_bytes(parser.try_take(LENGTH_OF_BLUE_SCORE).ok_or_else(too_short)?.try_into().unwrap());
+        let subsidy = u64::from_le_bytes(parser.try_take(LENGTH_OF_SUBSIDY).ok_or_else(too_short)?.try_into().unwrap());
+        let script_pub_key_version =
+            u16::from_le_bytes(parser.try_take(LENGTH_OF_SCRIPT_PUB_KEY_VERSION).ok_or_else(too_short)?.try_into().unwrap());
+        let script_pub_key_len =
+            u8::from_le_bytes(parser.try_take(LENGTH_OF_SCRIPT_PUB_KEY_LENGTH).ok_or_else(too_short)?.try_into().unwrap());
+
+        if script_pub_key_len > self.coinbase_payload_script_public_key_max_len {
+            return Err(CoinbaseError::PayloadScriptPublicKeyLenAboveMax(
+                script_pub_key_len as usize,
+                self.coinbase_payload_script_public_key_max_len,
+            ));
+        }
+
+        // Never panic here: the byte after the fixed bytes is the script length, so a script that does not fit is
+        // refused with the length it would need rather than read past the end of the payload.
+        let Some(script) = parser.try_take(script_pub_key_len as usize) else {
+            return Err(CoinbaseError::PayloadCantContainScriptPublicKey(
+                payload.len(),
+                MIN_STANDARD_PAYLOAD_LENGTH + script_pub_key_len as usize,
+            ));
+        };
+
+        Ok(CoinbaseData {
+            blue_score,
+            subsidy,
+            pool: ZERO_POOL_STATE,
+            note_root: ZERO_PRIVATE_STATE,
+            private_state: ZERO_PRIVATE_STATE,
+            miner_data: MinerData {
+                script_public_key: ScriptPublicKey::new(script_pub_key_version, ScriptVec::from_slice(script)),
+                extra_data: parser.remaining,
+            },
         })
     }
 
@@ -331,6 +440,129 @@ mod tests {
         assert_eq!(data, deserialized_data);
 
         // (Kaspa's mainnet payload vector removed: Zethora's payload adds the pool state.)
+    }
+
+    /// The stratum bridge (and any other standard Kaspa mining software) knows nothing about the Zethora fields: it
+    /// submits `blue score | subsidy | spk version | spk length | spk | extra data`. Such a payload must read back with
+    /// every pool field at zero, instead of failing with PayloadCantContainScriptPublicKey.
+    #[test]
+    fn standard_kaspa_payload_parses_with_zero_pool() {
+        let cbm = create_manager(&MAINNET_PARAMS);
+        let script = [0x21u8, 0x02, 0xab, 0xcd, 0x88]; // a pay-to-pubkey script
+        let extra = b"RK-Stratum";
+
+        // Built by hand, exactly as the bridge's template's coinbase carries it (no Zethora fields at all)
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&1234u64.to_le_bytes()); // blue score
+        payload.extend_from_slice(&44_000_000_000u64.to_le_bytes()); // subsidy
+        payload.extend_from_slice(&0u16.to_le_bytes()); // script public key version
+        payload.push(script.len() as u8); // script public key length
+        payload.extend_from_slice(&script); // script public key
+        payload.extend_from_slice(extra); // extra data
+
+        // 8 + 8 + 2 + 1 + 5 + 10 = 34 bytes: far below the 123-byte minimum of the extended layout
+        assert_eq!(payload.len(), 34);
+        assert!(payload.len() < MIN_PAYLOAD_LENGTH);
+
+        let data = cbm.deserialize_coinbase_payload(&payload).expect("a standard Kaspa payload must be readable");
+        assert_eq!(data.blue_score, 1234);
+        assert_eq!(data.subsidy, 44_000_000_000);
+        assert_eq!(data.pool, PoolState::default(), "a standard payload carries no supply ledger");
+        assert_eq!(data.note_root, [0u8; 32], "a standard payload seals no coin list root");
+        assert_eq!(data.private_state, [0u8; 32], "a standard payload seals no private state fingerprint");
+        assert_eq!(data.miner_data.script_public_key.version(), 0);
+        assert_eq!(data.miner_data.script_public_key.script(), &script);
+        assert_eq!(data.miner_data.extra_data, extra);
+    }
+
+    /// Same shape, but with an empty script and no extra data: the shortest payload a standard miner can build.
+    #[test]
+    fn shortest_standard_payload_parses_with_zero_pool() {
+        let cbm = create_manager(&MAINNET_PARAMS);
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&7u64.to_le_bytes());
+        payload.extend_from_slice(&0u64.to_le_bytes());
+        payload.extend_from_slice(&0u16.to_le_bytes());
+        payload.push(0);
+        assert_eq!(payload.len(), MIN_STANDARD_PAYLOAD_LENGTH);
+
+        let data = cbm.deserialize_coinbase_payload(&payload).expect("19 bytes are a complete standard payload");
+        assert_eq!(data.blue_score, 7);
+        assert_eq!(data.pool, PoolState::default());
+        assert!(data.miner_data.script_public_key.script().is_empty());
+        assert!(data.miner_data.extra_data.is_empty());
+    }
+
+    /// A standard payload that happens to be long enough for the extended layout (a script of 115 bytes or more) still
+    /// reads as standard: the extended reading is tried first, finds a script too long, and falls back.
+    #[test]
+    fn long_script_standard_payload_falls_back_to_zero_pool() {
+        let cbm = create_manager(&MAINNET_PARAMS);
+        let script = vec![0x51u8; 120];
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&900u64.to_le_bytes());
+        payload.extend_from_slice(&500u64.to_le_bytes());
+        payload.extend_from_slice(&1u16.to_le_bytes());
+        payload.push(script.len() as u8);
+        payload.extend_from_slice(&script);
+        payload.extend_from_slice(b"tag");
+        assert!(payload.len() >= MIN_PAYLOAD_LENGTH);
+
+        let data = cbm.deserialize_coinbase_payload(&payload).expect("a long standard payload must be readable");
+        assert_eq!(data.blue_score, 900);
+        assert_eq!(data.subsidy, 500);
+        assert_eq!(data.pool, PoolState::default());
+        assert_eq!(data.miner_data.script_public_key.version(), 1);
+        assert_eq!(data.miner_data.script_public_key.script(), script.as_slice());
+        assert_eq!(data.miner_data.extra_data, b"tag");
+    }
+
+    /// Trailing bytes past a standard payload stay extra data (the node appends its version string there), so the
+    /// standard reading covers payloads well above the 123-byte extended minimum too.
+    #[test]
+    fn standard_payload_with_long_extra_data_parses_with_zero_pool() {
+        let cbm = create_manager(&MAINNET_PARAMS);
+        let script = [0x21u8, 0x02, 0xab];
+        let extra = vec![0x7au8; 200];
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&4321u64.to_le_bytes());
+        payload.extend_from_slice(&99u64.to_le_bytes());
+        payload.extend_from_slice(&0u16.to_le_bytes());
+        payload.push(script.len() as u8);
+        payload.extend_from_slice(&script);
+        payload.extend_from_slice(&extra);
+        assert!(payload.len() > MIN_PAYLOAD_LENGTH && payload.len() <= MAINNET_PARAMS.max_coinbase_payload_len);
+
+        let data = cbm.deserialize_coinbase_payload(&payload).expect("extra data may fill the payload");
+        assert_eq!(data.blue_score, 4321);
+        assert_eq!(data.subsidy, 99);
+        assert_eq!(data.pool, PoolState::default());
+        assert_eq!(data.note_root, [0u8; 32]);
+        assert_eq!(data.private_state, [0u8; 32]);
+        assert_eq!(data.miner_data.script_public_key.script(), &script);
+        assert_eq!(data.miner_data.extra_data, extra.as_slice());
+    }
+
+    /// An extended payload whose script length declares an oversized script must be refused, never panic.
+    #[test]
+    fn unreadable_payload_is_refused_without_panicking() {
+        let cbm = create_manager(&MAINNET_PARAMS);
+        // The extended layout's script length byte: blue score (8) + subsidy (8) + pool state (40) +
+        // coin list root (32) + private state (32) + spk version (2) = 122, then the spk length
+        const EXTENDED_SCRIPT_LEN_AT: usize = 8 + 8 + 5 * 8 + 32 + 32 + 2;
+        let mut payload = vec![0u8; MIN_PAYLOAD_LENGTH];
+        payload[EXTENDED_SCRIPT_LEN_AT] = 200;
+
+        assert!(matches!(
+            cbm.deserialize_coinbase_payload(&payload),
+            Err(CoinbaseError::PayloadScriptPublicKeyLenAboveMax(200, 150))
+        ));
+
+        // Below both minimums: still refused, with the standard minimum quoted
+        assert!(matches!(
+            cbm.deserialize_coinbase_payload(&payload[..10]),
+            Err(CoinbaseError::PayloadLenBelowMin(10, MIN_STANDARD_PAYLOAD_LENGTH))
+        ));
     }
 
     #[test]
