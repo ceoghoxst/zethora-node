@@ -53,7 +53,10 @@ pub use contract::{
     mint_selector, mint_storage_slot, minted_slot, wzthr_balance,
 };
 pub use federation::{FederationLock, MAX_KEYS};
-pub use watcher::{BLOCK_MAGIC, BlockOutput, L1Watcher, LockEvent, LockStatus, MintProof, ScanReport, decode_block};
+pub use watcher::{
+    BLOCK_MAGIC, BlockOutput, L1Watcher, LockEvent, LockStatus, MAX_LOCKS_PER_BLOCK, MAX_OUTPUTS_PER_BLOCK, MintProof,
+    ScanReport, decode_block,
+};
 
 /// Name of the L2 token the contract mints.
 ///

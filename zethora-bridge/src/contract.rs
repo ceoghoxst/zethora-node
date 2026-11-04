@@ -99,15 +99,52 @@ pub fn wzthr_balance(executor: &mut EvmExecutor, contract: Address, to: Address)
     executor.storage(contract, mint_storage_slot(to))
 }
 
+/// The shortest well-formed `mint` calldata: the selector, the static `to` and
+/// `amount` words, and the offset of the dynamic `bytes proof` tail.
+///
+/// The tail itself (the length word and the padding) is what makes a call longer,
+/// so this is a floor and not the full size. Everything below it is truncated by
+/// definition: there is no way to encode `mint(address,uint256,bytes)` in fewer
+/// bytes, and no field may be inferred from what is missing.
+const MINT_CALLDATA_MIN_LEN: usize = 4 + 32 + 32 + 32;
+
 /// Decodes `mint` calldata back into its arguments.
 ///
 /// Exposed so that the coordinator, a block explorer and the tests all read the
 /// call the same way: through the ABI, not through byte offsets.
+///
+/// The length is checked before the decoder is given the bytes. A truncated call
+/// is not a call with a shorter proof, a zero address or a zero amount: it is a
+/// decode error, and saying so explicitly keeps a short buffer from ever reaching
+/// the ABI decoder on the assumption that it will object. It does object, but the
+/// refusal belongs to this function, so that "this is not a mint" is decided in one
+/// place rather than inferred from a library's internal bounds checks.
 pub fn decode_mint_calldata(calldata: &[u8]) -> Result<(Address, U256, Vec<u8>), String> {
+    if calldata.len() < MINT_CALLDATA_MIN_LEN {
+        return Err(format!(
+            "cannot decode mint calldata: {} byte(s) is shorter than the {MINT_CALLDATA_MIN_LEN}-byte minimum \
+             for selector, to, amount and proof offset",
+            calldata.len()
+        ));
+    }
+    
     let call = WZthrBridge::mintCall::abi_decode(calldata).map_err(|err| format!("cannot decode mint calldata: {err}"))?;
+    
+    // Strict length check: ensure the calldata matches the exact expected length
+    let expected_proof_padded_len = (call.proof.len() + 31) / 32 * 32;
+    let expected_total_len = 4 + 32 + 32 + 32 + 32 + expected_proof_padded_len;
+    
+    if calldata.len() != expected_total_len {
+        return Err(format!(
+            "cannot decode mint calldata: invalid length. Expected {}, got {}",
+            expected_total_len,
+            calldata.len()
+        ));
+    }
+
     Ok((call.to, call.amount, call.proof.to_vec()))
 }
-
+    
 /// Result of a `mint` call that the contract itself rejected.
 ///
 /// A rejected mint is not an error of the bridge software: it is the contract
@@ -203,7 +240,29 @@ pub fn mint(executor: &mut EvmExecutor, contract: Address, to: Address, amount: 
 
     let slot = mint_storage_slot(to);
     let balance = executor.storage(contract, slot);
-    let updated = balance.checked_add(amount).ok_or(MintError::AmountTooLarge(amount))?;
+    // The credit is checked twice, because they catch different attacks.
+    //
+    // `checked_add` is the arithmetic guard: an addition that would exceed
+    // `U256::MAX` is refused rather than wrapped (which would fold the balance back
+    // towards zero) or saturated (which would silently swallow the overflow while
+    // the bridge still owed the deposit).
+    //
+    // It is also not enough on its own. `AMOUNT_CEILING` bounds a *single* mint,
+    // not a *supply*: it is a 128-bit value, so accumulating maximal deposits
+    // never reaches `U256::MAX` and `checked_add` would happily accept every one
+    // of them, leaving one account owed far more wZTHR than the bridge can ever
+    // hold on L1. The ceiling is therefore applied to the resulting balance as
+    // well, so it is a real supply bound and a finite balance must eventually
+    // refuse a maximal deposit. Both refusals happen before the replay marker is
+    // written, so a deposit that cannot be credited is never consumed.
+    let updated = balance
+        .checked_add(amount)
+        .filter(|sum| *sum <= crate::AMOUNT_CEILING)
+        .ok_or(MintError::AmountTooLarge(amount))?;
+    eprintln!(
+        "DBG mint balance={balance} amount={amount} updated={updated} ceiling={}",
+        crate::AMOUNT_CEILING
+    );
 
     // Mark the id before the credit lands, so a failure to write the balance can
     // never leave a lock that is credited *and* still mintable.

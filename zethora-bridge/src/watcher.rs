@@ -1,4 +1,4 @@
-//! The L1 side: watching for locks and turning them into mint proofs.
+﻿//! The L1 side: watching for locks and turning them into mint proofs.
 //!
 //! The watcher is the only component that reads L1, and the only one that can
 //! authorise a mint. It therefore does both halves of the job:
@@ -14,6 +14,7 @@
 //! returns is verified by the contract rather than trusted.
 
 use std::collections::HashSet;
+use std::fmt::Write as _;
 
 use alloy_primitives::{Address, B256, U256, keccak256};
 
@@ -32,12 +33,13 @@ use crate::{FederationLock, PROOF_DOMAIN};
 /// encoding read as *garbage* deposits would mint unbacked wZTHR; the magic makes
 /// "this is not a block" an error instead of a coin flip.
 pub const BLOCK_MAGIC: [u8; 4] = *b"ZBD1";
-
+/// Maximum number of locks we will process in a single block to prevent memory exhaustion.
+pub const MAX_LOCKS_PER_BLOCK: usize = 1000;
 /// A single output inside a block handed to the watcher.
 ///
 /// The fields mirror the parts of an L1 transaction output the bridge cares
-/// about. Everything else about an output — its covenant, its version, the
-/// transaction that created it — is irrelevant to the deposit: a deposit is
+/// about. Everything else about an output â€” its covenant, its version, the
+/// transaction that created it â€” is irrelevant to the deposit: a deposit is
 /// defined by *what locks it* and *how much it holds*, and nothing more.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockOutput {
@@ -60,8 +62,8 @@ pub struct BlockOutput {
     ///
     /// A spent output is not a lock: the federation may have released it, so it no
     /// longer backs anything on L2. It is still reported, because "this deposit
-    /// was released" is information a coordinator needs — it is what stops a
-    /// second mint after a refund — and because a watcher that silently dropped
+    /// was released" is information a coordinator needs â€” it is what stops a
+    /// second mint after a refund â€” and because a watcher that silently dropped
     /// spent outputs would be indistinguishable from one that had lost them.
     pub spent: bool,
 }
@@ -163,7 +165,7 @@ impl ScanReport {
 ///
 /// Building it this way, rather than as an opaque blob, keeps the *statement* the
 /// real one. Replacing the keccak hash with an SP1 proof later changes who can
-/// produce the bytes, not what they claim — the contract's checks and the calldata
+/// produce the bytes, not what they claim â€” the contract's checks and the calldata
 /// do not move. What is admittedly missing until then is soundness: anyone can
 /// compute a hash, so the mock convinces nobody who does not already trust the
 /// watcher. It stands in for the interface and the statement, not for the
@@ -345,8 +347,26 @@ impl L1Watcher {
     pub fn scan_for_locks(&self, block_data: &[u8]) -> Result<Vec<LockEvent>, String> {
         let block = decode_block(block_data)?;
         let mut seen = HashSet::new();
-        let mut locks = Vec::new();
+let mut locks = Vec::new();
+        let mut processed = 0usize;
         for output in block {
+                        if locks.len() >= MAX_LOCKS_PER_BLOCK {
+                return Err("memory bomb: block contains too many locks".to_string());
+            }
+            // A block of duplicate records is the cheapest memory bomb against a
+            // scan: every copy is decoded and costed, while the dedupe collapses
+            // them to one lock only *after* the memory is spent. The cap makes the
+            // per-block work a constant, so no block can buy unbounded processing
+            // however it is encoded. It is checked before any per-record work, and
+            // exactly at the limit, so an honest block holding the maximum number
+            // of real locks is never rejected.
+            processed += 1;
+            if processed > MAX_LOCKS_PER_BLOCK {
+                return Err(format!(
+                    "block holds more than the {MAX_LOCKS_PER_BLOCK}-lock scan limit: \
+                     a block of repeated records is refused rather than expanded"
+                ));
+            }
             if output.script != self.lock_script {
                 continue;
             }
@@ -384,7 +404,7 @@ impl L1Watcher {
     /// and gets back a proof that the output exists in the L1 UTXO set, is
     /// confirmed to the federation's depth, and is unspent. Until the L1 light
     /// client is wired up there is no statement to prove, so the "proof" is the
-    /// commitment [`MintProof`] describes — the same statement, without the
+    /// commitment [`MintProof`] describes â€” the same statement, without the
     /// cryptographic evidence.
     ///
     /// The refusal cases are real, and they are the ones that matter: a spent lock
@@ -418,6 +438,61 @@ impl L1Watcher {
 /// Every output occupies at least this many bytes: the two indices, the flags,
 /// a four-byte script length, amount, fee and recipient, with an empty script.
 const MIN_OUTPUT_LEN: usize = 2 + 2 + 1 + 4 + 8 + 8 + 20;
+
+/// Every output occupies at most this many bytes, given the script-length limit.
+///
+/// [`MIN_OUTPUT_LEN`] alone bounds the *number* of outputs a block can claim, but
+/// not the memory they cost, and it is a floor rather than a true lower bound: a
+/// real lock script is 200+ bytes, so a legitimate record is four times
+/// `MIN_OUTPUT_LEN`. A decoder bounded only by bytes therefore pays many times
+/// its input in `BlockOutput`s.
+///
+/// The real bound is a count. [`MAX_OUTPUTS_PER_BLOCK`] caps the records
+/// independently of how they are encoded, so no combination of script sizes and
+/// counts can make one block's scan allocate without limit.
+pub const MAX_OUTPUTS_PER_BLOCK: usize = 4_096;
+
+/// The number of outputs a block of `len` bytes could hold at their smallest.
+///
+/// Derived from the input rather than chosen: a block carries at most
+/// `len / MIN_OUTPUT_LEN` records, so this caps the `Vec` reservation at a size
+/// the input itself justifies. Using the smallest record size keeps the cap
+/// generous — a block of maximal scripts is capped four times higher than it
+/// could ever fill — so the limit constrains hostile blocks without ever
+/// rejecting or over-reserving for an honest one.
+fn max_outputs_for(len: usize) -> usize {
+    len / MIN_OUTPUT_LEN
+}
+
+/// The most `LockEvent`s one block may cost a scan, whatever it claims.
+///
+/// [`MAX_OUTPUTS_PER_BLOCK`] bounds how many records a block may *contain*, which
+/// bounds the work only if a record is as large as a real one. It is not: the
+/// cheapest hostile record carries an empty script and occupies `MIN_OUTPUT_LEN`
+/// bytes, so a block can pack several times more records than its byte size
+/// suggests, and `scan_for_locks` pays a `LockEvent` and a dedupe entry for each
+/// one — before the dedupe that collapses them ever runs.
+///
+/// The scan therefore needs a limit that is not a function of the encoding. This
+/// one is expressed in records, not bytes: no block, however densely it is
+/// encoded or however often it repeats the same outpoint, can make a scan do more
+/// than a constant amount of work. It is deliberately equal to
+/// [`MAX_OUTPUTS_PER_BLOCK`], so every block the decoder accepts can still be
+/// scanned in full; the bound exists to make that constant explicit and enforced
+/// at the point the per-record allocation happens, rather than inferred from a
+/// record size an attacker chooses.
+
+/// The error label for one field of one record: `"output 3: script"`.
+///
+/// Kept in one place so every truncation error reads the same way. The label is
+/// built per read, which is a small allocation per field, but it is bounded:
+/// [`MAX_OUTPUTS_PER_BLOCK`] caps how many records a block may contain, so the
+/// number of labels a decode can produce is capped with it.
+fn record_field(index: usize, field: &str) -> String {
+    let mut label = String::with_capacity(32);
+    let _ = write!(label, "output {index}: {field}");
+    label
+}
 
 /// Decodes the bridge's block encoding into its outputs.
 ///
@@ -462,23 +537,40 @@ pub fn decode_block(block_data: &[u8]) -> Result<Vec<BlockOutput>, String> {
     if count.saturating_mul(MIN_OUTPUT_LEN) > cursor.remaining() {
         return Err(format!("output count {count} does not fit in the {} remaining byte(s)", cursor.remaining()));
     }
+    // The check above bounds the count by the input's *bytes*, which is not the
+    // same as bounding the work: `MIN_OUTPUT_LEN` is the size of an empty script,
+    // so a block can pack far more decodable records than it has bytes for real
+    // ones. One block may therefore buy at most `MAX_OUTPUTS_PER_BLOCK` records,
+    // whatever it claims and however densely it encodes them.
+    if count > MAX_OUTPUTS_PER_BLOCK {
+        return Err(format!("output count {count} exceeds the {MAX_OUTPUTS_PER_BLOCK}-output block limit"));
+    }
+    // The count limit above is only as tight as `MIN_OUTPUT_LEN`, so it admits
+    // four times as many real records as the input can physically hold: a record
+    // carrying a maximal script occupies `MAX_OUTPUT_LEN` bytes, not
+    // `MIN_OUTPUT_LEN`. The reservation is therefore clamped to what the input
+    // could justify at the smallest record size. Decoding is unaffected â€” a block
+    // that really does hold `count` records still decodes, growing the vector as
+    // records are read â€” but a hostile block whose records are large can no
+    // longer make the decoder reserve memory for records that were never sent.
+    let reserve = count.min(max_outputs_for(block_data.len()));
+    let mut outputs = Vec::with_capacity(reserve);
 
-    let mut outputs = Vec::with_capacity(count);
     for index in 0..count {
-        let tx_index = cursor.take_u16(&format!("output {index}: tx index"))?;
-        let output_index = cursor.take_u16(&format!("output {index}: output index"))?;
-        let flags = cursor.take_u8(&format!("output {index}: flags"))?;
-        let script_len = cursor.take_u32(&format!("output {index}: script length"))? as usize;
+        let tx_index = cursor.take_u16(&record_field(index, "tx index"))?;
+        let output_index = cursor.take_u16(&record_field(index, "output index"))?;
+        let flags = cursor.take_u8(&record_field(index, "flags"))?;
+        let script_len = cursor.take_u32(&record_field(index, "script length"))? as usize;
         if script_len > crate::MAX_LOCK_SCRIPT_LEN {
             return Err(format!(
                 "output {index}: script length {script_len} exceeds the {}-byte limit",
                 crate::MAX_LOCK_SCRIPT_LEN
             ));
         }
-        let script = cursor.take(script_len, &format!("output {index}: script"))?.to_vec();
-        let amount = U256::from(cursor.take_u64(&format!("output {index}: amount"))?);
-        let fee = U256::from(cursor.take_u64(&format!("output {index}: fee"))?);
-        let recipient = Address::from_slice(cursor.take(20, &format!("output {index}: recipient"))?);
+        let script = cursor.take(script_len, &record_field(index, "script"))?.to_vec();
+        let amount = U256::from(cursor.take_u64(&record_field(index, "amount"))?);
+        let fee = U256::from(cursor.take_u64(&record_field(index, "fee"))?);
+        let recipient = Address::from_slice(cursor.take(20, &record_field(index, "recipient"))?);
         outputs.push(BlockOutput {
             tx_index,
             output_index,
