@@ -12,6 +12,19 @@ $ErrorActionPreference = 'Continue'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $here
 
+# ---------- version ----------
+# The version is never typed in here: the build pipeline writes the release tag
+# into version.txt, which sits next to this script. When the file is missing
+# (someone running the script from a source checkout) we show (dev) instead.
+$versionFile = Join-Path $here 'version.txt'
+$appVersion = 'dev'
+if (Test-Path -LiteralPath $versionFile) {
+  $rawVersion = ''
+  try { $rawVersion = (Get-Content -LiteralPath $versionFile -TotalCount 1 -ErrorAction Stop) } catch { $rawVersion = '' }
+  if ($rawVersion) { $rawVersion = ([string]$rawVersion).Trim() }
+  if ($rawVersion) { $appVersion = $rawVersion }
+}
+
 $nodeExe  = Join-Path $here 'zethora-node.exe'
 $minerExe = Join-Path $here 'zethora-miner.exe'
 $nodeLog  = Join-Path $here 'node.log'
@@ -33,7 +46,7 @@ $green = [Drawing.Color]::FromArgb(70,210,120); $red = [Drawing.Color]::FromArgb
 $accent = [Drawing.Color]::FromArgb(140,110,255)
 
 $form = New-Object Windows.Forms.Form
-$form.Text = 'Zethora - testnet miner'; $form.Size = New-Object Drawing.Size(720,700)
+$form.Text = "Zethora - testnet miner ($appVersion)"; $form.Size = New-Object Drawing.Size(720,700)
 $form.BackColor = $bg; $form.ForeColor = $fg; $form.StartPosition = 'CenterScreen'
 $form.FormBorderStyle = 'FixedSingle'; $form.MaximizeBox = $false
 $form.Font = New-Object Drawing.Font('Segoe UI',10)
