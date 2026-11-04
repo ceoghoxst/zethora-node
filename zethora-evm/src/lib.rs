@@ -70,6 +70,21 @@ pub const LEGACY_TX_TYPE: u8 = 0x00;
 /// Identifier of the EIP-1559 transaction envelope.
 pub const EIP1559_TX_TYPE: u8 = 0x02;
 
+/// Share of every gas fee that is routed to the miner treasury, in basis points.
+///
+/// `500` bps is 5%. The remaining 95% follows normal EVM behaviour: it accrues
+/// to the block beneficiary and/or is burned by the base fee.
+///
+/// This is the anti-death-spiral knob. If the *whole* fee were routed into a
+/// treasury that is never spent back into execution, the effective cost of an
+/// L1 message would grow without bound relative to the value the L2 collects
+/// for it, so activity would die out. Routing only a fixed slice keeps the
+/// producer solvent while leaving the rest in the normal fee market.
+pub const MINER_TREASURY_FEE_BPS: u16 = 500;
+
+/// Denominator for [`MINER_TREASURY_FEE_BPS`], i.e. 100%.
+pub const BPS_DENOMINATOR: u64 = 10_000;
+
 /// Half of the secp256k1 group order, `floor(N / 2)`.
 ///
 /// [EIP-2](https://eips.ethereum.org/EIPS/eip-2) requires a signature's `s`
@@ -304,6 +319,19 @@ pub fn recover_sender(tx: &Transaction) -> Result<Address, String> {
     envelope.recover_signer().map_err(|err| format!("cannot recover sender: {err}"))
 }
 
+/// The result of splitting one transaction's gas fee.
+///
+/// Kept private: it is the working value [`EvmExecutor::route_miner_treasury_fee`]
+/// hands back to [`EvmExecutor::execute`], which copies the two fields onto the
+/// public [`ExecutionOutcome`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FeeRouting {
+    /// Priority fee per gas that revm actually charged.
+    effective_gas_price: u128,
+    /// Wei moved into [`EvmExecutor::miner_treasury`].
+    treasury_fee: U256,
+}
+
 /// Outcome of executing a single transaction.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExecutionOutcome {
@@ -317,6 +345,17 @@ pub struct ExecutionOutcome {
     pub success: bool,
     /// The address recovered from the transaction signature.
     pub sender: Address,
+    /// The priority fee (tip) revm charged for this transaction, per gas.
+    ///
+    /// This is the share of the gas fee that belongs to the block producer, and
+    /// therefore the base of the fee routing split applied in
+    /// [`EvmExecutor::execute`]. `None` when the transaction did not reach the
+    /// EVM (it was rejected before execution).
+    pub effective_gas_price: Option<u128>,
+    /// The wei amount routed to the miner treasury for this transaction, i.e.
+    /// `MINER_TREASURY_FEE_BPS` of the routed fee base. Zero when the
+    /// transaction carried no payable fee.
+    pub treasury_fee: U256,
 }
 
 /// Result of executing a whole batch of transactions, in order.
@@ -358,6 +397,12 @@ pub struct EvmExecutor {
     block: BlockEnv,
     spec: SpecId,
     chain_id: u64,
+    /// Account that receives [`MINER_TREASURY_FEE_BPS`] of every gas fee.
+    ///
+    /// Settable through [`EvmExecutor::set_miner_treasury`]; the default is the
+    /// zero address, which routes the slice to the zero address (i.e. burns it)
+    /// until a real treasury is configured.
+    miner_treasury: Address,
 }
 
 impl Default for EvmExecutor {
@@ -389,7 +434,34 @@ impl EvmExecutor {
             },
             spec,
             chain_id: CHAIN_ID,
+            miner_treasury: Address::ZERO,
         }
+    }
+
+    /// Creates an executor that routes the treasury slice of every gas fee to
+    /// `miner_treasury`.
+    ///
+    /// This is the constructor form of [`EvmExecutor::set_miner_treasury`], so a
+    /// node can wire the treasury in one call at startup instead of remembering
+    /// to set it afterwards.
+    pub fn with_miner_treasury(spec: SpecId, miner_treasury: Address) -> Self {
+        let mut executor = Self::with_spec(spec);
+        executor.miner_treasury = miner_treasury;
+        executor
+    }
+
+    /// Sets the account that receives [`MINER_TREASURY_FEE_BPS`] of every gas
+    /// fee.
+    ///
+    /// The treasury is deliberately plain state: it holds no code and needs no
+    /// authorisation to receive a transfer, so a fresh sequential address works.
+    pub fn set_miner_treasury(&mut self, miner_treasury: Address) {
+        self.miner_treasury = miner_treasury;
+    }
+
+    /// The account that receives [`MINER_TREASURY_FEE_BPS`] of every gas fee.
+    pub fn miner_treasury(&self) -> Address {
+        self.miner_treasury
     }
 
     /// Overrides the chain id a transaction is checked against.
@@ -519,6 +591,12 @@ impl EvmExecutor {
 
         let mut outcome = Self::receipt(&result);
         outcome.sender = recover_sender(tx)?;
+        // The fee is intercepted only once the transaction has committed and the
+        // gas has been charged, so the transfer is applied to the post-execution
+        // state and can never be undone by an EVM revert.
+        let routing = self.route_miner_treasury_fee(&result)?;
+        outcome.effective_gas_price = Some(routing.effective_gas_price);
+        outcome.treasury_fee = routing.treasury_fee;
         Ok(outcome)
     }
 
@@ -724,6 +802,74 @@ impl EvmExecutor {
         }
     }
 
+    /// Splits the gas fee of a committed transaction and credits the treasury slice.
+    ///
+    /// revm has already charged the sender and credited the block beneficiary
+    /// (the 95% side of the split) by the time this runs. All that is left is the
+    /// [`MINER_TREASURY_FEE_BPS`] slice, which is moved out of the beneficiary's
+    /// account into [`EvmExecutor::miner_treasury`]. Doing it as a plain balance
+    /// move rather than as a second EVM call keeps it outside the transaction's
+    /// gas accounting and outside the reach of reentrancy or a reverting
+    /// `receive()`: the routing cannot be skipped, and it cannot be made to cost
+    /// the sender extra gas.
+    ///
+    /// The base of the split is the *priority fee* actually charged, i.e. the
+    /// part of the gas fee that belongs to the producer; the base fee is burned
+    /// by the protocol and is never routable. A transaction that paid no tip
+    /// (e.g. `gas_price == basefee`) therefore routes nothing.
+    ///
+    /// The slice is rounded down, so the treasury never receives more than its
+    /// basis-point share and the beneficiary keeps the remainder. Rounding down
+    /// also means a dust fee can never mint value out of nothing.
+    fn route_miner_treasury_fee(&mut self, result: &ExecutionResult<HaltReason>) -> Result<FeeRouting, String> {
+        // A halted transaction still pays for what it burned; a reverted one pays
+        // for the whole gas it used. Both therefore reach here and both are
+        // routed, because the fee was really charged.
+        let effective_gas_price = result.effective_gas_price();
+        let gas_used = u128::from(result.tx_gas_used());
+
+        let treasury_fee_u128 = effective_gas_price
+            .saturating_mul(gas_used)
+            .saturating_mul(MINER_TREASURY_FEE_BPS as u128)
+            / u128::from(BPS_DENOMINATOR);
+
+        let treasury_fee = U256::from(treasury_fee_u128);
+        let routing = FeeRouting { effective_gas_price, treasury_fee };
+        if treasury_fee.is_zero() {
+            return Ok(routing);
+        }
+
+        let source = self.block.beneficiary;
+        let treasury = self.miner_treasury;
+        if source == treasury {
+            // Nothing to move: the producer *is* the treasury. Reporting a
+            // transfer here would double-count fee the account already holds.
+            return Ok(routing);
+        }
+
+        // `checked_sub` rather than `saturating_sub`: the beneficiary was just
+        // credited by revm, so a shortfall means the accounting is wrong and must
+        // surface as an error instead of silently minting value for the treasury.
+        let mut payer = self.db.basic(source).map_err(|err| format!("cannot read fee payer: {err}"))?.unwrap_or_default();
+        payer.balance = payer
+            .balance
+            .checked_sub(treasury_fee)
+            .ok_or_else(|| format!("cannot route {treasury_fee} wei to the miner treasury: collected fee is too small"))?;
+
+        let mut payee = self.db.basic(treasury).map_err(|err| format!("cannot read miner treasury: {err}"))?.unwrap_or_default();
+        payee.balance = payee
+            .balance
+            .checked_add(treasury_fee)
+            .ok_or_else(|| "miner treasury balance overflowed while routing the gas fee".to_string())?;
+
+        // Write the debit before the credit so an interrupted routing can never
+        // leave the same wei in two accounts.
+        self.db.insert_account_info(source, payer);
+        self.db.insert_account_info(treasury, payee);
+
+        Ok(routing)
+    }
+
     /// Returns the account as it currently exists, or a blank one.
     ///
     /// Used by the fixture setters ([`EvmExecutor::set_balance`],
@@ -753,19 +899,29 @@ impl EvmExecutor {
                     gas_used,
                     success: true,
                     sender: Address::ZERO,
+                    effective_gas_price: None,
+                    treasury_fee: U256::ZERO,
                 }
             }
             // A revert or a halt has already been rolled back by revm, so the
             // receipt only has to describe what happened.
-            ExecutionResult::Revert { output, .. } => {
-                ExecutionOutcome { output: output.to_vec(), created_address: None, gas_used, success: false, sender: Address::ZERO }
-            }
+            ExecutionResult::Revert { output, .. } => ExecutionOutcome {
+                output: output.to_vec(),
+                created_address: None,
+                gas_used,
+                success: false,
+                sender: Address::ZERO,
+                effective_gas_price: None,
+                treasury_fee: U256::ZERO,
+            },
             ExecutionResult::Halt { reason, .. } => ExecutionOutcome {
                 output: format!("halted: {reason}").into_bytes(),
                 created_address: None,
                 gas_used,
                 success: false,
                 sender: Address::ZERO,
+                effective_gas_price: None,
+                treasury_fee: U256::ZERO,
             },
         }
     }
