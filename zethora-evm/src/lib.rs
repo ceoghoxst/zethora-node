@@ -459,6 +459,23 @@ impl EvmExecutor {
     pub fn storage(&mut self, address: Address, slot: U256) -> U256 {
         self.db.storage(address, slot).unwrap_or_default()
     }
+
+    /// Writes `value` into a storage slot of `address`.
+    ///
+    /// The mirror of [`EvmExecutor::storage`], and equally a direct database
+    /// write rather than an EVM `SSTORE`: it is the state transition a native
+    /// (non-bytecode) contract performs when it applies a call. The account is
+    /// created if it has never been touched, so a contract can be credited before
+    /// it holds any code.
+    ///
+    /// Callers are responsible for whatever rule the slot belongs to — the
+    /// bridge, for instance, keeps balances at Solidity mapping slots — because
+    /// the executor deliberately knows nothing about contract layouts.
+    pub fn set_storage(&mut self, address: Address, slot: U256, value: U256) -> Result<(), String> {
+        let info = self.account_info_or_default(address);
+        self.db.insert_account_info(address, info);
+        self.db.insert_account_storage(address, slot, value).map_err(|err| format!("cannot write storage: {err}"))
+    }
 }
 
 impl EvmExecutor {

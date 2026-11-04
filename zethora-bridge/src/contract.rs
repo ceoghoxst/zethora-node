@@ -259,10 +259,6 @@ pub fn mint(executor: &mut EvmExecutor, contract: Address, to: Address, amount: 
         .checked_add(amount)
         .filter(|sum| *sum <= crate::AMOUNT_CEILING)
         .ok_or(MintError::AmountTooLarge(amount))?;
-    eprintln!(
-        "DBG mint balance={balance} amount={amount} updated={updated} ceiling={}",
-        crate::AMOUNT_CEILING
-    );
 
     // Mark the id before the credit lands, so a failure to write the balance can
     // never leave a lock that is credited *and* still mintable.
