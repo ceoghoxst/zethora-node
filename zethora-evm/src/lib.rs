@@ -464,6 +464,22 @@ impl EvmExecutor {
         self.miner_treasury
     }
 
+    /// Installs the block environment the next transaction executes against.
+    ///
+    /// This is how a caller supplies the values that are not ambient state: the
+    /// `basefee` a transaction is priced against and the `beneficiary` that
+    /// collects the producer's share of the gas fee. Both feed the fee routing in
+    /// [`EvmExecutor::execute`], so a test that omits this call runs against the
+    /// constructor defaults (`basefee` of zero, no beneficiary) and routes
+    /// nothing.
+    ///
+    /// The whole environment is replaced, `gas_limit` included, so passing a
+    /// `BlockEnv::default()` here also resets the batch budget checked by
+    /// [`EvmExecutor::execute_batch`].
+    pub fn set_block(&mut self, block: BlockEnv) {
+        self.block = block;
+    }
+
     /// Overrides the chain id a transaction is checked against.
     ///
     /// This is the knob the replay-protection attack pulls: a transaction signed
@@ -594,10 +610,40 @@ impl EvmExecutor {
         // The fee is intercepted only once the transaction has committed and the
         // gas has been charged, so the transfer is applied to the post-execution
         // state and can never be undone by an EVM revert.
-        let routing = self.route_miner_treasury_fee(&result)?;
+        let routing = self.route_miner_treasury_fee(&result, tx)?;
         outcome.effective_gas_price = Some(routing.effective_gas_price);
         outcome.treasury_fee = routing.treasury_fee;
         Ok(outcome)
+    }
+
+    /// The priority fee per gas `tx` is charged against the current block.
+    ///
+    /// This mirrors revm's `Transaction::effective_gas_price`, which the handler
+    /// uses to deduct the caller's fee, because revm does not surface the price
+    /// it charged on [`ExecutionResult`] and the routing has to split exactly the
+    /// fee that was really taken:
+    ///
+    /// * a legacy (or EIP-2930) transaction pays a single flat `gas_price`, so
+    ///   everything above the base fee is the tip; a legacy sender can overpay the
+    ///   base fee, and that overpayment belongs to the producer just as much as an
+    ///   explicit tip does;
+    /// * an EIP-1559 transaction pays `min(max_fee_per_gas, base_fee + max_priority_fee_per_gas)`,
+    ///   and only the part of that above the base fee is the tip.
+    ///
+    /// The base fee is burned by the protocol rather than paid to anyone, which is
+    /// why it is subtracted instead of split. `saturating_sub` covers a fee cap the
+    /// base fee has outgrown; revm rejects such a transaction before execution, so
+    /// on the routed path it is a no-op guard.
+    fn priority_fee_per_gas(&self, tx: &Transaction) -> u128 {
+        let basefee = u128::from(self.block.basefee);
+        // `max_fee_per_gas` is the flat price on a legacy transaction and the fee
+        // cap on an EIP-1559 one, which is exactly revm's `gas_price` view.
+        let gas_price = tx.max_fee_per_gas();
+        let effective_gas_price = match tx.max_priority_fee_per_gas() {
+            None => gas_price,
+            Some(max_priority_fee) => gas_price.min(basefee.saturating_add(max_priority_fee)),
+        };
+        effective_gas_price.saturating_sub(basefee)
     }
 
     /// Executes a raw, RLP-encoded Ethereum transaction and returns its output.
@@ -818,30 +864,33 @@ impl EvmExecutor {
     /// by the protocol and is never routable. A transaction that paid no tip
     /// (e.g. `gas_price == basefee`) therefore routes nothing.
     ///
+    /// The only recipient revm credited is the block beneficiary, which is where
+    /// the producer's share sits at this point. When the block names no
+    /// beneficiary (`Address::ZERO`, the constructor default) or names the
+    /// treasury itself, revm has already put the 95% slice where it belongs and
+    /// there is nothing to move; debiting either of those accounts would take wei
+    /// from an unrelated party. Neither case is reachable when a block has been
+    /// installed with [`EvmExecutor::set_block`].
+    ///
     /// The slice is rounded down, so the treasury never receives more than its
     /// basis-point share and the beneficiary keeps the remainder. Rounding down
     /// also means a dust fee can never mint value out of nothing.
-    fn route_miner_treasury_fee(&mut self, result: &ExecutionResult<HaltReason>) -> Result<FeeRouting, String> {
-        let effective_gas_price: u128 = self.block.basefee as u128;
-        let gas_used = u128::from(result.tx_gas_used());        
+    fn route_miner_treasury_fee(&mut self, result: &ExecutionResult<HaltReason>, tx: &Transaction) -> Result<FeeRouting, String> {
+        let priority_fee = self.priority_fee_per_gas(tx);
+        let gas_used = u128::from(result.tx_gas_used());
+
         // A halted transaction still pays for what it burned; a reverted one pays
         // for the whole gas it used. Both therefore reach here and both are
         // routed, because the fee was really charged.
-// Extract gas used from the execution result
-
-// Compute effective gas price from the tx + block basefee
-
-// Total fee paid by the sender
-
-// 5% to the miner treasury
-
-        let treasury_fee_u128 = effective_gas_price
+        let treasury_fee_u128 = priority_fee
             .saturating_mul(gas_used)
             .saturating_mul(MINER_TREASURY_FEE_BPS as u128)
             / u128::from(BPS_DENOMINATOR);
 
+        // `effective_gas_price` keeps its documented meaning: the per-gas price
+        // charged on top of the base fee.
         let treasury_fee = U256::from(treasury_fee_u128);
-        let routing = FeeRouting { effective_gas_price, treasury_fee };
+        let routing = FeeRouting { effective_gas_price: priority_fee, treasury_fee };
         if treasury_fee.is_zero() {
             return Ok(routing);
         }
@@ -851,6 +900,14 @@ impl EvmExecutor {
         if source == treasury {
             // Nothing to move: the producer *is* the treasury. Reporting a
             // transfer here would double-count fee the account already holds.
+            return Ok(routing);
+        }
+        if source.is_zero() {
+            // The block has no beneficiary, so revm credited the fee to the zero
+            // address, which is not an account anyone can spend from. There is no
+            // producer share to take the slice out of, and inventing one by
+            // debiting real accounts would mint the treasury's cut from nothing.
+            // Reachable only when no block was installed.
             return Ok(routing);
         }
 
