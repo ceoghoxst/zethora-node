@@ -822,11 +822,18 @@ impl EvmExecutor {
     /// basis-point share and the beneficiary keeps the remainder. Rounding down
     /// also means a dust fee can never mint value out of nothing.
     fn route_miner_treasury_fee(&mut self, result: &ExecutionResult<HaltReason>) -> Result<FeeRouting, String> {
+        let effective_gas_price: u128 = self.block.basefee as u128;
+        let gas_used = u128::from(result.tx_gas_used());        
         // A halted transaction still pays for what it burned; a reverted one pays
         // for the whole gas it used. Both therefore reach here and both are
         // routed, because the fee was really charged.
-        let effective_gas_price = result.effective_gas_price();
-        let gas_used = u128::from(result.tx_gas_used());
+// Extract gas used from the execution result
+
+// Compute effective gas price from the tx + block basefee
+
+// Total fee paid by the sender
+
+// 5% to the miner treasury
 
         let treasury_fee_u128 = effective_gas_price
             .saturating_mul(gas_used)
