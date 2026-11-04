@@ -8,11 +8,18 @@
 //! Usage:
 //!   zethora-miner             devnet (node must run with: --devnet --enable-unsynced-mining)
 //!   zethora-miner --testnet   testnet (node must run with: --testnet --enable-unsynced-mining)
+//!   zethora-miner --address <zethoratest:...>  pay rewards to this address instead of the key file's
 //!   zethora-miner --shielded <zs...>  pay rewards to a private (Orchard) address instead of the key's address
 //!   zethora-miner bench       RandomZ speed test; no node needed, stop the real miner first
 //!
 //! Key files: zethora-miner-key.txt (devnet) and zethora-miner-key-testnet.txt (testnet).
 //! Keys are never shared between networks.
+//!
+//! Pool-friendly: `--address` sends the block reward to the given transparent address, so a pool can hand every
+//! miner its own payout address and nobody needs a local key file. The address must carry the prefix of the network
+//! being mined (`zethoratest:` for `--testnet`, `zethoradev:` for devnet); a mismatched prefix is refused before any
+//! connection is made, so no block is ever mined to the wrong network. Without the flag the miner reads the key file
+//! as it always has.
 //!
 //! Pillar 2 (shielded coinbase): a `zs...` address is accepted, and its bytes are put into the coinbase the miner
 //! asks the node for, but the node does not route the reward into the private pool yet (that is a consensus change,
@@ -83,6 +90,36 @@ fn write_private_file(path: &str, contents: &str) -> std::io::Result<()> {
         options.mode(0o600);
     }
     options.open(path)?.write_all(contents.as_bytes())
+}
+
+// --- `--address`: pay a given transparent address instead of the key file's ---
+
+/// The address a coinbase pays must be transparent (`zethoradev:` / `zethoratest:`), so its prefix has to match the
+/// network being mined. Everything else (checksum, payload length, characters) is checked by the address crate, the
+/// same decoder the node and the wallet use.
+///
+/// Returns a plain message for the caller to print: a mistyped address is a typo to fix, never a crash, and it is
+/// refused before the miner connects, so no block is ever mined to the wrong network or to a broken string.
+fn parse_reward_address(text: &str, network: NetworkType) -> Result<Address, String> {
+    let text = text.trim();
+    let expected = Prefix::from(network).to_string();
+    if text.is_empty() {
+        return Err(format!("--address needs an address after it, for example: --address {expected}:<address>"));
+    }
+    let address = Address::try_from(text)
+        .map_err(|e| format!("{text} is not a readable address ({e}). Check for a missing or extra character and try again."))?;
+    if address.prefix != Prefix::from(network) {
+        return Err(format!(
+            "{text} is a {} address, but this miner is on {}. Use --testnet for zethoratest: addresses, or give a {} address.",
+            address.prefix, network, expected
+        ));
+    }
+    // A pay-to-pubkey (transparent) address is what a coinbase destination has always been; anything else would be
+    // mined into a block the node cannot route, so it is refused here rather than at the node.
+    if address.version != Version::PubKey {
+        return Err(format!("{text} is not a pay-to-pubkey (transparent) address, so it cannot receive a block reward."));
+    }
+    Ok(address)
 }
 
 // --- Pillar 2: shielded coinbase addresses ---
@@ -201,11 +238,26 @@ struct RewardRoute {
     shielded: Option<[u8; ORCHARD_ADDRESS_LEN]>,
 }
 
-/// Builds the reward route. `shielded` is the parsed `--shielded` address, if any.
-fn reward_route(key_address: Address, network: NetworkType, shielded: Option<[u8; ORCHARD_ADDRESS_LEN]>) -> RewardRoute {
-    let mut banner = vec![format!("Paying rewards to: {key_address}")];
+/// Builds the reward route. `shielded` is the parsed `--shielded` address, if any; `pay_to` is the address from
+/// `--address`, if given, which replaces the key file's address as the coinbase pay destination.
+fn reward_route(
+    key_address: Address,
+    network: NetworkType,
+    shielded: Option<[u8; ORCHARD_ADDRESS_LEN]>,
+    pay_to: Option<Address>,
+) -> RewardRoute {
+    // `--address` names the transparent destination itself, so the banner shows that address and not the key file's.
+    let mut banner = vec![format!("Paying rewards to: {}", pay_to.clone().unwrap_or_else(|| key_address.clone()))];
+    if pay_to.is_some() {
+        banner.push("                  (address given with --address; the key file is not used for the reward)".to_string());
+    }
     let Some(private) = shielded else {
-        return RewardRoute { pay_address: key_address, coinbase_tag: b"zethora-miner".to_vec(), banner, shielded: None };
+        return RewardRoute {
+            pay_address: pay_to.unwrap_or(key_address),
+            coinbase_tag: b"zethora-miner".to_vec(),
+            banner,
+            shielded: None,
+        };
     };
     let shown: String = private.iter().take(SHIELDED_ADDRESS_SHOWN).map(|b| format!("{b:02x}")).collect();
     banner.push("Mining to shielded address (Note: privacy is currently disabled on the network)".to_string());
@@ -330,21 +382,25 @@ fn bench() {
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let usage = "Usage:\n  zethora-miner             devnet (node: --devnet --enable-unsynced-mining)\n  zethora-miner --testnet   testnet (node: --testnet --enable-unsynced-mining)\n  zethora-miner --shielded <zs...>   devnet, paying rewards to a private address\n  zethora-miner --testnet --shielded <zs...>   testnet, paying rewards to a private address\n  zethora-miner bench       RandomZ speed test (no node)\n  zethora-miner balance     devnet balance of your transparent mining address (node needs --utxoindex)\n  zethora-miner --testnet balance   testnet balance (node needs --testnet --utxoindex)";
+    let usage = "Usage:\n  zethora-miner             devnet (node: --devnet --enable-unsynced-mining)\n  zethora-miner --testnet   testnet (node: --testnet --enable-unsynced-mining)\n  zethora-miner --address <zethoratest:...>   mine to this address instead of the key file's\n  zethora-miner --testnet --address <zethoratest:...>   the same, on testnet\n  zethora-miner --shielded <zs...>   devnet, paying rewards to a private address\n  zethora-miner --testnet --shielded <zs...>   testnet, paying rewards to a private address\n  zethora-miner bench       RandomZ speed test (no node)\n  zethora-miner balance     devnet balance of your transparent mining address (node needs --utxoindex)\n  zethora-miner --testnet balance   testnet balance (node needs --testnet --utxoindex)\n\n--address takes a transparent address with the prefix of the network being mined\n(zethoratest: with --testnet, zethoradev: on devnet); a wrong prefix or a damaged address is refused.\nWithout --address the reward goes to the address held in zethora-miner-key-testnet.txt (testnet) or\nzethora-miner-key.txt (devnet). --address cannot be combined with --shielded.";
     #[derive(PartialEq)]
     enum Mode {
         Mine,
         Bench,
         Balance,
     }
-    // `--shielded <address>` may sit before or after `--testnet`; everything else must match exactly.
+    // `--shielded <address>` and `--address <address>` may sit before or after `--testnet`; everything else must
+    // match exactly.
     let mut rest: Vec<&str> = Vec::with_capacity(args.len());
     let mut shielded_arg: Option<String> = None;
+    let mut address_arg: Option<String> = None;
     let mut remaining = args.iter().map(String::as_str);
     while let Some(arg) = remaining.next() {
         match arg {
             "--shielded" => shielded_arg = remaining.next().map(str::to_string),
             _ if arg.starts_with("--shielded=") => shielded_arg = Some(arg["--shielded=".len()..].to_string()),
+            "--address" => address_arg = remaining.next().map(str::to_string),
+            _ if arg.starts_with("--address=") => address_arg = Some(arg["--address=".len()..].to_string()),
             _ => rest.push(arg),
         }
     }
@@ -362,7 +418,7 @@ async fn main() {
     }
     let shielded = match shielded_arg {
         None => None,
-        Some(text) => match payload_from_shielded_address(text.trim()) {
+        Some(ref text) => match payload_from_shielded_address(text.trim()) {
             Some(bytes) => Some(bytes),
             None => usage_or_exit(Some(format!(
                 "That is not a readable private address: \"{text}\". A private address starts with zs... (or zs1...) \
@@ -381,6 +437,15 @@ async fn main() {
             (false, Mode::Mine) // unreachable, satisfies the compiler
         }
     };
+    // A coinbase pays one destination, so asking for both a transparent address and a private one is a contradiction,
+    // not a preference: say so instead of silently picking one.
+    if address_arg.is_some() && shielded_arg.is_some() {
+        usage_or_exit(Some(
+            "--address and --shielded cannot be used together: they name two different reward destinations. \
+             Pass just one of them."
+                .into(),
+        ));
+    }
     // `balance` asks the node for the coins of a transparent address; a private balance needs the private wallet,
     // which the miner does not carry. Refuse before touching the node or the key file.
     if mode == Mode::Balance && shielded.is_some() {
@@ -397,18 +462,42 @@ async fn main() {
     let node_url = if testnet { TESTNET_NODE_URL } else { DEVNET_NODE_URL };
     let key_file = if testnet { TESTNET_KEY_FILE } else { DEVNET_KEY_FILE };
     let network_name = if testnet { "testnet" } else { "devnet" };
+    // `--address` names the coinbase destination itself, so it is checked before the key file is touched: a pool
+    // miner runs with no key file at all, and a typo must not leave a half-created key behind.
+    let pay_to = match &address_arg {
+        None => None,
+ Some(text) => match parse_reward_address(text, network) {
+    Ok(address) => Some(address),
+    Err(problem) => {
+        usage_or_exit(Some(problem));
+        None // unreachable - usage_or_exit always exits, but satisfies type checker
+    }
+},
+    };
     // G13: never create a key just to show a balance
     if mode == Mode::Balance && !std::path::Path::new(key_file).exists() {
         eprintln!("No mining key yet ({key_file} not found in this folder). Start mining first, then check the balance.");
         std::process::exit(4);
     }
-    let kp = load_or_create_key(key_file);
-    let address = Address::new(Prefix::from(network), Version::PubKey, &kp.x_only_public_key().0.serialize());
-    // Pillar 2: with `--shielded` the coinbase carries the private address instead of the key's own.
-    let route = reward_route(address.clone(), network, shielded);
+    // With `--address` the key file is neither read nor created: the reward goes to the given address, so a local key
+    // would only be a key nobody uses. Without the flag the key file is read exactly as before.
+    let key_address = match &pay_to {
+        Some(address) => address.clone(),
+        None => {
+            let kp = load_or_create_key(key_file);
+            Address::new(Prefix::from(network), Version::PubKey, &kp.x_only_public_key().0.serialize())
+        }
+    };
+    // Pillar 2: with `--shielded` the coinbase carries the private address instead of the key's own; with `--address`
+    // the given transparent address replaces the key's.
+    let route = reward_route(key_address.clone(), network, shielded, pay_to);
     println!("Zethora {network_name} miner");
     println!("Network:  {network_name}");
-    println!("Key file: {key_file}");
+    if address_arg.is_some() {
+        println!("Key file: none (--address given on the command line)");
+    } else {
+        println!("Key file: {key_file}");
+    }
     println!("Node URL: {node_url}");
     for line in &route.banner {
         println!("{line}");
@@ -426,9 +515,9 @@ async fn main() {
     let client = GrpcClient::connect(node_url.to_string())
         .await
         .expect("Cannot reach the node. Is it running with the matching network flag (--devnet or --testnet)?");
-    // G13: show the balance of the mining address and exit
+    // G13: show the balance of the mining address and exit (with --address, the address it was given)
     if mode == Mode::Balance {
-        match client.get_balance_by_address(address.clone()).await {
+        match client.get_balance_by_address(key_address.clone()).await {
             Ok(zets) => {
                 println!("Balance: {:.10} ZTHR ({zets} zets)", zets as f64 / ZETS_PER_ZTHR);
                 println!("(New mining rewards show up after the next block and can be spent only after they mature.)");
@@ -661,5 +750,40 @@ mod tests {
             assert_eq!(std::fs::metadata(path).unwrap().permissions().mode() & 0o777, 0o600);
         }
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// `--address`: a well-formed address for the mined network is accepted, and every kind of mistake is a plain
+    /// error string (never a panic, never a silently accepted address).
+    #[test]
+    fn reward_address_flag_is_checked_against_the_network() {
+        // A transparent address built the way the miner builds one, so the test owns its own bytes.
+        let payload: [u8; 32] = [7u8; 32];
+        let testnet = Address::new(Prefix::Testnet, Version::PubKey, &payload);
+        let devnet = Address::new(Prefix::Devnet, Version::PubKey, &payload);
+        let testnet_text = testnet.to_string();
+        let devnet_text = devnet.to_string();
+        assert!(testnet_text.starts_with("zethoratest:"));
+
+        // The right network in both spellings the CLI accepts (with and without surrounding spaces).
+        assert_eq!(parse_reward_address(&testnet_text, NetworkType::Testnet).unwrap(), testnet);
+        assert_eq!(parse_reward_address(&format!("  {testnet_text}\n"), NetworkType::Testnet).unwrap(), testnet);
+        assert_eq!(parse_reward_address(&devnet_text, NetworkType::Devnet).unwrap(), devnet);
+
+        // The wrong network is refused, and the message says which prefix was expected.
+        let wrong = parse_reward_address(&testnet_text, NetworkType::Devnet).unwrap_err();
+        assert!(wrong.contains("zethoradev"), "message must name the expected prefix: {wrong}");
+        assert!(parse_reward_address(&devnet_text, NetworkType::Testnet).is_err());
+
+        // Not an address, a missing prefix, an empty value, and a damaged checksum are all refused with a message.
+        assert!(parse_reward_address("zethoratest:", NetworkType::Testnet).is_err());
+        assert!(parse_reward_address("hello", NetworkType::Testnet).is_err());
+        assert!(parse_reward_address("", NetworkType::Testnet).is_err());
+        assert!(parse_reward_address("   ", NetworkType::Testnet).is_err());
+        let mut damaged = testnet_text.clone();
+        damaged.pop();
+        damaged.push(if testnet_text.ends_with('q') { 'p' } else { 'q' });
+        assert!(parse_reward_address(&damaged, NetworkType::Testnet).is_err());
+        // Multi-byte characters must not panic the checks either.
+        assert!(parse_reward_address(&"é".repeat(20), NetworkType::Testnet).is_err());
     }
 }
