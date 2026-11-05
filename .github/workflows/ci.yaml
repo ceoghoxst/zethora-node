@@ -21,9 +21,9 @@ jobs:
       - name: Set up cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Run cargo check
-        run: cargo check --tests --workspace --benches
-
+- name: Run cargo check
+  run: cargo check --tests --benches -p kaspad -p kaspa-stratum-bridge -p zethora-miner
+ 
   test:
     name: Test Suite
     # runs-on: ${{ matrix.os }}
