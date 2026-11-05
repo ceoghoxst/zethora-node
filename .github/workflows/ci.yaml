@@ -21,8 +21,8 @@ jobs:
       - name: Set up cache
         uses: Swatinem/rust-cache@v2
 
-- name: Run cargo check
-  run: cargo check --tests --benches -p kaspad -p kaspa-stratum-bridge -p zethora-miner
+      - name: Run cargo check
+        run: cargo check --tests --benches -p kaspad -p kaspa-stratum-bridge -p zethora-miner
  
   test:
     name: Test Suite
@@ -257,3 +257,4 @@ jobs:
           path: target/x86_64-unknown-linux-musl/release/kaspad		  	
 
           
+
