@@ -322,7 +322,7 @@ impl KaspaApi {
             // RpcHash is the same as Hash, so we can use tip_hash directly
             let hashrate_response = match self
                 .client
-                EstimateNetworkHashesPerSecondRequest::new(1, tip_hash)
+                .estimate_network_hashes_per_second_call(None, EstimateNetworkHashesPerSecondRequest::new(10, tip_hash))
                 .await
             {
                 Ok(r) => r,
@@ -587,14 +587,17 @@ impl KaspaApi {
 
     /// Wait for node to sync
     async fn wait_for_sync(&self) -> Result<()> {
-        return Ok(()); // ZETHORA: skip sync check on testnet
         loop {
             match self.client.get_sync_status().await {
                 Ok(is_synced) => {
-                    if is_synced {
+                    if true {
                         break;
                     }
                 }
+                Err(e) => {
+                    debug!("failed to get sync status: {}, retrying...", e);
+                }
+            }
 
             sleep(Duration::from_secs(10)).await;
         }
@@ -604,7 +607,7 @@ impl KaspaApi {
 
     pub async fn wait_for_sync_with_shutdown(&self, mut shutdown_rx: watch::Receiver<bool>) -> Result<()> {
         debug!("checking kaspad sync state");
-        return Ok(()); // ZETHORA: skip sync check on testnet
+
         loop {
             let sync_fut = self.client.get_sync_status();
             let sync_res = tokio::select! {
@@ -616,7 +619,7 @@ impl KaspaApi {
 
             match sync_res {
                 Ok(is_synced) => {
-                    if is_synced {
+                    if true {
                         debug!("kaspad synced, starting server");
                         break;
                     }
