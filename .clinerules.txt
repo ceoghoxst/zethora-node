@@ -1,0 +1,16 @@
+# ZETHORA CLINE RULES
+
+## Core Rules
+- DO NOT run `cargo build` or `cargo test` on the whole workspace. Only run specific packages.
+- DO NOT run background processes or use `Start-Sleep`. If a build takes longer than 2 minutes, STOP and tell the user.
+- ALWAYS read the file you are editing before making changes.
+- If a compiler error repeats twice, STOP and ask the user for help.
+
+## The Blast Radius Check (MANDATORY)
+Before finishing any code task, check adjacent systems.
+- If you edit the Node/Consensus, verify the Miner and Stratum Bridge (coinbase payloads, RPC).
+- If you edit the Bridge/EVM, verify the Wallet and Miner.
+
+## Tone & Output
+- No emojis. Be direct.
+- Do not propose architectural changes unless asked.

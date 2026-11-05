@@ -1,0 +1,86 @@
+﻿cargo : warning: 
+use of deprecated 
+method `std::sync:
+:atomic::Atomic::<
+usize>::fetch_upda
+te`: renamed to 
+`try_update` for 
+consistency
+At line:1 char:32
++ ... OR='never'; 
+cargo test -p 
+kaspa-consensus 
+--lib -- coinbase 
+2>&1 | Ou ...
++                 
+~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~
+    + CategoryInf 
+   o          :   
+  NotSpecified:   
+  (warning: us    
+e of...for co    
+nsistency:Str    
+ing) [], Remo    
+teException
+    + FullyQualif 
+   iedErrorId :   
+  NativeCommand   
+ Error
+ 
+   --> notify\src\
+subscription\singl
+e.rs:401:47
+    |
+401 |             
+match UTXOS_CHANGE
+D_SUBSCRIPTIONS.fe
+tch_update(Orderin
+g::SeqCst, 
+Ordering::SeqCst, 
+|count| count.chec
+ked_sub(1)) {
+    |             
+                  
+                
+^^^^^^^^^^^^
+    |
+    = note: `#[war
+n(deprecated)]` 
+on by default
+help: replace the 
+use of the 
+deprecated method
+    |
+401 -             
+match UTXOS_CHANGE
+D_SUBSCRIPTIONS.fe
+tch_update(Orderin
+g::SeqCst, 
+Ordering::SeqCst, 
+|count| count.chec
+ked_sub(1)) {
+401 +             
+match UTXOS_CHANGE
+D_SUBSCRIPTIONS.tr
+y_update(Ordering:
+:SeqCst, 
+Ordering::SeqCst, 
+|count| count.chec
+ked_sub(1)) {
+    |
+
+warning: 
+`kaspa-notify` 
+(lib) generated 1 
+warning (run 
+`cargo fix --lib 
+-p kaspa-notify` 
+to apply 1 
+suggestion)
+   Compiling 
+kaspa-consensus 
+v2.1.0 (C:\Users\R
+ac436\zethora-node
+\consensus)

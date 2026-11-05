@@ -70,7 +70,7 @@ impl From<(&Header, &'static [u8])> for GenesisBlock {
 
 /// Zethora: the genesis timestamp of the mainnet and testnet genesis blocks (Nov 4, 2026 GMT). It is unique to Zethora
 /// (Kaspa's mainnet genesis timestamp was `0x1a100cdff60`), so the genesis hash can never match another network's.
-pub const ZETHORA_GENESIS_TIMESTAMP: u64 = 0x1a8326b5600;
+pub const ZETHORA_GENESIS_TIMESTAMP: u64 = 1735689600000;
 
 /// Zethora: the message committed to by the mainnet and testnet genesis coinbase transactions, so the genesis hash is
 /// unique to Zethora. It is appended to the payload as plain UTF-8 extra data, after the miner script; the payload
@@ -164,10 +164,10 @@ pub const GENESIS: GenesisBlock = GenesisBlock {
 
 pub const TESTNET_GENESIS: GenesisBlock = GenesisBlock {
     hash: Hash::from_bytes([
-        0xff, 0x32, 0x66, 0x3a, 0xf6, 0xdd, 0x49, 0xa7,
-        0x0b, 0xc0, 0x0d, 0xb4, 0xd8, 0xa3, 0x4b, 0x5e,
-        0x68, 0xcb, 0xa2, 0x3a, 0xf4, 0xcd, 0x1b, 0xbd,
-        0x7c, 0x3a, 0x55, 0x27, 0x00, 0x84, 0xc6, 0x53,
+        0x62, 0x21, 0x83, 0xa9, 0x36, 0xc3, 0x71, 0x30,
+        0x82, 0x61, 0xae, 0x64, 0x62, 0x87, 0x41, 0x89,
+        0x8d, 0xda, 0x08, 0xa6, 0x4e, 0x87, 0x48, 0xa1,
+        0x4f, 0xbf, 0xcd, 0xc0, 0x77, 0x54, 0xb3, 0xab,
     ]),
     version: 0,
     hash_merkle_root: Hash::from_bytes([
