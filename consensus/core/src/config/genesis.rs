@@ -70,7 +70,7 @@ impl From<(&Header, &'static [u8])> for GenesisBlock {
 
 /// Zethora: the genesis timestamp of the mainnet and testnet genesis blocks (Nov 4, 2026 GMT). It is unique to Zethora
 /// (Kaspa's mainnet genesis timestamp was `0x1a100cdff60`), so the genesis hash can never match another network's.
-pub const ZETHORA_GENESIS_TIMESTAMP: u64 = 1735689600000;
+pub const ZETHORA_GENESIS_TIMESTAMP: u64 = 1700000000000;
 
 /// Zethora: the message committed to by the mainnet and testnet genesis coinbase transactions, so the genesis hash is
 /// unique to Zethora. It is appended to the payload as plain UTF-8 extra data, after the miner script; the payload
