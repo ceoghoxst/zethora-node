@@ -1,0 +1,17 @@
+[package]
+name = "zethora-explorer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = "0.7"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+kaspa-grpc-client = { path = "../rpc/grpc/client" }
+kaspa-rpc-core = { path = "../rpc/core" }
+kaspa-hashes = { path = "../crypto/hashes" }
+kaspa-utils = { path = "../utils" }
+tower-http = { version = "0.5", features = ["fs"] }
+
+[workspace]
