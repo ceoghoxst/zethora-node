@@ -28,15 +28,17 @@ Zethora is a **Modular Layer 1** Proof-of-Work blockchain.
 
 === SECTION 4: CURRENT STATUS (AS OF NOW) ===
 1. **Core Testnet Hardware:** 100% COMPLETE. 
-   - Node (`zethora-node.exe`) is running and processing blocks.
-   - Miner (`zethora-miner.exe`) is running and finding blocks.
-   - Stratum Bridge (`stratum-bridge.exe`) is running and listening on port 5555. Firewall is open.
-   - The bridge was patched to bypass the `is_synced` check and the 1000-block difficulty window so it starts instantly.
-2. **Red Teaming:** Successfully completed cross-layer doomsday tests (EVM re-entrancy, Bridge memory bombs, Orchard nullifiers, Calldata confusion).
-3. **Zcash Grant:** Submitted (Issue #534). Status: "Validated Application - Ready for ZCG Review." Asking for $50k.
-4. **Auditor:** Strahn Cryptography is currently reviewing the `zethora-shield` crate for a quote.
-5. **Community:** Discord and Telegram are live and secured.
-
+   - Node (`zethora-node`) is running and processing blocks on the Hetzner seed node (95.216.185.137).
+   - The Ryzen miner is successfully pushing blocks to the seed node via P2P (`--addpeer=95.216.185.137:26211`).
+   - Stratum Bridge is running and listening on port 5555 (locally on Ryzen).
+   - Seed Node Genesis is aligned: `622183a936c371308261ae64628741898dda08a64e8748a14fbfcdc07754b3ab`.
+2. **The Faucet:** 100% COMPLETE. 
+   - The Rust Axum Faucet is deployed on Hetzner (port 8080).
+   - It successfully sends 1 ZTHR to users (verified with TxID).
+   - **CRITICAL OPS:** The Faucet must be accessed via an SSH tunnel (`ssh -L 8080:localhost:8080 root@95.216.185.137`) because the Hetzner Cloud Firewall blocks public port 8080.
+3. **Red Teaming:** Successfully completed cross-layer doomsday tests.
+4. **Zcash Grant:** Submitted (Issue #534). Status: "Validated Application - Ready for ZCG Review."
+5. **Auditor:** Strahn Cryptography is reviewing the `zethora-shield` crate.
 === SECTION 5: IMMEDIATE NEXT STEPS (THE 4 REMAINING PIECES) ===
 1. **The Seed Node Update:** The Hetzner seed node (95.216.185.137) is on the old chain. Must be updated to the new Genesis.
 2. **The Block Explorer:** Build a web UI to see blocks/transactions.
