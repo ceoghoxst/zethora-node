@@ -39,7 +39,7 @@ pub async fn search(Query(params): Query<SearchParams>) -> Json<SearchResponse> 
         return Json(SearchResponse { r#type: "address".to_string(), data: serde_json::json!({ "address": q, "note": "Address lookup coming soon" }) });
     }
 
-    // PATCH: Do not reflect user input into the error message.
+    // XSS Patch applied here
     Json(SearchResponse { r#type: "error".to_string(), data: serde_json::json!({ "error": "Invalid search query" }) })
 }
 
