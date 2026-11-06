@@ -13681,7 +13681,11 @@ dependencies = [
 name = "zethora-rpc-l2"
 version = "2.1.0"
 dependencies = [
+ "alloy-consensus 2.5.0",
+ "alloy-eips 2.5.0",
  "alloy-primitives",
+ "alloy-signer 2.5.0",
+ "alloy-signer-local 2.5.0",
  "axum 0.8.9",
  "http-body-util",
  "revm",

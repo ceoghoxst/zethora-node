@@ -38,3 +38,12 @@ zethora-evm = { path = "../zethora-evm" }
 # `axum::serve` makes for every request, minus the socket.
 tower = { workspace = true, features = ["util"] }
 http-body-util = { workspace = true }
+# The Doomsday suite has to speak `eth_sendRawTransaction` with transactions that
+# really recover to a sender, because every money-path attack here depends on the
+# signature being valid. These are the same versions `zethora-evm` signs its own
+# Red Team fixtures with, so the wire bytes the endpoint decodes are produced by
+# the same codec that decodes them.
+alloy-consensus = { version = "2.5.0", default-features = false, features = ["k256"] }
+alloy-eips = { version = "2.5.0", default-features = false }
+alloy-signer = { version = "2.5.0", default-features = false }
+alloy-signer-local = { version = "2.5.0", default-features = false, features = ["mnemonic"] }
