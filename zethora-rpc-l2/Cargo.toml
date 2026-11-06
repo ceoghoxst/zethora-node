@@ -1,0 +1,40 @@
+[package]
+name = "zethora-rpc-l2"
+description = "Zethora L2 JSON-RPC endpoint: an axum server that exposes the zethora-evm executor over the standard Ethereum methods, for MetaMask and any other web3 client."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "zethora-rpc-l2"
+path = "src/main.rs"
+
+[dependencies]
+# The HTTP server. `jsonrpsee` is not a workspace dependency, so the JSON-RPC
+# envelope is handled by hand in `src/rpc.rs` instead of pulling a second server
+# framework into the build.
+axum = "0.8"
+# CORS, so a browser page (MetaMask, the explorer) may call the endpoint from a
+# different origin. The workspace entry enables the body-mapping layers; `cors`
+# is added here because nothing else in the workspace needs it.
+tower-http = { workspace = true, features = ["cors"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Addresses, U256, B256 and keccak256. The same crate `zethora-evm` builds on, so
+# the types crossing the boundary are identical rather than merely convertible.
+alloy-primitives = "1"
+# Only `BlockEnv` is used from revm, but the RPC is the component that numbers
+# blocks, so it is the component that builds the environment the executor
+# executes against. `zethora-evm` asks for `secp256k1` and `portable` on top of
+# `std`; Cargo unifies the two feature sets for the single shared build.
+revm = { version = "43", default-features = false, features = ["std"] }
+# The L2 execution engine: decoding, sender recovery and EVM execution all live
+# there. This crate never re-implements any of it.
+zethora-evm = { path = "../zethora-evm" }
+
+[dev-dependencies]
+# Drives the production router in-process: `oneshot` is the same `Service` call
+# `axum::serve` makes for every request, minus the socket.
+tower = { workspace = true, features = ["util"] }
+http-body-util = { workspace = true }
