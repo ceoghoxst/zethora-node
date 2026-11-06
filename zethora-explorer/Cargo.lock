@@ -4831,6 +4831,7 @@ name = "zethora-explorer"
 version = "0.1.0"
 dependencies = [
  "axum 0.7.9",
+ "http-body-util",
  "kaspa-grpc-client",
  "kaspa-hashes",
  "kaspa-rpc-core",
@@ -4838,6 +4839,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tower",
  "tower-http",
 ]
 
