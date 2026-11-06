@@ -1,4 +1,4 @@
-﻿use crate::{
+use crate::{
     block::Block,
     header::{CompressedParents, Header},
     subnets::SUBNETWORK_ID_COINBASE,
@@ -195,7 +195,7 @@ pub const TESTNET_GENESIS: GenesisBlock = GenesisBlock {
     ]),
 };
 
-/// Zethora private development network (prototype). 0 coins at genesis (ZTH-SPEC-001 Â§6).
+/// Zethora private development network (prototype). 0 coins at genesis (ZTH-SPEC-001 §6).
 /// The real mainnet genesis is created at launch and also commits to the latest Bitcoin block hash.
 pub const SIMNET_GENESIS: GenesisBlock = GenesisBlock {
     hash: Hash::from_bytes([
