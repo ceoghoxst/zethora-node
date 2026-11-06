@@ -1,0 +1,47 @@
+[package]
+name = "zethora-dex"
+description = "Zethora private DEX: a constant-product (x*y=k) AMM charging a 0.3% fee, with shielded LP positions, executed on the Zethora L2 through zethora-evm."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "zethora-dex"
+path = "src/main.rs"
+
+[dependencies]
+# The ABI codec. `sol!` generates the call, event and error types from the same
+# Solidity signatures `contracts/ZethoraPairAMM.sol` declares, so the selectors
+# and the argument encoding are derived from one source of truth instead of
+# hand-encoded hex that could drift from the contract.
+alloy-sol-types.workspace = true
+# Addresses, U256, B256 and keccak256: the AMM math and the storage layout are
+# written in these types so the values crossing into `zethora-evm` are identical
+# rather than merely convertible.
+alloy-primitives = { version = "1" }
+# Only `SpecId` is used from revm, but the binary has to name the hardfork the
+# sandbox executes under, and that type belongs to the engine rather than to this
+# crate. `zethora-evm` asks for `secp256k1` and `portable` on top of `std`; Cargo
+# unifies the two feature sets for the single shared build.
+revm = { version = "43", default-features = false, features = ["std"] }
+# The L2 execution engine. The pair's state lives in an `EvmExecutor` database,
+# so a liquidity add, a swap and a burn all mutate the same state a sequencer
+# would commit to.
+zethora-evm = { path = "../zethora-evm" }
+# The JSON API the binary serves over the seeded pair: one endpoint per entry
+# point, so the flow can be driven with `curl` instead of a node.
+axum = "0.8"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# The CLI surface.
+clap = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+# The integration suite drives one real signed transaction through revm, to prove
+# the deployed pair is code in the executor's database and not a table in Rust.
+# `alloy-consensus` owns the EIP-1559 transaction type and its signing hash;
+# `alloy-signer-local` signs it with a fixed key, so a run is reproducible.
+alloy-consensus = { version = "2.5.0", default-features = false, features = ["k256"] }
+alloy-signer = { version = "2.5.0", default-features = false }
+alloy-signer-local = { version = "2.5.0", default-features = false, features = ["mnemonic"] }
