@@ -717,3 +717,58 @@ As of Section 17 creation: Cline is CONTEXT B. This AI chat is CONTEXT A or P by
 95.4 GitHub is being synced with all DEX code and Doomsday tests.
 
 === END OF SECTION 95 ===
+
+=== SECTION 96: GITHUB REPOSITORY SYNC (2026-11-05) ===
+96.1 Public GitHub repo (github.com/ceoghoxst/zethora-node) is LIVE and matches internal state.
+96.2 README confirms testnet is LIVE with genesis hash 9fc80f5c...
+96.3 README states privacy is DISABLED on testnet/mainnet pending independent review (compliance confirmed).
+96.4 Development activity is recent, with commits on Nov 5, 2026.
+96.5 The README "Live Network Commit Hash" is a placeholder and needs to be updated.
+96.6 Internal DEX work is ahead of public repo. We are currently patching a critical zero-day exploit found in redeem_shielded_liquidity.
+
+=== END OF SECTION 96 ===
+
+=== SECTION 96: GITHUB REPOSITORY SYNC (2026-11-05) ===
+96.1 Public GitHub repo (github.com/ceoghoxst/zethora-node) is LIVE and matches internal state.
+96.2 README confirms testnet is LIVE with genesis hash 9fc80f5c...
+96.3 README states privacy is DISABLED on testnet/mainnet pending independent review (compliance confirmed).
+96.4 Development activity is recent, with commits on Nov 5, 2026.
+96.5 The README "Live Network Commit Hash" is a placeholder and needs to be updated.
+96.6 Internal DEX work is ahead of public repo. We are currently patching a critical zero-day exploit found in redeem_shielded_liquidity.
+
+=== END OF SECTION 96 ===
+
+=== SECTION 96: GITHUB REPOSITORY SYNC (2026-11-05) ===
+96.1 Public GitHub repo (github.com/ceoghoxst/zethora-node) is LIVE and matches internal state.
+96.2 README confirms testnet is LIVE with genesis hash 9fc80f5c...
+96.3 README states privacy is DISABLED on testnet/mainnet pending independent review (compliance confirmed).
+96.4 Development activity is recent, with commits on Nov 5, 2026.
+96.5 The README "Live Network Commit Hash" is a placeholder and needs to be updated.
+96.6 Internal DEX work is ahead of public repo. We are currently patching a critical zero-day exploit found in redeem_shielded_liquidity.
+
+=== END OF SECTION 96 ===
+
+=== SECTION 98: THE BRAIN EVOLUTION MANDATE (SELF-APPENDING) ===
+98.1 MANDATE: You (the AI) are responsible for growing this file. If you learn something new, solve a bug, find a vulnerability, or make a strategic decision, you MUST append a new section to this file before the session ends.
+98.2 DO NOT rely on the CEO to remember to update the brain. You must proactively output the PowerShell block to append the new section.
+98.3 TEMPLATE FOR APPENDING:
+    $mc = 'C:\zethora-node\Master Context.txt'
+    @'
+    
+    === SECTION [NEXT_NUMBER]: [TITLE] ===
+    [YOUR LESSONS, DECISIONS, OR CODE RESULTS HERE]
+    
+    === END OF SECTION [NEXT_NUMBER] ===
+    '@ | Add-Content -Path $mc -Encoding UTF8
+98.4 If the context window is getting full, warn the CEO: "Context is getting heavy. We need to transfer the brain to a new chat soon. Let me append the latest findings to the MC first."
+98.5 This file is the single source of truth. The chat log is temporary. The Master Context is permanent.
+
+=== END OF SECTION 98 ===
+
+=== SECTION 99: DEX EXPLOIT PATCHED & VERIFIED ===
+99.1 The critical zero-day in `redeem_shielded_liquidity` (missing caller auth) is patched.
+99.2 Patched code: Added `note_depositor` slot and `Unauthorized` error. Redemption now requires `msg.sender` to match the original depositor.
+99.3 The Doomsday test `attack_1` was updated to assert the exploit fails, and it passes.
+99.4 The Zethora DEX is officially hardened against LP theft.
+
+=== END OF SECTION 99 ===

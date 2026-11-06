@@ -35,12 +35,10 @@
 //! # Privacy
 //!
 //! A pair cannot hide trades: the reserves are the price, and the price is the
-//! product. What *can* be hidden is ownership of the pool's claim on those
-//! reserves, because an LP position is a pure entitlement that never has to be
-//! touched during a trade. So the LP token has a second representation — a
-//! *note*, committed under an `ownerTag` the depositor derives from themselves
-//! and that never has to be their address — and the pair keeps the note ledger
-//! in its own storage:
+//! product. The LP position itself is a pure entitlement that never has to be
+//! touched during a trade, so the LP token has a second representation — a
+//! *note*, committed under an `ownerTag` and recorded against the depositor's
+//! address — and the pair keeps the note ledger in its own storage:
 //!
 //! * [`add_liquidity_shielded`] deposits and commits the minted liquidity as a
 //!   note instead of crediting an address;

@@ -22,8 +22,10 @@ pragma solidity ^0.8.24;
 ///
 ///      The note ledger lives in its own slot ranges, derived as
 ///      `keccak256(abi.encode(key, namespace))` with namespaces
-///      `0x5eed0001` (amount), `0x5eed0002` (owner tag) and `0x5eed0003`
-///      (nullifier), so adding a note field can never move an existing one.
+///      `0x5eed0001` (amount), `0x5eed0002` (owner tag), `0x5eed0003`
+///      (nullifier) and `0x5eed0004` (depositor — the account bound to the
+///      note, and the only one allowed to redeem it), so adding a note field can
+///      never move an existing one.
 
 interface IERC20Like {
     function balanceOf(address account) external view returns (uint256);
@@ -49,6 +51,7 @@ contract ZethoraPairAMM {
     uint256 private constant NOTE_AMOUNT_NAMESPACE = 0x5eed0001;
     uint256 private constant NOTE_OWNER_NAMESPACE = 0x5eed0002;
     uint256 private constant NULLIFIER_NAMESPACE = 0x5eed0003;
+    uint256 private constant NOTE_DEPOSITOR_NAMESPACE = 0x5eed0004;
 
     // ---------------------------------------------------------------------
     // Storage (see the layout in the contract-level comment)
@@ -103,6 +106,7 @@ contract ZethoraPairAMM {
     error NoteExists(bytes32 commitment);
     error NoteNotFound(bytes32 commitment);
     error NoteOwnerMismatch(bytes32 commitment);
+    error Unauthorized(address caller);
     error InvalidNullifier();
     error NullifierSpent(bytes32 nullifier);
     error InvariantViolated();
@@ -382,6 +386,20 @@ contract ZethoraPairAMM {
         }
     }
 
+    function _noteDepositor(bytes32 commitment) private view returns (address value) {
+        bytes32 slot = _slot(commitment, NOTE_DEPOSITOR_NAMESPACE);
+        assembly {
+            value := sload(slot)
+        }
+    }
+
+    function _setNoteDepositor(bytes32 commitment, address value) private {
+        bytes32 slot = _slot(commitment, NOTE_DEPOSITOR_NAMESPACE);
+        assembly {
+            sstore(slot, value)
+        }
+    }
+
     function _nullifierSpent(bytes32 nullifier) private view returns (bool) {
         bytes32 slot = _slot(nullifier, NULLIFIER_NAMESPACE);
         uint256 value;
@@ -407,10 +425,14 @@ contract ZethoraPairAMM {
         if (_noteAmount(commitment) != 0) revert NoteExists(commitment);
     }
 
-    /// @dev Writes a note and advances the rolling log.
-    function _applyCommitment(bytes32 commitment, bytes32 ownerTag, uint256 liquidity) private {
+    /// @dev Writes a note and advances the rolling log. The note is bound to
+    ///      `depositor`, which is the only account allowed to redeem it.
+    function _applyCommitment(bytes32 commitment, bytes32 ownerTag, uint256 liquidity, address depositor)
+        private
+    {
         _setNoteAmount(commitment, liquidity);
         _setNoteOwner(commitment, ownerTag);
+        _setNoteDepositor(commitment, depositor);
 
         noteCount += 1;
         noteLogDigest = keccak256(abi.encodePacked(noteLogDigest, commitment));
@@ -428,7 +450,7 @@ contract ZethoraPairAMM {
         commitment = _planCommitment(ownerTag, plan.liquidity);
 
         _applyLiquidity(msg.sender, plan);
-        _applyCommitment(commitment, ownerTag, plan.liquidity);
+        _applyCommitment(commitment, ownerTag, plan.liquidity, msg.sender);
 
         return (plan.liquidity, commitment);
     }
@@ -441,15 +463,19 @@ contract ZethoraPairAMM {
         commitment = _planCommitment(ownerTag, lpAmount);
 
         balanceOf[msg.sender] -= lpAmount;
-        _applyCommitment(commitment, ownerTag, lpAmount);
+        _applyCommitment(commitment, ownerTag, lpAmount, msg.sender);
     }
 
     /// @notice Burns a note and pays the underlying assets to `to`.
-    /// @dev The note being cleared is what prevents a double redemption; the
+    /// @dev Authorisation is `msg.sender`: the note records the account that
+    ///      committed it, and only that account may redeem. The `ownerTag` is
+    ///      public (it is deposit calldata and is stored in `noteOwner`), so it
+    ///      identifies the note but cannot authorise a redemption on its own.
+    ///      The note being cleared is what prevents a double redemption; the
     ///      nullifier is recorded as well, for the spent-nullifier set a shielded
-    ///      pool needs. Replacing this authorisation with a proof of knowledge of
-    ///      the owner tag's preimage is the intended upgrade path, and it changes
-    ///      nothing about the payout or the burn.
+    ///      pool needs. Replacing this check with a proof of knowledge of the
+    ///      note's secret is the intended upgrade path, and it changes nothing
+    ///      about the payout or the burn.
     function redeemShieldedLiquidity(bytes32 commitment, bytes32 ownerTag, bytes32 nullifier, address to)
         external
         nonReentrant
@@ -458,6 +484,7 @@ contract ZethoraPairAMM {
         uint256 liquidity = _noteAmount(commitment);
         if (liquidity == 0) revert NoteNotFound(commitment);
         if (_noteOwner(commitment) != ownerTag) revert NoteOwnerMismatch(commitment);
+        if (_noteDepositor(commitment) != msg.sender) revert Unauthorized(msg.sender);
         if (nullifier == bytes32(0)) revert InvalidNullifier();
         if (_nullifierSpent(nullifier)) revert NullifierSpent(nullifier);
 
@@ -465,6 +492,7 @@ contract ZethoraPairAMM {
 
         _setNoteAmount(commitment, 0);
         _setNoteOwner(commitment, bytes32(0));
+        _setNoteDepositor(commitment, address(0));
         bytes32 nullifierSlot = _slot(nullifier, NULLIFIER_NAMESPACE);
         assembly {
             sstore(nullifierSlot, 1)

@@ -62,7 +62,7 @@ pub mod token;
 pub use contract::{
     Deployment, DexError, add_liquidity, add_liquidity_calldata, add_liquidity_shielded,
     add_liquidity_shielded_calldata, deploy, dispatch, lp_balance, note_amount, note_commitment, note_count,
-    note_log_digest, note_owner, nullifier_spent, pair_address, preview_liquidity, preview_removal,
+    note_depositor, note_log_digest, note_owner, nullifier_spent, pair_address, preview_liquidity, preview_removal,
     preview_swap, redeem_shielded_liquidity, redeem_shielded_liquidity_calldata, remove_liquidity,
     remove_liquidity_calldata, reserves, shield_liquidity, shield_liquidity_calldata, swap, swap_calldata, tokens,
     total_supply,

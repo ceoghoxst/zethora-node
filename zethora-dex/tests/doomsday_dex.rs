@@ -14,10 +14,10 @@
 //! The attacks, and their verdicts:
 //!
 //! 1. [`attack_1_shielded_lp_note_is_stolen_through_its_public_owner_tag`] —
-//!    **the pool is drained.** The "shield" authorises a redemption on the
-//!    `owner_tag`, but that tag is plaintext calldata on the deposit and is
-//!    stored in public storage. Any observer reads it, recomputes the
-//!    commitment, and redeems the position to themselves.
+//!    **defended.** The `owner_tag` is public calldata and public storage, so
+//!    knowing it is not authority. The note records the address that committed
+//!    it, and a redemption from anyone else is refused with `Unauthorized`; the
+//!    attacker cannot spend the note, and the honest owner redeems it intact.
 //! 2. [`attack_2_shielded_replay_and_forgery_are_refused`] — **defended.** Wrong
 //!    tags, zero/used nullifiers and double redemptions are all rejected, and the
 //!    note is spent exactly once.
@@ -38,7 +38,7 @@
 use alloy_primitives::{Address, B256, U256, keccak256};
 use zethora_dex::{
     Deployment, DexError, MINIMUM_LIQUIDITY, add_liquidity_calldata, add_liquidity_shielded_calldata, deploy,
-    dispatch, lp_balance, note_amount, note_owner, nullifier_spent, preview_removal, preview_swap,
+    dispatch, note_amount, note_depositor, note_owner, nullifier_spent, preview_removal, preview_swap,
     redeem_shielded_liquidity_calldata, remove_liquidity_calldata, shield_liquidity_calldata, swap_calldata,
     token, total_supply,
 };
@@ -141,25 +141,22 @@ impl Dex {
 }
 
 // ---------------------------------------------------------------------------
-// Attack 1 — theft of a shielded LP position. THIS ONE LANDS.
+// Attack 1 — theft of a shielded LP position. NOW DEFENDED.
 // ---------------------------------------------------------------------------
 
-/// Any observer can redeem any shielded LP note, because the "secret" that
-/// authorises the redemption (`owner_tag`) is public and `dispatch` never checks
-/// `caller` for a redemption.
+/// A note is bound to the address that committed it, so the public `owner_tag`
+/// is no longer enough to redeem it.
 ///
-/// The attacker needs nothing private: the `owner_tag` is an argument to
-/// `addLiquidityShielded`/`shieldLiquidity`, so it is in the deposit's calldata,
-/// and it is also written verbatim into the note's public `noteOwner` storage
-/// slot (`apply_commitment` -> `note_owner_slot`). From `owner_tag`, the pair
-/// address and the (public) minted liquidity, the commitment is
-/// `note_commitment(pair, owner_tag, liquidity)`. Passing that commitment back to
-/// `redeemShieldedLiquidity` with a fresh nullifier and `to = attacker` drains
-/// the note.
+/// The attacker can still recover everything public: the `owner_tag` is in the
+/// deposit calldata and in the note's public `noteOwner` storage, the liquidity
+/// is public, and the commitment is `note_commitment(pair, owner_tag, liquidity)`.
+/// What the attacker cannot forge is the committing account. `apply_commitment`
+/// records it in `noteDepositor`, and `redeem_shielded_liquidity` refuses any
+/// caller other than that account with `Unauthorized`.
 ///
-/// This test proves the exploit: the attacker's balance grows by essentially the
-/// whole pool, and alice — who never revealed an address on the deposit — loses
-/// everything she put in.
+/// This test proves the fix from both sides: Eve (Mallory), who has the tag and
+/// the commitment and no position, is refused and moves nothing; Alice, the
+/// honest depositor, redeems the same note intact.
 #[test]
 fn attack_1_shielded_lp_note_is_stolen_through_its_public_owner_tag() {
     const MINTED: u64 = 10_000_000;
@@ -170,7 +167,6 @@ fn attack_1_shielded_lp_note_is_stolen_through_its_public_owner_tag() {
     dex.fund(alice(), n(MINTED));
     let pair = dex.pair();
 
-    // Alice's "secret" — the only thing that should authorise a redemption.
     let owner_tag = keccak256(b"alice-lp-note-secret");
 
     // Alice shields her deposit. The owner_tag is *in the calldata*.
@@ -185,8 +181,8 @@ fn attack_1_shielded_lp_note_is_stolen_through_its_public_owner_tag() {
 
     assert!(liquidity > U256::ZERO, "the deposit must mint real liquidity");
 
-    // The observer recovers the whole authorisation from public state. The tag is
-    // readable straight off the note, so nothing needs to be guessed.
+    // Everything about the note is public: the tag, the amount and the
+    // commitment derived from them. The authorisation is not.
     assert_eq!(
         note_owner(&mut dex.executor, pair, commitment),
         owner_tag,
@@ -197,69 +193,91 @@ fn attack_1_shielded_lp_note_is_stolen_through_its_public_owner_tag() {
         liquidity,
         "the note's size is public too"
     );
-    // And it is reconstructable from scratch, exactly as an attacker watching the
-    // deposit transaction would: commitment = keccak(domain||pair||tag||liquidity).
+    assert_eq!(
+        note_depositor(&mut dex.executor, pair, commitment),
+        alice(),
+        "the note is bound to the committing account"
+    );
     let recomputed = zethora_dex::note_commitment(pair, owner_tag, liquidity);
     assert_eq!(recomputed, commitment, "the commitment is fully derived from public data");
 
-    // Mallory has never traded, deposited, or been funded. She just redeems.
+    // Eve (Mallory) has never traded, deposited, or been funded. She knows the
+    // tag and the commitment, and she tries to redeem the note to herself.
     assert_eq!(dex.balance(token0(), mallory()), U256::ZERO);
     assert_eq!(dex.balance(token1(), mallory()), U256::ZERO);
 
-    let nullifier = keccak256(b"mallory-nullifier-1");
-    let stolen = dex
+    let eve_nullifier = keccak256(b"mallory-nullifier-1");
+    let err = dex
         .call(
             mallory(),
-            redeem_shielded_liquidity_calldata(commitment, owner_tag, nullifier, mallory()),
+            redeem_shielded_liquidity_calldata(commitment, owner_tag, eve_nullifier, mallory()),
         )
-        .expect("THE THEFT SUCCEEDS: the redeem authorises on the public tag, not on caller");
+        .expect_err("THE THEFT IS REFUSED: the note is bound to its committer");
+    assert!(matches!(err, DexError::Unauthorized(caller) if caller == mallory()), "got {err:?}");
 
-    let got0 = word(&stolen, 0);
-    let got1 = word(&stolen, 1);
-
-    // The payout is almost the entire pool: the note was ~all of the supply, the
-    // only thing left behind is the MINIMUM_LIQUIDITY locked to the zero address.
-    assert!(got0 > n(999_000), "the attacker drains ~all token0, got {got0}");
-    assert!(got1 > n(1_998_000), "the attacker drains ~all token1, got {got1}");
-    assert_eq!(dex.balance(token0(), mallory()), got0, "the stolen token0 is Mallory's");
-    assert_eq!(dex.balance(token1(), mallory()), got1, "the stolen token1 is Mallory's");
-
-    // Alice's position is gone, and she never held an address-based LP balance.
+    // The failed theft moved nothing and did not consume the note or nullifier.
     assert_eq!(
         note_amount(&mut dex.executor, pair, commitment),
-        U256::ZERO,
-        "the note was burnt by the thief"
+        liquidity,
+        "the note is untouched by the attacker"
     );
-    assert_eq!(lp_balance(&mut dex.executor, pair, alice()), U256::ZERO);
+    assert_eq!(
+        note_owner(&mut dex.executor, pair, commitment),
+        owner_tag,
+        "the note tag is untouched by the attacker"
+    );
+    assert!(
+        !nullifier_spent(&mut dex.executor, pair, eve_nullifier),
+        "a failed redemption spends no nullifier"
+    );
+    assert_eq!(dex.balance(token0(), mallory()), U256::ZERO);
+    assert_eq!(dex.balance(token1(), mallory()), U256::ZERO);
+
+    // The honest owner redeems the same note, and is made whole.
+    let alice_nullifier = keccak256(b"alice-nullifier-1");
+    let redeemed = dex
+        .call(
+            alice(),
+            redeem_shielded_liquidity_calldata(commitment, owner_tag, alice_nullifier, alice()),
+        )
+        .expect("THE RIGHTFUL OWNER REDEEMS");
+
+    let got0 = word(&redeemed, 0);
+    let got1 = word(&redeemed, 1);
+
+    assert!(got0 > n(999_000), "alice recovers ~all token0, got {got0}");
+    assert!(got1 > n(1_998_000), "alice recovers ~all token1, got {got1}");
     assert_eq!(
         dex.balance(token0(), alice()),
-        n(MINTED - DEPOSIT0),
-        "alice is left with only her un-deposited token0"
+        n(MINTED - DEPOSIT0) + got0,
+        "alice's token0 is back"
     );
     assert_eq!(
         dex.balance(token1(), alice()),
-        n(MINTED - DEPOSIT1),
-        "alice is left with only her un-deposited token1"
+        n(MINTED - DEPOSIT1) + got1,
+        "alice's token1 is back"
     );
 
-    // Alice cannot even recover her own note: it is spent.
-    let err = dex
-        .call(
-            alice(),
-            redeem_shielded_liquidity_calldata(commitment, owner_tag, keccak256(b"alice-late"), alice()),
-        )
-        .expect_err("alice's own note is already stolen");
-    assert!(matches!(err, DexError::NoteNotFound(c) if c == commitment), "got {err:?}");
+    // The note was burnt by its owner, and the nullifier recorded.
+    assert_eq!(
+        note_amount(&mut dex.executor, pair, commitment),
+        U256::ZERO,
+        "the note was burnt by its owner"
+    );
+    assert!(
+        nullifier_spent(&mut dex.executor, pair, alice_nullifier),
+        "the owner's nullifier is spent"
+    );
+    assert_eq!(dex.balance(token0(), mallory()), U256::ZERO, "eve got nothing");
 }
 
 // ---------------------------------------------------------------------------
 // Attack 2 — replay / forgery. DEFENDED.
 // ---------------------------------------------------------------------------
 
-/// The mechanical protections around a note do hold: only the exact tag redeems,
-/// a nullifier cannot be reused, and a note can be burnt exactly once. This is
-/// the part of the design that works; attack 1 bypasses it by *knowing* the tag,
-/// not by defeating these checks.
+/// The mechanical protections around a note all hold: only the exact tag
+/// matches, only the committing account may redeem, a nullifier cannot be
+/// reused, and a note can be burnt exactly once.
 #[test]
 fn attack_2_shielded_replay_and_forgery_are_refused() {
     const MINTED: u64 = 10_000_000;
