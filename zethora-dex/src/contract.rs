@@ -49,9 +49,11 @@
 //!
 //! The commitment is `keccak256(domain ‖ pair ‖ ownerTag ‖ liquidity)`, so a note
 //! is bound to the pool that issued it and cannot be replayed into another one.
-//! An address that never appears on chain holds the position; the address only
-//! appears at redemption, which is the honest limit of a design that is not a ZK
-//! circuit. See [`redeem_shielded_liquidity`] for exactly what that costs.
+//! A note is additionally bound to the account that committed it: `noteDepositor`
+//! records the caller, and [`redeem_shielded_liquidity`] refuses any caller other
+//! than that account. The `ownerTag` is public, so it identifies the note but does
+//! not authorise a redemption on its own; see [`redeem_shielded_liquidity`] for
+//! what that costs in privacy.
 
 use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
 use alloy_sol_types::{SolCall, SolError, SolValue, sol};
@@ -106,6 +108,7 @@ sol! {
         error NoteExists(bytes32 commitment);
         error NoteNotFound(bytes32 commitment);
         error NoteOwnerMismatch(bytes32 commitment);
+        error Unauthorized(address caller);
         error InvalidNullifier();
         error NullifierSpent(bytes32 nullifier);
         error InvariantViolated();
@@ -160,6 +163,14 @@ pub const NOTE_OWNER_NAMESPACE: U256 = U256::from_limbs([0x5eed_0002, 0, 0, 0]);
 /// Base slot of the `nullifierSpent` mapping: 1 once a note has been redeemed.
 pub const NULLIFIER_NAMESPACE: U256 = U256::from_limbs([0x5eed_0003, 0, 0, 0]);
 
+/// Base slot of the `noteDepositor` mapping: the address that committed a note.
+///
+/// A note is bound to the address that created it so that redemption can be
+/// authenticated against `msg.sender`. The `ownerTag` is still part of the
+/// commitment, but knowing it is no longer enough to move the position: the
+/// redeemer must also be the address that committed the note.
+pub const NOTE_DEPOSITOR_NAMESPACE: U256 = U256::from_limbs([0x5eed_0004, 0, 0, 0]);
+
 /// The domain string mixed into a pair's address.
 pub const PAIR_DOMAIN: &[u8] = b"zethora-dex/pair/v1";
 
@@ -188,6 +199,11 @@ pub fn note_amount_slot(commitment: B256) -> U256 {
 /// The `ownerTag` a note was committed under.
 pub fn note_owner_slot(commitment: B256) -> U256 {
     U256::from_be_bytes::<32>(keccak256((commitment, NOTE_OWNER_NAMESPACE).abi_encode()).0)
+}
+
+/// The address that committed a note.
+pub fn note_depositor_slot(commitment: B256) -> U256 {
+    U256::from_be_bytes::<32>(keccak256((commitment, NOTE_DEPOSITOR_NAMESPACE).abi_encode()).0)
 }
 
 /// Whether a nullifier has been consumed.
@@ -232,6 +248,8 @@ pub enum DexError {
     NoteNotFound(B256),
     /// The note exists but was committed under a different `ownerTag`.
     NoteOwnerMismatch(B256),
+    /// The caller is not the address that committed the note.
+    Unauthorized(Address),
     /// The nullifier presented with a redemption was zero.
     InvalidNullifier,
     /// The nullifier has already been used to redeem a note.
@@ -296,6 +314,7 @@ impl DexError {
             Self::NoteOwnerMismatch(commitment) => {
                 ZethoraPairAMM::NoteOwnerMismatch { commitment: *commitment }.abi_encode()
             }
+            Self::Unauthorized(caller) => ZethoraPairAMM::Unauthorized { caller: *caller }.abi_encode(),
             Self::InvalidNullifier => ZethoraPairAMM::InvalidNullifier {}.abi_encode(),
             Self::NullifierSpent(nullifier) => ZethoraPairAMM::NullifierSpent { nullifier: *nullifier }.abi_encode(),
             Self::InvariantViolated => ZethoraPairAMM::InvariantViolated {}.abi_encode(),
@@ -322,6 +341,7 @@ impl std::fmt::Display for DexError {
             Self::NoteExists(commitment) => write!(f, "a note is already committed as {commitment}"),
             Self::NoteNotFound(commitment) => write!(f, "no note is committed as {commitment}"),
             Self::NoteOwnerMismatch(commitment) => write!(f, "the note {commitment} was committed under another owner tag"),
+            Self::Unauthorized(caller) => write!(f, "{caller} is not the account that committed the note"),
             Self::InvalidNullifier => write!(f, "a nullifier of zero is not a nullifier"),
             Self::NullifierSpent(nullifier) => write!(f, "the nullifier {nullifier} has already been used"),
             Self::InvariantViolated => write!(f, "the trade would decrease the pool invariant k"),
@@ -454,6 +474,11 @@ pub fn note_amount(executor: &mut EvmExecutor, pair: Address, commitment: B256) 
 /// The `ownerTag` a note was committed under.
 pub fn note_owner(executor: &mut EvmExecutor, pair: Address, commitment: B256) -> B256 {
     B256::from(executor.storage(pair, note_owner_slot(commitment)).to_be_bytes::<32>())
+}
+
+/// The address that committed a note. Redemption is authorised against this.
+pub fn note_depositor(executor: &mut EvmExecutor, pair: Address, commitment: B256) -> Address {
+    word_to_address(executor.storage(pair, note_depositor_slot(commitment)))
 }
 
 /// How many notes the pair has committed.
@@ -936,18 +961,25 @@ fn plan_commitment(
 /// commitments was issued by this pair, and it is the seed an incremental tree
 /// can be built on, but membership proofs need the tree, which belongs with the
 /// shielded pool rather than inside an AMM.
+///
+/// `depositor` is written alongside the note so that redemption can authorise on
+/// the account that created the position, not only on the public `owner_tag`.
 fn apply_commitment(
     executor: &mut EvmExecutor,
     pair: Address,
     commitment: B256,
     owner_tag: B256,
     liquidity: U256,
+    depositor: Address,
 ) -> Result<(), DexError> {
     executor
         .set_storage(pair, note_amount_slot(commitment), liquidity)
         .map_err(DexError::StorageWriteFailed)?;
     executor
         .set_storage(pair, note_owner_slot(commitment), U256::from_be_bytes::<32>(owner_tag.0))
+        .map_err(DexError::StorageWriteFailed)?;
+    executor
+        .set_storage(pair, note_depositor_slot(commitment), address_to_word(depositor))
         .map_err(DexError::StorageWriteFailed)?;
 
     let count = note_count(executor, pair).checked_add(U256::from(1)).ok_or(DexError::Overflow)?;
@@ -965,9 +997,10 @@ fn apply_commitment(
 /// Deposits liquidity and commits the LP tokens as a note instead of an address.
 ///
 /// This is the shielded way into a pool: the pair sees two token transfers and a
-/// commitment, and never sees who owns the result. `owner_tag` is the depositor's
-/// own secret — `keccak256(address ‖ salt)` is the usual derivation — and the
-/// returned commitment is what they keep in order to redeem it.
+/// commitment. `owner_tag` is the depositor's own tag — `keccak256(address ‖ salt)`
+/// is the usual derivation — and the returned commitment is what they keep in
+/// order to redeem it. The note is bound to `provider`, so only `provider` can
+/// redeem it; the tag is part of the commitment and is not an authorisation.
 ///
 /// The deposit is priced exactly like [`add_liquidity`], by the same
 /// [`plan_liquidity`], so a shielded position and a public one of the same size
@@ -984,7 +1017,7 @@ pub fn add_liquidity_shielded(
     let commitment = plan_commitment(executor, pair, owner_tag, plan.liquidity)?;
 
     apply_liquidity(executor, pair, provider, &plan)?;
-    apply_commitment(executor, pair, commitment, owner_tag, plan.liquidity)?;
+    apply_commitment(executor, pair, commitment, owner_tag, plan.liquidity, provider)?;
 
     Ok((plan.liquidity, commitment))
 }
@@ -1014,19 +1047,23 @@ pub fn shield_liquidity(
     executor
         .set_storage(pair, lp_balance_slot(provider), balance - lp_amount)
         .map_err(DexError::StorageWriteFailed)?;
-    apply_commitment(executor, pair, commitment, owner_tag, lp_amount)?;
+    apply_commitment(executor, pair, commitment, owner_tag, lp_amount, provider)?;
 
     Ok(commitment)
 }
 
 /// Burns a note and pays the underlying tokens to `to`.
 ///
-/// Three things have to hold, and they are checked before anything is written:
+/// Four things have to hold, and they are checked before anything is written:
 ///
 /// 1. the note exists — its amount is non-zero;
-/// 2. `owner_tag` is the tag it was committed under, which is what authorises the
-///    redemption;
-/// 3. `nullifier` is fresh. The note being cleared is the load-bearing check (a
+/// 2. `owner_tag` is the tag it was committed under;
+/// 3. `caller` is the address that committed the note. This is the
+///    authorisation check: `owner_tag` is public (it is calldata on the deposit
+///    and is written to the note's public `noteOwner` slot), so on its own it
+///    authenticates nobody. The note is therefore bound to `noteDepositor` at
+///    commit time, and only that account may redeem it;
+/// 4. `nullifier` is fresh. The note being cleared is the load-bearing check (a
 ///    second redemption finds no note); the nullifier is recorded as well because
 ///    a future shielded pool will need a set of spent nullifiers that is separate
 ///    from the notes themselves, and because a redemption that presents a
@@ -1035,17 +1072,17 @@ pub fn shield_liquidity(
 /// # What a redeemer gives up
 ///
 /// The payout is an ordinary token transfer to `to`, so redeeming links the
-/// position to that address: an observer who can guess `owner_tag` candidates
-/// against the on-chain commitment learns which address withdrew. Closing that
-/// gap needs a zero-knowledge proof that the redeemer knows the tag's preimage
-/// without revealing it — plus a fresh address per redemption as defence in depth.
-/// That proof belongs in the shielded pool, not in a constant-product pair, and
-/// this function is written so that swapping its authorisation check for a proof
-/// verification is a local change: the payout, the burn and the nullifier ledger
-/// stay as they are.
+/// position to that address: an observer learns which address withdrew. Closing
+/// that gap needs a zero-knowledge proof that the redeemer knows the note's
+/// secret without revealing it — plus a fresh address per redemption as defence
+/// in depth. That proof belongs in the shielded pool, not in a constant-product
+/// pair, and this function is written so that swapping its authorisation check
+/// for a proof verification is a local change: the payout, the burn and the
+/// nullifier ledger stay as they are.
 pub fn redeem_shielded_liquidity(
     executor: &mut EvmExecutor,
     pair: Address,
+    caller: Address,
     commitment: B256,
     owner_tag: B256,
     nullifier: B256,
@@ -1059,6 +1096,9 @@ pub fn redeem_shielded_liquidity(
     }
     if note_owner(executor, pair, commitment) != owner_tag {
         return Err(DexError::NoteOwnerMismatch(commitment));
+    }
+    if note_depositor(executor, pair, commitment) != caller {
+        return Err(DexError::Unauthorized(caller));
     }
     if nullifier.is_zero() {
         return Err(DexError::InvalidNullifier);
@@ -1077,6 +1117,9 @@ pub fn redeem_shielded_liquidity(
         .map_err(DexError::StorageWriteFailed)?;
     executor
         .set_storage(pair, note_owner_slot(commitment), U256::ZERO)
+        .map_err(DexError::StorageWriteFailed)?;
+    executor
+        .set_storage(pair, note_depositor_slot(commitment), U256::ZERO)
         .map_err(DexError::StorageWriteFailed)?;
     executor
         .set_storage(pair, nullifier_slot(nullifier), U256::from(1))
@@ -1278,6 +1321,7 @@ pub fn dispatch(
         let (amount0, amount1) = redeem_shielded_liquidity(
             executor,
             pair,
+            caller,
             call.commitment,
             call.ownerTag,
             call.nullifier,
