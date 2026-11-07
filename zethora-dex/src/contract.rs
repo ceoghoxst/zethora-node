@@ -26,11 +26,12 @@
 //! **Read, decide, then write.** Each public call first computes a plan
 //! ([`LiquidityPlan`], [`SwapPlan`], [`RemovalPlan`]) from storage, validates the
 //! plan against every condition the call must satisfy — balances, the invariant,
-//! the note ledger — and only then touches state. This is not stylistic: a
-//! direct storage write has no transaction around it, so a check performed
-//! halfway through the writes could leave balances moved and the trade refused.
-//! Batching calls in a sequencer transaction is what makes a group of writes
-//! atomic; this layer's job is to make sure a call never needs that.
+//! the caller's own deadline and minimum, the note ledger — and only then touches
+//! state. This is not stylistic: a direct storage write has no transaction around
+//! it, so a check performed halfway through the writes could leave balances moved
+//! and the trade refused. Batching calls in a sequencer transaction is what makes
+//! a group of writes atomic; this layer's job is to make sure a call never needs
+//! that.
 //!
 //! # Privacy
 //!
@@ -52,6 +53,12 @@
 //! than that account. The `ownerTag` is public, so it identifies the note but does
 //! not authorise a redemption on its own; see [`redeem_shielded_liquidity`] for
 //! what that costs in privacy.
+//!
+//! The nullifier a redemption presents is derived, not chosen:
+//! [`note_nullifier`] is `keccak256(domain ‖ commitment ‖ redeemer)`. A nullifier
+//! a redeemer could pick freely is one anyone could burn ahead of it — the spent
+//! set is public and unauthenticated — so binding it to the note and the account
+//! is what keeps a note from being griefed out of existence.
 
 use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
 use alloy_sol_types::{SolCall, SolError, SolValue, sol};
@@ -77,12 +84,22 @@ sol! {
         uint256 public noteCount;
         bytes32 public noteLogDigest;
 
-        function addLiquidity(uint256 amountA, uint256 amountB) external returns (uint256 liquidity);
-        function swap(address tokenIn, uint256 amountIn) external returns (uint256 amountOut);
-        function removeLiquidity(uint256 lpAmount) external returns (uint256 amountA, uint256 amountB);
-        function addLiquidityShielded(uint256 amountA, uint256 amountB, bytes32 ownerTag)
+        function addLiquidity(address tokenA, uint256 amountA, address tokenB, uint256 amountB)
             external
-            returns (uint256 liquidity, bytes32 commitment);
+            returns (uint256 liquidity);
+        function swap(address tokenIn, uint256 amountIn, uint256 minAmountOut, uint256 deadline)
+            external
+            returns (uint256 amountOut);
+        function removeLiquidity(uint256 lpAmount, uint256 amountAMin, uint256 amountBMin, uint256 deadline)
+            external
+            returns (uint256 amountA, uint256 amountB);
+        function addLiquidityShielded(
+            address tokenA,
+            uint256 amountA,
+            address tokenB,
+            uint256 amountB,
+            bytes32 ownerTag
+        ) external returns (uint256 liquidity, bytes32 commitment);
         function shieldLiquidity(uint256 lpAmount, bytes32 ownerTag) external returns (bytes32 commitment);
         function redeemShieldedLiquidity(bytes32 commitment, bytes32 ownerTag, bytes32 nullifier, address to)
             external
@@ -100,6 +117,8 @@ sol! {
         error InsufficientLiquidityBurned();
         error InsufficientInputAmount();
         error InsufficientOutputAmount();
+        error Expired(uint256 deadline);
+        error SlippageExceeded(uint256 amountOut, uint256 minimum);
         error IdenticalTokens();
         error InvalidToken(address token);
         error InvalidOwnerTag();
@@ -175,6 +194,15 @@ pub const PAIR_DOMAIN: &[u8] = b"zethora-dex/pair/v1";
 /// The domain string mixed into an LP note's commitment.
 pub const NOTE_DOMAIN: &[u8] = b"zethora-dex/lp-note/v1";
 
+/// The domain string mixed into an LP note's nullifier.
+pub const NULLIFIER_DOMAIN: &[u8] = b"zethora-dex/lp-nullifier/v1";
+
+/// The message `addLiquidity` reverts with when the named tokens are not the pair's.
+///
+/// The canonical Solidity refuses this with a `require`, not a custom error, so
+/// the payload is Solidity's `Error(string)`: see [`require_revert`].
+pub const INVALID_TOKENS_MESSAGE: &str = "INVALID_TOKENS";
+
 /// The runtime code a deployed pair carries.
 ///
 /// `PUSH1 0 PUSH1 0 REVERT` — four bytes that revert with empty data. Direct EVM
@@ -234,10 +262,26 @@ pub enum DexError {
     InsufficientInputAmount,
     /// A swap would pay out a zero amount.
     InsufficientOutputAmount,
+    /// The call arrived after its deadline: `block.timestamp > deadline`.
+    Expired(U256),
+    /// The call would have settled worse than the caller's own minimum.
+    SlippageExceeded {
+        /// What the pair would actually have paid out.
+        amount_out: U256,
+        /// The floor the caller named.
+        minimum: U256,
+    },
     /// The two tokens of the pair are the same address.
     IdenticalTokens,
     /// The address is not one of the pair's two tokens.
     InvalidToken(Address),
+    /// A deposit named two tokens that are not this pair's two tokens.
+    InvalidTokens {
+        /// The token the caller named first.
+        token_a: Address,
+        /// The token the caller named second.
+        token_b: Address,
+    },
     /// A note was committed with a zero `ownerTag`, which nobody could claim.
     InvalidOwnerTag,
     /// A commitment with that `ownerTag` and liquidity is already outstanding.
@@ -248,7 +292,8 @@ pub enum DexError {
     NoteOwnerMismatch(B256),
     /// The caller is not the address that committed the note.
     Unauthorized(Address),
-    /// The nullifier presented with a redemption was zero.
+    /// The nullifier presented with a redemption is not the one this account
+    /// derives for that note.
     InvalidNullifier,
     /// The nullifier has already been used to redeem a note.
     NullifierSpent(B256),
@@ -304,8 +349,13 @@ impl DexError {
             Self::InsufficientLiquidityBurned => ZethoraPairAMM::InsufficientLiquidityBurned {}.abi_encode(),
             Self::InsufficientInputAmount => ZethoraPairAMM::InsufficientInputAmount {}.abi_encode(),
             Self::InsufficientOutputAmount => ZethoraPairAMM::InsufficientOutputAmount {}.abi_encode(),
+            Self::Expired(deadline) => ZethoraPairAMM::Expired { deadline: *deadline }.abi_encode(),
+            Self::SlippageExceeded { amount_out, minimum } => {
+                ZethoraPairAMM::SlippageExceeded { amountOut: *amount_out, minimum: *minimum }.abi_encode()
+            }
             Self::IdenticalTokens => ZethoraPairAMM::IdenticalTokens {}.abi_encode(),
             Self::InvalidToken(token) => ZethoraPairAMM::InvalidToken { token: *token }.abi_encode(),
+            Self::InvalidTokens { .. } => require_revert(INVALID_TOKENS_MESSAGE),
             Self::InvalidOwnerTag => ZethoraPairAMM::InvalidOwnerTag {}.abi_encode(),
             Self::NoteExists(commitment) => ZethoraPairAMM::NoteExists { commitment: *commitment }.abi_encode(),
             Self::NoteNotFound(commitment) => ZethoraPairAMM::NoteNotFound { commitment: *commitment }.abi_encode(),
@@ -324,6 +374,26 @@ impl DexError {
     }
 }
 
+/// The revert payload of a Solidity `require(condition, message)`.
+///
+/// `0x08c379a0` is the `Error(string)` selector; what follows is the message as
+/// an ABI-encoded dynamic string — offset, length, the bytes, and zero padding to
+/// a whole number of 32-byte words. The pair reverts with a `require` for the
+/// token check alone, because that is what the canonical Solidity does, so the
+/// payload has to be these exact bytes rather than a custom error's.
+fn require_revert(message: &str) -> Vec<u8> {
+    let bytes = message.as_bytes();
+    let padded = bytes.len().div_ceil(32) * 32;
+
+    let mut payload = Vec::with_capacity(4 + 64 + padded);
+    payload.extend_from_slice(&[0x08, 0xc3, 0x79, 0xa0]);
+    payload.extend_from_slice(&U256::from(32).to_be_bytes::<32>());
+    payload.extend_from_slice(&U256::from(bytes.len()).to_be_bytes::<32>());
+    payload.extend_from_slice(bytes);
+    payload.resize(payload.len() + (padded - bytes.len()), 0);
+    payload
+}
+
 impl std::fmt::Display for DexError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -333,14 +403,23 @@ impl std::fmt::Display for DexError {
             Self::InsufficientLiquidityBurned => write!(f, "the burn is too small to pay out both tokens"),
             Self::InsufficientInputAmount => write!(f, "the swap input is zero"),
             Self::InsufficientOutputAmount => write!(f, "the swap output would be zero"),
+            Self::Expired(deadline) => write!(f, "the call arrived after its deadline of {deadline}"),
+            Self::SlippageExceeded { amount_out, minimum } => {
+                write!(f, "the call would settle at {amount_out}, below the caller's minimum of {minimum}")
+            }
             Self::IdenticalTokens => write!(f, "a pair needs two different tokens"),
             Self::InvalidToken(token) => write!(f, "{token} is not one of the pair's tokens"),
+            Self::InvalidTokens { token_a, token_b } => {
+                write!(f, "{token_a} and {token_b} are not the pair's two tokens")
+            }
             Self::InvalidOwnerTag => write!(f, "an owner tag of zero could never be redeemed"),
             Self::NoteExists(commitment) => write!(f, "a note is already committed as {commitment}"),
             Self::NoteNotFound(commitment) => write!(f, "no note is committed as {commitment}"),
             Self::NoteOwnerMismatch(commitment) => write!(f, "the note {commitment} was committed under another owner tag"),
             Self::Unauthorized(caller) => write!(f, "{caller} is not the account that committed the note"),
-            Self::InvalidNullifier => write!(f, "a nullifier of zero is not a nullifier"),
+            Self::InvalidNullifier => {
+                write!(f, "the nullifier is not the one this account derives for the note")
+            }
             Self::NullifierSpent(nullifier) => write!(f, "the nullifier {nullifier} has already been used"),
             Self::InvariantViolated => write!(f, "the trade would decrease the pool invariant k"),
             Self::Overflow => write!(f, "the arithmetic overflowed a 256-bit word"),
@@ -505,6 +584,22 @@ pub fn note_commitment(pair: Address, owner_tag: B256, liquidity: U256) -> B256 
     keccak256([NOTE_DOMAIN, pair.as_slice(), owner_tag.as_slice(), amount.as_slice()].concat())
 }
 
+/// The nullifier `redeemer` must present to spend a note — and the only one that
+/// will be accepted.
+///
+/// `keccak256(domain ‖ commitment ‖ redeemer)`. Deriving it is what stops a third
+/// party from griefing a position: a nullifier the redeemer chooses freely is a
+/// nullifier anyone can burn ahead of them, since the spent-nullifier set is
+/// public and unauthenticated. Binding the value to the note *and* to the account
+/// that may spend it means the only account able to write the slot is the one
+/// whose redemption would clear it anyway.
+///
+/// The mirror of this in `contracts/ZethoraPairAMM.sol` is `noteNullifier`, so a
+/// wallet can compute what it must present without calling the pair.
+pub fn note_nullifier(commitment: B256, redeemer: Address) -> B256 {
+    keccak256([NULLIFIER_DOMAIN, commitment.as_slice(), redeemer.as_slice()].concat())
+}
+
 /// Fails unless a pair is actually deployed at `pair`.
 fn require_pair(executor: &mut EvmExecutor, pair: Address) -> Result<(Address, Address), DexError> {
     let (token0, token1) = tokens(executor, pair);
@@ -512,6 +607,39 @@ fn require_pair(executor: &mut EvmExecutor, pair: Address) -> Result<(Address, A
         return Err(DexError::PairNotDeployed(pair));
     }
     Ok((token0, token1))
+}
+
+/// Puts a caller's two amounts into the pair's reserve order.
+///
+/// A depositor names each amount against the token it is offered for, and those
+/// two tokens can arrive in either order — the ABI is
+/// `addLiquidity(tokenA, amountA, tokenB, amountB)` precisely so that a wallet
+/// never has to know which of the two addresses sorts first. The amounts are
+/// mapped onto reserve order here: a caller that named token1 first has its two
+/// amounts swapped, and the result is `(amount0, amount1)` — each amount paired
+/// with the token it was offered for, never with the position it was written in.
+///
+/// Getting this wrong is a real loss rather than a cosmetic one. Treating the
+/// first `uint256` as `reserve0` when it was meant for `token1` deposits at a
+/// ratio the caller never agreed to — on a pool at an uneven price, an attacker
+/// can choose the amount that makes the mistake maximal — so anything that is not
+/// exactly the pair's two tokens, in either order, is refused outright
+/// (`INVALID_TOKENS`, the same `require` the canonical Solidity uses).
+fn sort_amounts(
+    tokens: (Address, Address),
+    token_a: Address,
+    amount_a: U256,
+    token_b: Address,
+    amount_b: U256,
+) -> Result<(U256, U256), DexError> {
+    let (token0, token1) = tokens;
+    if token_a == token0 && token_b == token1 {
+        return Ok((amount_a, amount_b));
+    }
+    if token_a == token1 && token_b == token0 {
+        return Ok((amount_b, amount_a));
+    }
+    Err(DexError::InvalidTokens { token_a, token_b })
 }
 
 /// Re-reads the reserves from the token balances.
@@ -664,18 +792,24 @@ fn apply_liquidity(
 
 /// Adds liquidity for `provider` and credits it the minted LP tokens.
 ///
-/// `amount_a` is token0 and `amount_b` is token1 — the reserve order, which is
-/// [`Deployment::tokens`]. The return value is the liquidity actually minted,
-/// which for a pool that already has liquidity may be worth less than the amounts
-/// offered: see [`plan_liquidity`].
+/// The amounts are named against the tokens they are offered for and may arrive in
+/// either order: [`sort_amounts`] maps them onto the pair's reserve order, so
+/// `amount_a` is always token A's amount and never silently the amount of
+/// whichever token happens to sort first. The return value is the liquidity
+/// actually minted, which for a pool that already has liquidity may be worth less
+/// than the amounts offered: see [`plan_liquidity`].
 pub fn add_liquidity(
     executor: &mut EvmExecutor,
     pair: Address,
     provider: Address,
+    token_a: Address,
     amount_a: U256,
+    token_b: Address,
     amount_b: U256,
 ) -> Result<U256, DexError> {
-    let plan = plan_liquidity(executor, pair, amount_a, amount_b)?;
+    let (amount0, amount1) =
+        sort_amounts(require_pair(executor, pair)?, token_a, amount_a, token_b, amount_b)?;
+    let plan = plan_liquidity(executor, pair, amount0, amount1)?;
     apply_liquidity(executor, pair, provider, &plan)?;
 
     let credited = lp_balance(executor, pair, provider)
@@ -794,19 +928,43 @@ fn apply_swap(
 ///
 /// `token_in` says which side the trader is buying, so the caller never has to
 /// know the reserve order — `token0` and `token1` are an implementation detail of
-/// *which* reserve is which, not of what the trade means. The return value is the
-/// output amount, which is exactly what the formula promises: no slippage
-/// parameter, no deadline, no path. Those belong to a router that can see more
-/// than one pool; a single pair with an explicit input and an explicit recipient
-/// needs none of them.
+/// *which* reserve is which, not of what the trade means.
+///
+/// The two arguments in the middle are the caller's own terms, and both are
+/// enforced before anything moves:
+///
+/// * `deadline` is the last block timestamp the trade may land in. An executor
+///   holds a transaction and includes it later; without a deadline a trade signed
+///   at one price can be included at another, which is a trade the signer never
+///   agreed to. `block.timestamp > deadline` is refused with
+///   [`DexError::Expired`].
+/// * `min_amount_out` is the least the trader will accept. The price is read from
+///   the reserves between signing and inclusion, so a trade can be sandwiched —
+///   front-run with a large buy, then back-run to sell into the moved price. The
+///   floor is what makes that unprofitable: any output below it is refused with
+///   [`DexError::SlippageExceeded`] instead of being paid out.
+///
+/// Both are the caller's to choose, so a wallet that genuinely wants "whatever the
+/// pool says" passes `U256::ZERO` and `U256::MAX`; what changes is that the choice
+/// is explicit and enforced on chain rather than assumed absent.
 pub fn swap(
     executor: &mut EvmExecutor,
     pair: Address,
     trader: Address,
     token_in: Address,
     amount_in: U256,
+    min_amount_out: U256,
+    deadline: U256,
 ) -> Result<U256, DexError> {
+    if executor.block_timestamp() > deadline {
+        return Err(DexError::Expired(deadline));
+    }
+
     let plan = plan_swap(executor, pair, trader, token_in, amount_in)?;
+    if plan.amount_out < min_amount_out {
+        return Err(DexError::SlippageExceeded { amount_out: plan.amount_out, minimum: min_amount_out });
+    }
+
     apply_swap(executor, pair, trader, &plan)?;
     Ok(plan.amount_out)
 }
@@ -899,13 +1057,34 @@ fn apply_removal(
 /// not make would have been refused by [`plan_removal`] rather than discovered
 /// halfway. `lp_amount` is the *liquidity*, in the same unit [`add_liquidity`]
 /// returns.
+///
+/// The caller names the least it will accept of each side — `amount_a_min` against
+/// token0, `amount_b_min` against token1, the same order the payout is returned in
+/// — plus the last block timestamp the burn may land in. Both are enforced before
+/// the balance is touched: a burn priced against reserves that moved between
+/// signing and inclusion pays out less than the signer was promised, and the floors
+/// turn that into a refusal ([`DexError::SlippageExceeded`]) rather than a loss. A
+/// stale burn is refused with [`DexError::Expired`].
 pub fn remove_liquidity(
     executor: &mut EvmExecutor,
     pair: Address,
     provider: Address,
     lp_amount: U256,
+    amount_a_min: U256,
+    amount_b_min: U256,
+    deadline: U256,
 ) -> Result<(U256, U256), DexError> {
+    if executor.block_timestamp() > deadline {
+        return Err(DexError::Expired(deadline));
+    }
+
     let plan = plan_removal(executor, pair, lp_amount)?;
+    if plan.amount0 < amount_a_min {
+        return Err(DexError::SlippageExceeded { amount_out: plan.amount0, minimum: amount_a_min });
+    }
+    if plan.amount1 < amount_b_min {
+        return Err(DexError::SlippageExceeded { amount_out: plan.amount1, minimum: amount_b_min });
+    }
 
     let balance = lp_balance(executor, pair, provider);
     if balance < lp_amount {
@@ -1001,17 +1180,22 @@ fn apply_commitment(
 /// redeem it; the tag is part of the commitment and is not an authorisation.
 ///
 /// The deposit is priced exactly like [`add_liquidity`], by the same
-/// [`plan_liquidity`], so a shielded position and a public one of the same size
-/// mint the same liquidity.
+/// [`plan_liquidity`] and after the same [`sort_amounts`] step, so a shielded
+/// position and a public one of the same size mint the same liquidity — and the
+/// tokens may be named in either order here too.
 pub fn add_liquidity_shielded(
     executor: &mut EvmExecutor,
     pair: Address,
     provider: Address,
+    token_a: Address,
     amount_a: U256,
+    token_b: Address,
     amount_b: U256,
     owner_tag: B256,
 ) -> Result<(U256, B256), DexError> {
-    let plan = plan_liquidity(executor, pair, amount_a, amount_b)?;
+    let (amount0, amount1) =
+        sort_amounts(require_pair(executor, pair)?, token_a, amount_a, token_b, amount_b)?;
+    let plan = plan_liquidity(executor, pair, amount0, amount1)?;
     let commitment = plan_commitment(executor, pair, owner_tag, plan.liquidity)?;
 
     apply_liquidity(executor, pair, provider, &plan)?;
@@ -1061,11 +1245,18 @@ pub fn shield_liquidity(
 ///    and is written to the note's public `noteOwner` slot), so on its own it
 ///    authenticates nobody. The note is therefore bound to `noteDepositor` at
 ///    commit time, and only that account may redeem it;
-/// 4. `nullifier` is fresh. The note being cleared is the load-bearing check (a
-///    second redemption finds no note); the nullifier is recorded as well because
-///    a future shielded pool will need a set of spent nullifiers that is separate
-///    from the notes themselves, and because a redemption that presents a
-///    nullifier already used is a replay, not a mistake.
+/// 4. `nullifier` is the one this account derives for this commitment —
+///    [`note_nullifier`], `keccak256(domain ‖ commitment ‖ caller)`. It is not a
+///    value the redeemer picks. A free choice is griefable: the spent-nullifier
+///    set is public and unauthenticated, so anyone who learned a note's nullifier
+///    — or could guess the obvious one a wallet would use — could write it as
+///    spent and make the real redemption fail for good. Deriving it from the note
+///    and the account means the only party able to consume it is the party whose
+///    redemption clears the note anyway.
+/// 5. `nullifier` has not been recorded as spent. This is belt and braces on top
+///    of (4) and (1): the note being cleared is what actually prevents a second
+///    redemption, and the recorded set is what a future shielded pool will need
+///    when authorisation becomes a proof rather than an address.
 ///
 /// # What a redeemer gives up
 ///
@@ -1098,11 +1289,15 @@ pub fn redeem_shielded_liquidity(
     if note_depositor(executor, pair, commitment) != caller {
         return Err(DexError::Unauthorized(caller));
     }
-    if nullifier.is_zero() {
-        return Err(DexError::InvalidNullifier);
-    }
+    // The spent check comes first so that a replay is reported as a replay, and
+    // the derivation after it so that a nullifier this account did not derive is
+    // refused by name even when it is fresh. Neither can be reached by a third
+    // party: both slots are keyed by a value only the depositor can compute.
     if nullifier_spent(executor, pair, nullifier) {
         return Err(DexError::NullifierSpent(nullifier));
+    }
+    if nullifier != note_nullifier(commitment, caller) {
+        return Err(DexError::InvalidNullifier);
     }
 
     let plan = plan_removal(executor, pair, liquidity)?;
@@ -1135,14 +1330,17 @@ pub fn redeem_shielded_liquidity(
 /// The same [`plan_liquidity`] that the deposit itself runs, exposed because a
 /// wallet has to show a depositor what they will get before they sign anything —
 /// and because a preview that used a second implementation of the formula would
-/// be a preview of a different contract.
+/// be a preview of a different contract. The amounts are in *reserve* order
+/// (`amount0` is token0's), which is the form [`plan_liquidity`] prices;
+/// [`add_liquidity`] reaches it by sorting the caller's own `(tokenA, amountA,
+/// tokenB, amountB)` with [`sort_amounts`].
 pub fn preview_liquidity(
     executor: &mut EvmExecutor,
     pair: Address,
-    amount_a: U256,
-    amount_b: U256,
+    amount0: U256,
+    amount1: U256,
 ) -> Result<U256, DexError> {
-    plan_liquidity(executor, pair, amount_a, amount_b).map(|plan| plan.liquidity)
+    plan_liquidity(executor, pair, amount0, amount1).map(|plan| plan.liquidity)
 }
 
 /// The output [`swap`] would pay for `amount_in`, without doing it.
@@ -1178,22 +1376,22 @@ pub fn preview_removal(
 // Calldata
 // ---------------------------------------------------------------------------
 
-/// The selector of `addLiquidity(uint256,uint256)`.
+/// The selector of `addLiquidity(address,uint256,address,uint256)`.
 pub fn add_liquidity_selector() -> [u8; 4] {
     ZethoraPairAMM::addLiquidityCall::SELECTOR
 }
 
-/// The selector of `swap(address,uint256)`.
+/// The selector of `swap(address,uint256,uint256,uint256)`.
 pub fn swap_selector() -> [u8; 4] {
     ZethoraPairAMM::swapCall::SELECTOR
 }
 
-/// The selector of `removeLiquidity(uint256)`.
+/// The selector of `removeLiquidity(uint256,uint256,uint256,uint256)`.
 pub fn remove_liquidity_selector() -> [u8; 4] {
     ZethoraPairAMM::removeLiquidityCall::SELECTOR
 }
 
-/// The selector of `addLiquidityShielded(uint256,uint256,bytes32)`.
+/// The selector of `addLiquidityShielded(address,uint256,address,uint256,bytes32)`.
 pub fn add_liquidity_shielded_selector() -> [u8; 4] {
     ZethoraPairAMM::addLiquidityShieldedCall::SELECTOR
 }
@@ -1208,25 +1406,50 @@ pub fn redeem_shielded_liquidity_selector() -> [u8; 4] {
     ZethoraPairAMM::redeemShieldedLiquidityCall::SELECTOR
 }
 
-/// `addLiquidity(amountA, amountB)` as calldata.
-pub fn add_liquidity_calldata(amount_a: U256, amount_b: U256) -> Vec<u8> {
-    ZethoraPairAMM::addLiquidityCall { amountA: amount_a, amountB: amount_b }.abi_encode()
-}
-
-/// `swap(tokenIn, amountIn)` as calldata.
-pub fn swap_calldata(token_in: Address, amount_in: U256) -> Vec<u8> {
-    ZethoraPairAMM::swapCall { tokenIn: token_in, amountIn: amount_in }.abi_encode()
-}
-
-/// `removeLiquidity(lpAmount)` as calldata.
-pub fn remove_liquidity_calldata(lp_amount: U256) -> Vec<u8> {
-    ZethoraPairAMM::removeLiquidityCall { lpAmount: lp_amount }.abi_encode()
-}
-
-/// `addLiquidityShielded(amountA, amountB, ownerTag)` as calldata.
-pub fn add_liquidity_shielded_calldata(amount_a: U256, amount_b: U256, owner_tag: B256) -> Vec<u8> {
-    ZethoraPairAMM::addLiquidityShieldedCall { amountA: amount_a, amountB: amount_b, ownerTag: owner_tag }
+/// `addLiquidity(tokenA, amountA, tokenB, amountB)` as calldata.
+pub fn add_liquidity_calldata(token_a: Address, amount_a: U256, token_b: Address, amount_b: U256) -> Vec<u8> {
+    ZethoraPairAMM::addLiquidityCall { tokenA: token_a, amountA: amount_a, tokenB: token_b, amountB: amount_b }
         .abi_encode()
+}
+
+/// `swap(tokenIn, amountIn, minAmountOut, deadline)` as calldata.
+pub fn swap_calldata(token_in: Address, amount_in: U256, min_amount_out: U256, deadline: U256) -> Vec<u8> {
+    ZethoraPairAMM::swapCall { tokenIn: token_in, amountIn: amount_in, minAmountOut: min_amount_out, deadline }
+        .abi_encode()
+}
+
+/// `removeLiquidity(lpAmount, amountAMin, amountBMin, deadline)` as calldata.
+pub fn remove_liquidity_calldata(
+    lp_amount: U256,
+    amount_a_min: U256,
+    amount_b_min: U256,
+    deadline: U256,
+) -> Vec<u8> {
+    ZethoraPairAMM::removeLiquidityCall {
+        lpAmount: lp_amount,
+        amountAMin: amount_a_min,
+        amountBMin: amount_b_min,
+        deadline,
+    }
+    .abi_encode()
+}
+
+/// `addLiquidityShielded(tokenA, amountA, tokenB, amountB, ownerTag)` as calldata.
+pub fn add_liquidity_shielded_calldata(
+    token_a: Address,
+    amount_a: U256,
+    token_b: Address,
+    amount_b: U256,
+    owner_tag: B256,
+) -> Vec<u8> {
+    ZethoraPairAMM::addLiquidityShieldedCall {
+        tokenA: token_a,
+        amountA: amount_a,
+        tokenB: token_b,
+        amountB: amount_b,
+        ownerTag: owner_tag,
+    }
+    .abi_encode()
 }
 
 /// `shieldLiquidity(lpAmount, ownerTag)` as calldata.
@@ -1295,20 +1518,45 @@ pub fn dispatch(
 
     if selector == add_liquidity_selector() {
         let call = ZethoraPairAMM::addLiquidityCall::abi_decode(calldata).map_err(decode_failed)?;
-        let liquidity = add_liquidity(executor, pair, caller, call.amountA, call.amountB)?;
+        let liquidity =
+            add_liquidity(executor, pair, caller, call.tokenA, call.amountA, call.tokenB, call.amountB)?;
         Ok(liquidity.abi_encode())
     } else if selector == swap_selector() {
         let call = ZethoraPairAMM::swapCall::abi_decode(calldata).map_err(decode_failed)?;
-        let amount_out = swap(executor, pair, caller, call.tokenIn, call.amountIn)?;
+        let amount_out = swap(
+            executor,
+            pair,
+            caller,
+            call.tokenIn,
+            call.amountIn,
+            call.minAmountOut,
+            call.deadline,
+        )?;
         Ok(amount_out.abi_encode())
     } else if selector == remove_liquidity_selector() {
         let call = ZethoraPairAMM::removeLiquidityCall::abi_decode(calldata).map_err(decode_failed)?;
-        let (amount0, amount1) = remove_liquidity(executor, pair, caller, call.lpAmount)?;
+        let (amount0, amount1) = remove_liquidity(
+            executor,
+            pair,
+            caller,
+            call.lpAmount,
+            call.amountAMin,
+            call.amountBMin,
+            call.deadline,
+        )?;
         Ok((amount0, amount1).abi_encode())
     } else if selector == add_liquidity_shielded_selector() {
         let call = ZethoraPairAMM::addLiquidityShieldedCall::abi_decode(calldata).map_err(decode_failed)?;
-        let (liquidity, commitment) =
-            add_liquidity_shielded(executor, pair, caller, call.amountA, call.amountB, call.ownerTag)?;
+        let (liquidity, commitment) = add_liquidity_shielded(
+            executor,
+            pair,
+            caller,
+            call.tokenA,
+            call.amountA,
+            call.tokenB,
+            call.amountB,
+            call.ownerTag,
+        )?;
         Ok((liquidity, commitment).abi_encode())
     } else if selector == shield_liquidity_selector() {
         let call = ZethoraPairAMM::shieldLiquidityCall::abi_decode(calldata).map_err(decode_failed)?;

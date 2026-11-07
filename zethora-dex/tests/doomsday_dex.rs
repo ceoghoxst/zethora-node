@@ -19,8 +19,8 @@
 //!    it, and a redemption from anyone else is refused with `Unauthorized`; the
 //!    attacker cannot spend the note, and the honest owner redeems it intact.
 //! 2. [`attack_2_shielded_replay_and_forgery_are_refused`] — **defended.** Wrong
-//!    tags, zero/used nullifiers and double redemptions are all rejected, and the
-//!    note is spent exactly once.
+//!    tags, a nullifier that is not the one the note's own account derives, and
+//!    double redemptions are all rejected, and the note is spent exactly once.
 //! 3. [`attack_3_first_depositor_inflation_is_not_profitable`] — **defended.**
 //!    The classic donation-inflation attack cannot transfer value to the
 //!    attacker: the victim recovers what they deposited and the attacker's
@@ -32,15 +32,22 @@
 //!    `U256::MAX` inputs overflow and are refused, a first deposit whose product
 //!    overflows is refused, and the largest possible swap still cannot take the
 //!    last unit of an output reserve.
+//! 6. [`attack_6_nullifier_griefing_cannot_burn_anothers_note`] — **defended.** The
+//!    spent-nullifier set is public and unauthenticated, so a nullifier a redeemer
+//!    could choose freely would be one anyone could burn ahead of them. The
+//!    nullifier is derived from the note *and* the redeeming account instead, and
+//!    the only path that writes the set requires the caller to be the note's
+//!    depositor — so the attacker cannot spend the owner's nullifier, and the value
+//!    the owner will present is still unspent when they present it.
 
 #![allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
 
 use alloy_primitives::{Address, B256, U256, keccak256};
 use zethora_dex::{
     Deployment, DexError, MINIMUM_LIQUIDITY, add_liquidity_calldata, add_liquidity_shielded_calldata, deploy,
-    dispatch, note_amount, note_depositor, note_owner, nullifier_spent, preview_removal, preview_swap,
-    redeem_shielded_liquidity_calldata, remove_liquidity_calldata, shield_liquidity_calldata, swap_calldata,
-    token, total_supply,
+    dispatch, note_amount, note_depositor, note_nullifier, note_owner, nullifier_spent, preview_removal, preview_swap,
+    redeem_shielded_liquidity_calldata, remove_liquidity_calldata, shield_liquidity_calldata, swap_calldata, token,
+    total_supply,
 };
 use zethora_evm::EvmExecutor;
 
@@ -129,13 +136,16 @@ impl Dex {
 
     /// Adds liquidity and returns the minted liquidity.
     fn add(&mut self, who: Address, a: U256, b: U256) -> U256 {
-        let out = self.call(who, add_liquidity_calldata(a, b)).expect("add liquidity");
+        let out = self.call(who, add_liquidity_calldata(token0(), a, token1(), b)).expect("add liquidity");
         word(&out, 0)
     }
 
-    /// Swaps and returns the amount out.
+    /// Swaps on the terms this suite does not test — no floor, no deadline — and
+    /// returns the amount out.
     fn swap(&mut self, who: Address, token_in: Address, amount_in: U256) -> U256 {
-        let out = self.call(who, swap_calldata(token_in, amount_in)).expect("swap");
+        let out = self
+            .call(who, swap_calldata(token_in, amount_in, U256::ZERO, U256::MAX))
+            .expect("swap");
         word(&out, 0)
     }
 }
@@ -173,7 +183,7 @@ fn attack_1_shielded_lp_note_is_stolen_through_its_public_owner_tag() {
     let deposit = dex
         .call(
             alice(),
-            add_liquidity_shielded_calldata(n(DEPOSIT0), n(DEPOSIT1), owner_tag),
+            add_liquidity_shielded_calldata(token0(), n(DEPOSIT0), token1(), n(DEPOSIT1), owner_tag),
         )
         .expect("a shielded deposit is accepted");
     let liquidity = word(&deposit, 0);
@@ -206,7 +216,9 @@ fn attack_1_shielded_lp_note_is_stolen_through_its_public_owner_tag() {
     assert_eq!(dex.balance(token0(), mallory()), U256::ZERO);
     assert_eq!(dex.balance(token1(), mallory()), U256::ZERO);
 
-    let eve_nullifier = keccak256(b"mallory-nullifier-1");
+    // She even presents the nullifier *she* derives for the note — the strongest
+    // nullifier she can compute, since it is tied to her own address.
+    let eve_nullifier = note_nullifier(commitment, mallory());
     let err = dex
         .call(
             mallory(),
@@ -230,11 +242,16 @@ fn attack_1_shielded_lp_note_is_stolen_through_its_public_owner_tag() {
         !nullifier_spent(&mut dex.executor, pair, eve_nullifier),
         "a failed redemption spends no nullifier"
     );
+    assert!(
+        !nullifier_spent(&mut dex.executor, pair, note_nullifier(commitment, alice())),
+        "and the attacker could not burn the nullifier the owner will present"
+    );
     assert_eq!(dex.balance(token0(), mallory()), U256::ZERO);
     assert_eq!(dex.balance(token1(), mallory()), U256::ZERO);
 
-    // The honest owner redeems the same note, and is made whole.
-    let alice_nullifier = keccak256(b"alice-nullifier-1");
+    // The honest owner redeems the same note, presenting the nullifier only she can
+    // derive, and is made whole.
+    let alice_nullifier = note_nullifier(commitment, alice());
     let redeemed = dex
         .call(
             alice(),
@@ -276,8 +293,9 @@ fn attack_1_shielded_lp_note_is_stolen_through_its_public_owner_tag() {
 // ---------------------------------------------------------------------------
 
 /// The mechanical protections around a note all hold: only the exact tag
-/// matches, only the committing account may redeem, a nullifier cannot be
-/// reused, and a note can be burnt exactly once.
+/// matches, only the committing account may redeem, only the nullifier that
+/// account derives is accepted, a nullifier cannot be reused, and a note can be
+/// burnt exactly once.
 #[test]
 fn attack_2_shielded_replay_and_forgery_are_refused() {
     const MINTED: u64 = 10_000_000;
@@ -294,24 +312,36 @@ fn attack_2_shielded_replay_and_forgery_are_refused() {
         .expect("shield a public position");
     let note_a = B256::from(word(&shield, 0).to_be_bytes::<32>());
 
-    // Wrong tag is refused: the authorisation is the tag, and a wrong one fails.
+    // Wrong tag is refused: the note records the tag it was committed under, and a
+    // wrong one is a different note.
     let tag_b = keccak256(b"tag-B");
     let err = dex
         .call(
-            mallory(),
-            redeem_shielded_liquidity_calldata(note_a, tag_b, keccak256(b"m1"), mallory()),
+            alice(),
+            redeem_shielded_liquidity_calldata(note_a, tag_b, note_nullifier(note_a, alice()), alice()),
         )
         .expect_err("a wrong owner tag must not redeem");
     assert!(matches!(err, DexError::NoteOwnerMismatch(c) if c == note_a), "got {err:?}");
 
-    // A zero nullifier is not a nullifier.
+    // A zero nullifier is not the derived one, so it is not a nullifier.
     let err = dex
         .call(alice(), redeem_shielded_liquidity_calldata(note_a, tag_a, B256::ZERO, alice()))
         .expect_err("a zero nullifier must be refused");
     assert!(matches!(err, DexError::InvalidNullifier), "got {err:?}");
 
+    // Nor is a nullifier derived for someone else: the value is bound to the note
+    // *and* to the account that may redeem it, so a correctly-shaped nullifier
+    // belonging to another account is refused by name.
+    let err = dex
+        .call(
+            alice(),
+            redeem_shielded_liquidity_calldata(note_a, tag_a, note_nullifier(note_a, mallory()), alice()),
+        )
+        .expect_err("a nullifier derived for another account must be refused");
+    assert!(matches!(err, DexError::InvalidNullifier), "got {err:?}");
+
     // A first, honest redemption succeeds and spends the nullifier.
-    let nullifier = keccak256(b"nullifier-once");
+    let nullifier = note_nullifier(note_a, alice());
     dex.call(alice(), redeem_shielded_liquidity_calldata(note_a, tag_a, nullifier, alice()))
         .expect("the rightful owner redeems once");
     assert!(
@@ -321,10 +351,7 @@ fn attack_2_shielded_replay_and_forgery_are_refused() {
 
     // Replaying the same note is refused — the note was cleared.
     let err = dex
-        .call(
-            alice(),
-            redeem_shielded_liquidity_calldata(note_a, tag_a, keccak256(b"fresh-1"), alice()),
-        )
+        .call(alice(), redeem_shielded_liquidity_calldata(note_a, tag_a, nullifier, alice()))
         .expect_err("a note cannot be redeemed twice");
     assert!(matches!(err, DexError::NoteNotFound(c) if c == note_a), "got {err:?}");
 
@@ -346,7 +373,7 @@ fn attack_2_shielded_replay_and_forgery_are_refused() {
     let err = dex
         .call(
             mallory(),
-            redeem_shielded_liquidity_calldata(phantom, tag_a, keccak256(b"m2"), mallory()),
+            redeem_shielded_liquidity_calldata(phantom, tag_a, note_nullifier(phantom, mallory()), mallory()),
         )
         .expect_err("an unissued commitment must not redeem");
     assert!(matches!(err, DexError::NoteNotFound(c) if c == phantom), "got {err:?}");
@@ -439,12 +466,12 @@ fn attack_4_dust_rounding_and_zero_value_trades_cannot_drain() {
 
     let (r0_before, r1_before) = dex.pool_reserves();
     let err = dex
-        .call(alice(), swap_calldata(token0(), U256::ZERO))
+        .call(alice(), swap_calldata(token0(), U256::ZERO, U256::ZERO, U256::MAX))
         .expect_err("a zero-input swap must be refused");
     assert!(matches!(err, DexError::InsufficientInputAmount), "got {err:?}");
 
     let err = dex
-        .call(alice(), remove_liquidity_calldata(U256::ZERO))
+        .call(alice(), remove_liquidity_calldata(U256::ZERO, U256::ZERO, U256::ZERO, U256::MAX))
         .expect_err("a zero burn must be refused");
     assert!(matches!(err, DexError::ZeroLiquidity), "got {err:?}");
 
@@ -457,7 +484,7 @@ fn attack_4_dust_rounding_and_zero_value_trades_cannot_drain() {
     deep.add(alice(), n(1_000_000_000_000_000), n(1_000_000_000_000_000));
     let (deep_r0, deep_r1) = deep.pool_reserves();
     let err = deep
-        .call(alice(), swap_calldata(token0(), n(1)))
+        .call(alice(), swap_calldata(token0(), n(1), U256::ZERO, U256::MAX))
         .expect_err("a trade that rounds the output to zero must be refused");
     assert!(matches!(err, DexError::InsufficientOutputAmount), "got {err:?}");
     assert_eq!(deep.pool_reserves(), (deep_r0, deep_r1), "the dust trade moved nothing");
@@ -503,7 +530,7 @@ fn attack_5_overflow_and_full_reserve_extraction_are_impossible() {
 
     // (a) amount_in * 997 overflows a 256-bit word: refused, state untouched.
     let err = dex
-        .call(alice(), swap_calldata(token0(), U256::MAX))
+        .call(alice(), swap_calldata(token0(), U256::MAX, U256::ZERO, U256::MAX))
         .expect_err("a U256::MAX input must overflow the fee numerator");
     assert!(matches!(err, DexError::Overflow), "got {err:?}");
     assert_eq!(dex.pool_reserves(), (r0, r1), "an overflowed swap moves nothing");
@@ -511,7 +538,7 @@ fn attack_5_overflow_and_full_reserve_extraction_are_impossible() {
     // (b) A first deposit whose amount0*amount1 overflows is refused on a fresh pool.
     let mut fresh = Dex::new();
     let err = fresh
-        .call(alice(), add_liquidity_calldata(U256::MAX, U256::from(2)))
+        .call(alice(), add_liquidity_calldata(token0(), U256::MAX, token1(), U256::from(2)))
         .expect_err("a first deposit whose product overflows must be refused");
     assert!(matches!(err, DexError::Overflow), "got {err:?}");
 
@@ -527,4 +554,112 @@ fn attack_5_overflow_and_full_reserve_extraction_are_impossible() {
     let err = preview_swap(&mut dex.executor, pair, token0(), U256::MAX)
         .expect_err("a U256::MAX quote must overflow");
     assert!(matches!(err, DexError::Overflow), "got {err:?}");
+}
+
+// ---------------------------------------------------------------------------
+// Attack 6 — nullifier griefing. DEFENDED.
+// ---------------------------------------------------------------------------
+
+/// A third party cannot burn a note's nullifier ahead of the account that owns it.
+///
+/// Redeeming needs a nullifier, and a nullifier is recorded as spent — so if the
+/// redeemer could *choose* it, anyone who learned it could write it into the spent
+/// set first. The victim's redemption would then fail for good, with the note still
+/// outstanding and unreachable: a griefing attack that costs the attacker one
+/// transaction and destroys the position.
+///
+/// Two things close that. The nullifier is *derived* —
+/// `keccak256(domain ‖ commitment ‖ redeemer)` — so the value the owner will
+/// present is a function of their own address; and the only code path that writes
+/// the spent set is the redemption itself, which requires `msg.sender` to be the
+/// note's depositor first. Mallory therefore has no call she can make that marks
+/// Alice's nullifier spent, and this test drives every one she could try.
+#[test]
+fn attack_6_nullifier_griefing_cannot_burn_anothers_note() {
+    const MINTED: u64 = 10_000_000;
+    const SHIELDED: u64 = 500_000;
+
+    let mut dex = Dex::new();
+    dex.fund(alice(), n(MINTED));
+    let lp = dex.add(alice(), n(1_000_000), n(2_000_000));
+    let pair = dex.pair();
+
+    // Alice puts half her LP into a note. Everything about the note is public: the
+    // tag travels in the deposit calldata, the amount is in storage, and the
+    // commitment is derived from both.
+    let tag = keccak256(b"alice-griefing-target");
+    let shield = dex
+        .call(alice(), shield_liquidity_calldata(n(SHIELDED), tag))
+        .expect("alice shields half her position");
+    let commitment = B256::from(word(&shield, 0).to_be_bytes::<32>());
+
+    // The nullifier Alice will present. Mallory can compute it — the derivation is
+    // public — and that is the point: it is not a secret, it just is not hers.
+    let alice_nullifier = note_nullifier(commitment, alice());
+    assert!(!nullifier_spent(&mut dex.executor, pair, alice_nullifier), "the note starts unspent");
+
+    // Attempt 1: redeem the note to herself, presenting Alice's own nullifier —
+    // exactly the value that would do the damage if it were accepted.
+    let err = dex
+        .call(mallory(), redeem_shielded_liquidity_calldata(commitment, tag, alice_nullifier, mallory()))
+        .expect_err("mallory cannot redeem a note she did not commit");
+    assert!(matches!(err, DexError::Unauthorized(caller) if caller == mallory()), "got {err:?}");
+    assert!(
+        !nullifier_spent(&mut dex.executor, pair, alice_nullifier),
+        "THE GRIEFING FAILS: the refused call wrote nothing, so alice's nullifier is still unspent"
+    );
+
+    // Attempt 2: the same thing with the nullifier Mallory derives for herself,
+    // which at least matches the caller she is claiming to be.
+    let mallory_nullifier = note_nullifier(commitment, mallory());
+    let err = dex
+        .call(mallory(), redeem_shielded_liquidity_calldata(commitment, tag, mallory_nullifier, mallory()))
+        .expect_err("a self-derived nullifier does not authorise another account's note");
+    assert!(matches!(err, DexError::Unauthorized(caller) if caller == mallory()), "got {err:?}");
+    assert!(
+        !nullifier_spent(&mut dex.executor, pair, mallory_nullifier),
+        "and the attacker's own nullifier is not spent either"
+    );
+
+    // Attempt 3: other entry points. Mallory holds no LP and no tokens, so the
+    // ledgers refuse her before anything else can happen — and none of them writes
+    // the spent set anyway.
+    let err = dex
+        .call(mallory(), remove_liquidity_calldata(n(SHIELDED), U256::ZERO, U256::ZERO, U256::MAX))
+        .expect_err("mallory holds no LP to burn");
+    assert!(matches!(err, DexError::InsufficientLiquidity), "got {err:?}");
+    let err = dex
+        .call(mallory(), swap_calldata(token0(), n(1_000), U256::ZERO, U256::MAX))
+        .expect_err("mallory holds no tokens to trade");
+    assert!(matches!(err, DexError::Token(_)), "got {err:?}");
+
+    // Nothing was spent, nothing moved, and the note is still Alice's.
+    assert!(!nullifier_spent(&mut dex.executor, pair, alice_nullifier), "no attempt spent alice's nullifier");
+    assert_eq!(note_amount(&mut dex.executor, pair, commitment), n(SHIELDED), "the note is intact");
+    assert_eq!(note_depositor(&mut dex.executor, pair, commitment), alice(), "and still bound to alice");
+    assert_eq!(
+        dex.supply(),
+        lp + n(MINIMUM_LIQUIDITY),
+        "the LP supply is untouched: a note is a claim on it, not a burn"
+    );
+    assert_eq!(dex.balance(token0(), mallory()), U256::ZERO, "mallory is owed nothing");
+    assert_eq!(dex.balance(token1(), mallory()), U256::ZERO, "mallory received nothing");
+
+    // Which is exactly what the honest redemption needs: Alice presents the
+    // nullifier she derived, and it is accepted because nobody could spend it first.
+    let redeemed = dex
+        .call(alice(), redeem_shielded_liquidity_calldata(commitment, tag, alice_nullifier, alice()))
+        .expect("THE OWNER REDEEMS: the griefing left her nullifier spendable");
+    let got0 = word(&redeemed, 0);
+    let got1 = word(&redeemed, 1);
+    assert!(got0 > U256::ZERO && got1 > U256::ZERO, "the redemption pays both sides: {got0}, {got1}");
+
+    assert!(nullifier_spent(&mut dex.executor, pair, alice_nullifier), "the owner's own redemption spends it");
+    assert_eq!(note_amount(&mut dex.executor, pair, commitment), U256::ZERO, "and clears the note");
+
+    // A replay after the fact gets nothing either.
+    let err = dex
+        .call(mallory(), redeem_shielded_liquidity_calldata(commitment, tag, alice_nullifier, mallory()))
+        .expect_err("the note is gone");
+    assert!(matches!(err, DexError::NoteNotFound(c) if c == commitment), "got {err:?}");
 }

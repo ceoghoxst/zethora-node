@@ -48,6 +48,9 @@ contract ZethoraPairAMM {
     /// @notice Mixed into an LP note's commitment.
     string public constant NOTE_DOMAIN = "zethora-dex/lp-note/v1";
 
+    /// @notice Mixed into an LP note's nullifier.
+    string public constant NULLIFIER_DOMAIN = "zethora-dex/lp-nullifier/v1";
+
     uint256 private constant NOTE_AMOUNT_NAMESPACE = 0x5eed0001;
     uint256 private constant NOTE_OWNER_NAMESPACE = 0x5eed0002;
     uint256 private constant NULLIFIER_NAMESPACE = 0x5eed0003;
@@ -100,6 +103,12 @@ contract ZethoraPairAMM {
     error InsufficientLiquidityBurned();
     error InsufficientInputAmount();
     error InsufficientOutputAmount();
+    /// @notice The call arrived after `deadline`.
+    error Expired(uint256 deadline);
+    /// @notice The call would have settled below the caller's minimum.
+    /// @param amountOut What the pair would actually have paid out.
+    /// @param minimum The floor the caller named.
+    error SlippageExceeded(uint256 amountOut, uint256 minimum);
     error IdenticalTokens();
     error InvalidToken(address token);
     error InvalidOwnerTag();
@@ -248,13 +257,39 @@ contract ZethoraPairAMM {
         _sync();
     }
 
+    /// @dev Maps a caller's two (token, amount) pairs onto reserve order.
+    ///
+    ///      A depositor names each amount against the token it is offered for, and
+    ///      the two tokens may arrive in either order — the ABI is
+    ///      `addLiquidity(tokenA, amountA, tokenB, amountB)` so a wallet never has
+    ///      to know which address sorts first. Anything that is not exactly the
+    ///      pair's two tokens, in either order, is refused: treating a caller's
+    ///      first amount as `reserve0` when it was meant for `token1` would deposit
+    ///      at a ratio the caller never agreed to.
+    function _sortAmounts(address tokenA, uint256 amountA, address tokenB, uint256 amountB)
+        private
+        view
+        returns (uint256 amount0, uint256 amount1)
+    {
+        if (tokenA == token0 && tokenB == token1) return (amountA, amountB);
+        if (tokenA == token1 && tokenB == token0) return (amountB, amountA);
+        revert("INVALID_TOKENS");
+    }
+
     /// @notice Adds liquidity for `msg.sender` and credits it the LP tokens.
-    /// @param amountA token0 to offer.
-    /// @param amountB token1 to offer.
+    /// @param tokenA One of the pair's two tokens.
+    /// @param amountA How much of `tokenA` to offer.
+    /// @param tokenB The other one; the two may be named in either order.
+    /// @param amountB How much of `tokenB` to offer.
     /// @return liquidity The liquidity actually minted, which can be worth less
     ///         than the amounts offered when the pool already had a ratio.
-    function addLiquidity(uint256 amountA, uint256 amountB) external nonReentrant returns (uint256 liquidity) {
-        LiquidityPlan memory plan = _planLiquidity(amountA, amountB);
+    function addLiquidity(address tokenA, uint256 amountA, address tokenB, uint256 amountB)
+        external
+        nonReentrant
+        returns (uint256 liquidity)
+    {
+        (uint256 amount0, uint256 amount1) = _sortAmounts(tokenA, amountA, tokenB, amountB);
+        LiquidityPlan memory plan = _planLiquidity(amount0, amount1);
         _applyLiquidity(msg.sender, plan);
 
         balanceOf[msg.sender] += plan.liquidity;
@@ -269,7 +304,22 @@ contract ZethoraPairAMM {
     /// @notice Trades `amountIn` of `tokenIn` for the other asset.
     /// @dev The invariant is checked on the post-trade balances, which is what
     ///      makes the price and the proof two readings of the same state.
-    function swap(address tokenIn, uint256 amountIn) external nonReentrant returns (uint256 amountOut) {
+    ///
+    ///      `minAmountOut` and `deadline` are the trader's own terms, and both are
+    ///      enforced before a token moves: the price is read from the reserves
+    ///      between signing and inclusion, so a trade without a floor can be
+    ///      sandwiched, and a trade without a deadline can be held and included at
+    ///      a price its signer never saw.
+    /// @param tokenIn The token being sold: one of the pair's two.
+    /// @param amountIn How much of it to sell.
+    /// @param minAmountOut The least the trader will accept back.
+    /// @param deadline The last block timestamp the trade may land in.
+    function swap(address tokenIn, uint256 amountIn, uint256 minAmountOut, uint256 deadline)
+        external
+        nonReentrant
+        returns (uint256 amountOut)
+    {
+        if (block.timestamp > deadline) revert Expired(deadline);
         if (amountIn == 0) revert InsufficientInputAmount();
 
         bool isToken0;
@@ -289,6 +339,7 @@ contract ZethoraPairAMM {
         amountOut = getAmountOut(amountIn, reserveIn, reserveOut);
         if (amountOut == 0) revert InsufficientOutputAmount();
         if (amountOut >= reserveOut) revert InsufficientLiquidity();
+        if (amountOut < minAmountOut) revert SlippageExceeded(amountOut, minAmountOut);
 
         _safeTransferFrom(tokenIn, msg.sender, amountIn);
         _safeTransfer(tokenOut, msg.sender, amountOut);
@@ -337,8 +388,21 @@ contract ZethoraPairAMM {
     }
 
     /// @notice Burns `lpAmount` of `msg.sender`'s liquidity and pays it both assets.
-    function removeLiquidity(uint256 lpAmount) external nonReentrant returns (uint256 amountA, uint256 amountB) {
+    /// @dev `amountAMin` is the floor against token0 and `amountBMin` against
+    ///      token1 — the order the payout is returned in — and both, like
+    ///      `deadline`, are checked before the balance is touched: a burn priced
+    ///      against reserves that moved since signing pays out less than its signer
+    ///      was promised, and the floors turn that into a refusal.
+    function removeLiquidity(uint256 lpAmount, uint256 amountAMin, uint256 amountBMin, uint256 deadline)
+        external
+        nonReentrant
+        returns (uint256 amountA, uint256 amountB)
+    {
+        if (block.timestamp > deadline) revert Expired(deadline);
+
         RemovalPlan memory plan = _planRemoval(lpAmount);
+        if (plan.amount0 < amountAMin) revert SlippageExceeded(plan.amount0, amountAMin);
+        if (plan.amount1 < amountBMin) revert SlippageExceeded(plan.amount1, amountBMin);
 
         if (balanceOf[msg.sender] < lpAmount) revert InsufficientLiquidity();
         balanceOf[msg.sender] -= lpAmount;
@@ -416,6 +480,21 @@ contract ZethoraPairAMM {
         return keccak256(abi.encodePacked(NOTE_DOMAIN, address(this), ownerTag, liquidity));
     }
 
+    /// @notice The nullifier `redeemer` must present to spend `commitment`.
+    /// @dev `keccak256(NULLIFIER_DOMAIN || commitment || redeemer)`, byte for byte
+    ///      what `contract.rs::note_nullifier` computes.
+    ///
+    ///      Deriving the nullifier rather than letting the redeemer choose it is
+    ///      what stops a third party from griefing the position: the spent set is
+    ///      public and unauthenticated, so a freely chosen nullifier — or the one a
+    ///      wallet would obviously pick — can be spent by anyone who learns it, and
+    ///      the real redemption would then fail for good. Bound to the note and to
+    ///      the account, the only party able to consume it is the party whose
+    ///      redemption clears the note anyway.
+    function noteNullifier(bytes32 commitment, address redeemer) public view returns (bytes32) {
+        return keccak256(abi.encodePacked(NULLIFIER_DOMAIN, commitment, redeemer));
+    }
+
     /// @dev Validates a note and returns its commitment, writing nothing.
     function _planCommitment(bytes32 ownerTag, uint256 liquidity) private view returns (bytes32 commitment) {
         if (ownerTag == bytes32(0)) revert InvalidOwnerTag();
@@ -441,12 +520,17 @@ contract ZethoraPairAMM {
     }
 
     /// @notice Deposits liquidity and holds it as a note instead of an address.
-    function addLiquidityShielded(uint256 amountA, uint256 amountB, bytes32 ownerTag)
-        external
-        nonReentrant
-        returns (uint256 liquidity, bytes32 commitment)
-    {
-        LiquidityPlan memory plan = _planLiquidity(amountA, amountB);
+    /// @dev Priced exactly like `addLiquidity`, after the same sort, so a shielded
+    ///      position and a public one of the same size mint the same liquidity.
+    function addLiquidityShielded(
+        address tokenA,
+        uint256 amountA,
+        address tokenB,
+        uint256 amountB,
+        bytes32 ownerTag
+    ) external nonReentrant returns (uint256 liquidity, bytes32 commitment) {
+        (uint256 amount0, uint256 amount1) = _sortAmounts(tokenA, amountA, tokenB, amountB);
+        LiquidityPlan memory plan = _planLiquidity(amount0, amount1);
         commitment = _planCommitment(ownerTag, plan.liquidity);
 
         _applyLiquidity(msg.sender, plan);
@@ -471,11 +555,13 @@ contract ZethoraPairAMM {
     ///      committed it, and only that account may redeem. The `ownerTag` is
     ///      public (it is deposit calldata and is stored in `noteOwner`), so it
     ///      identifies the note but cannot authorise a redemption on its own.
-    ///      The note being cleared is what prevents a double redemption; the
-    ///      nullifier is recorded as well, for the spent-nullifier set a shielded
-    ///      pool needs. Replacing this check with a proof of knowledge of the
-    ///      note's secret is the intended upgrade path, and it changes nothing
-    ///      about the payout or the burn.
+    ///      The `nullifier` must be the one this account derives for this note
+    ///      (`noteNullifier`), not a value the caller picks: a free choice is
+    ///      griefable, because writing a nullifier into the spent set is public and
+    ///      unauthenticated. The note being cleared is what prevents a double
+    ///      redemption; the spent set is recorded as well, for the shielded pool
+    ///      that will replace this check with a proof of knowledge of the note's
+    ///      secret — that upgrade changes nothing about the payout or the burn.
     function redeemShieldedLiquidity(bytes32 commitment, bytes32 ownerTag, bytes32 nullifier, address to)
         external
         nonReentrant
@@ -485,8 +571,8 @@ contract ZethoraPairAMM {
         if (liquidity == 0) revert NoteNotFound(commitment);
         if (_noteOwner(commitment) != ownerTag) revert NoteOwnerMismatch(commitment);
         if (_noteDepositor(commitment) != msg.sender) revert Unauthorized(msg.sender);
-        if (nullifier == bytes32(0)) revert InvalidNullifier();
         if (_nullifierSpent(nullifier)) revert NullifierSpent(nullifier);
+        if (nullifier != noteNullifier(commitment, msg.sender)) revert InvalidNullifier();
 
         RemovalPlan memory plan = _planRemoval(liquidity);
 

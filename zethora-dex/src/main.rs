@@ -13,11 +13,17 @@
 //! cargo run -p zethora-dex
 //! curl http://127.0.0.1:8546/state
 //! curl -X POST http://127.0.0.1:8546/swap -H 'content-type: application/json' \
-//!      -d '{"account":"0xa1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1","tokenIn":"0x2121212121212121212121212121212121212121","amountIn":"10000"}'
+//!      -d '{"account":"0xa1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1","tokenIn":"0x2121212121212121212121212121212121212121","amountIn":"10000","minAmountOut":"19700","deadline":"1000000"}'
 //! ```
 //!
 //! Every amount crosses the wire as a string, in decimal or `0x` hex: the values
 //! are 256-bit, and a JSON number cannot hold one without silently losing digits.
+//!
+//! `minAmountOut`, `deadline`, `amountAMin` and `amountBMin` are the pair's own
+//! caller-set terms and are all optional here: a request that omits them asks for
+//! no floor and no deadline, which the sandbox can afford because it has one
+//! account. A real client sends them, and the pair refuses the call if they are
+//! not met either way.
 
 use std::{
     net::{IpAddr, SocketAddr},
@@ -195,7 +201,9 @@ fn seed(cli: &Cli) -> Result<Shared, String> {
         &mut executor,
         pair.pair,
         sandbox_account(),
+        pair.token0,
         U256::from(cli.amount_a),
+        pair.token1,
         U256::from(cli.amount_b),
     )
     .map_err(|err| format!("the opening deposit was refused: {err}"))?;
@@ -310,6 +318,13 @@ struct SwapRequest {
     token_in: String,
     /// How much of it to sell.
     amount_in: String,
+    /// The least the trader will accept back, same encoding. Absent means no
+    /// floor, which is only ever right for a sandbox with one user.
+    #[serde(default)]
+    min_amount_out: Option<String>,
+    /// The last block timestamp the trade may land in. Absent means no deadline.
+    #[serde(default)]
+    deadline: Option<String>,
 }
 
 /// `POST /remove-liquidity` body.
@@ -320,6 +335,15 @@ struct RemoveLiquidityRequest {
     account: String,
     /// How much liquidity to burn, in the unit `addLiquidity` returns.
     lp_amount: String,
+    /// The least token0 the burner will accept. Absent means no floor.
+    #[serde(default)]
+    amount_a_min: Option<String>,
+    /// The least token1 the burner will accept. Absent means no floor.
+    #[serde(default)]
+    amount_b_min: Option<String>,
+    /// The last block timestamp the burn may land in. Absent means no deadline.
+    #[serde(default)]
+    deadline: Option<String>,
 }
 
 /// A `0x`-prefixed hex address.
@@ -330,6 +354,20 @@ fn parse_address(text: &str) -> Result<Address, String> {
 /// A 256-bit unsigned integer, in decimal or `0x` hex.
 fn parse_uint(text: &str) -> Result<U256, String> {
     U256::from_str(text.trim()).map_err(|err| format!("{text} is not a 256-bit unsigned integer: {err}"))
+}
+
+/// An optional 256-bit integer: absent means `default`.
+///
+/// The pair's `minAmountOut` and `deadline` are the caller's own terms, and this
+/// API leaves them out of a request that has no opinion — `U256::ZERO` for a
+/// floor, `U256::MAX` for a deadline — rather than inventing a default the caller
+/// did not ask for. The contract enforces whatever is passed either way; what
+/// changes is that a sandbox client can say "no floor" by saying nothing.
+fn parse_uint_or(text: Option<&str>, default: U256) -> Result<U256, String> {
+    match text {
+        Some(text) => parse_uint(text),
+        None => Ok(default),
+    }
 }
 
 /// Word `index` of an ABI return payload.
@@ -393,11 +431,14 @@ async fn add_liquidity_handler(
 
         fund(market, account, amount_a, amount_b)?;
 
+        // The two amounts are named against the tokens they are offered for, so
+        // this request stays what it always was — "deposit these totals" — and the
+        // pair is what decides which of them is reserve0.
         let returned = dispatch(
             &mut market.executor,
             market.pair.pair,
             account,
-            &add_liquidity_calldata(amount_a, amount_b),
+            &add_liquidity_calldata(market.pair.token0, amount_a, market.pair.token1, amount_b),
         )
         .map_err(|err| err.to_string())?;
         let liquidity = word_at(&returned, 0)?;
@@ -415,12 +456,14 @@ async fn swap_handler(
         let account = parse_address(&request.account)?;
         let token_in = parse_address(&request.token_in)?;
         let amount_in = parse_uint(&request.amount_in)?;
+        let min_amount_out = parse_uint_or(request.min_amount_out.as_deref(), U256::ZERO)?;
+        let deadline = parse_uint_or(request.deadline.as_deref(), U256::MAX)?;
 
         let returned = dispatch(
             &mut market.executor,
             market.pair.pair,
             account,
-            &swap_calldata(token_in, amount_in),
+            &swap_calldata(token_in, amount_in, min_amount_out, deadline),
         )
         .map_err(|err| err.to_string())?;
         let amount_out = word_at(&returned, 0)?;
@@ -437,12 +480,15 @@ async fn remove_liquidity_handler(
     with_market(market, |market| {
         let account = parse_address(&request.account)?;
         let lp_amount = parse_uint(&request.lp_amount)?;
+        let amount_a_min = parse_uint_or(request.amount_a_min.as_deref(), U256::ZERO)?;
+        let amount_b_min = parse_uint_or(request.amount_b_min.as_deref(), U256::ZERO)?;
+        let deadline = parse_uint_or(request.deadline.as_deref(), U256::MAX)?;
 
         let returned = dispatch(
             &mut market.executor,
             market.pair.pair,
             account,
-            &remove_liquidity_calldata(lp_amount),
+            &remove_liquidity_calldata(lp_amount, amount_a_min, amount_b_min, deadline),
         )
         .map_err(|err| err.to_string())?;
         let amount0 = word_at(&returned, 0)?;

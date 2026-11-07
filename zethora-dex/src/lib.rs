@@ -47,10 +47,29 @@
 //! token::mint_to(&mut executor, pair.token0, alice, U256::from(10_000_000u64)).unwrap();
 //! token::mint_to(&mut executor, pair.token1, alice, U256::from(10_000_000u64)).unwrap();
 //!
-//! let liquidity = add_liquidity(&mut executor, pair.pair, alice, U256::from(1_000_000u64), U256::from(2_000_000u64)).unwrap();
+//! let liquidity = add_liquidity(
+//!     &mut executor,
+//!     pair.pair,
+//!     alice,
+//!     pair.token0,
+//!     U256::from(1_000_000u64),
+//!     pair.token1,
+//!     U256::from(2_000_000u64),
+//! )
+//! .unwrap();
 //! assert_eq!(liquidity, U256::from(1_413_213u64)); // sqrt(2e12) - 1_000 locked
 //!
-//! let out = swap(&mut executor, pair.pair, alice, pair.token0, U256::from(10_000u64)).unwrap();
+//! // No floor and no deadline: this sandbox wants whatever the pool says.
+//! let out = swap(
+//!     &mut executor,
+//!     pair.pair,
+//!     alice,
+//!     pair.token0,
+//!     U256::from(10_000u64),
+//!     U256::ZERO,
+//!     U256::MAX,
+//! )
+//! .unwrap();
 //! assert_eq!(out, U256::from(19_743u64)); // 0.3% fee taken from the input
 //! assert_eq!(reserves(&mut executor, pair.pair), (U256::from(1_010_000u64), U256::from(1_980_257u64)));
 //! ```
@@ -60,12 +79,12 @@ pub mod math;
 pub mod token;
 
 pub use contract::{
-    Deployment, DexError, add_liquidity, add_liquidity_calldata, add_liquidity_shielded,
-    add_liquidity_shielded_calldata, deploy, dispatch, lp_balance, note_amount, note_commitment, note_count,
-    note_depositor, note_log_digest, note_owner, nullifier_spent, pair_address, preview_liquidity, preview_removal,
-    preview_swap, redeem_shielded_liquidity, redeem_shielded_liquidity_calldata, remove_liquidity,
-    remove_liquidity_calldata, reserves, shield_liquidity, shield_liquidity_calldata, swap, swap_calldata, tokens,
-    total_supply,
+    Deployment, DexError, INVALID_TOKENS_MESSAGE, NULLIFIER_DOMAIN, add_liquidity, add_liquidity_calldata,
+    add_liquidity_shielded, add_liquidity_shielded_calldata, deploy, dispatch, lp_balance, note_amount,
+    note_commitment, note_count, note_depositor, note_log_digest, note_nullifier, note_owner, nullifier_spent,
+    pair_address, preview_liquidity, preview_removal, preview_swap, redeem_shielded_liquidity,
+    redeem_shielded_liquidity_calldata, remove_liquidity, remove_liquidity_calldata, reserves, shield_liquidity,
+    shield_liquidity_calldata, swap, swap_calldata, tokens, total_supply,
 };
 pub use math::{FEE_DENOMINATOR, FEE_NUMERATOR, MINIMUM_LIQUIDITY, MathError};
 pub use token::TokenError;
