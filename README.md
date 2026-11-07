@@ -373,3 +373,9 @@ Zethora includes a native Rust EVM (via revm) with EIP-1559 support and a 5% fee
 - zethora-evm: The core execution engine.
 - zethora-rpc-l2: The public JSON-RPC wrapper (Port 8545, Chain ID 2600).
 - zethora-dex: A constant product AMM (Uniswap V2 style) with shielded LP notes.
+
+## L2 Execution Layer
+Zethora includes a native Rust EVM (via revm) with EIP-1559 support and a 5% fee router to L1 miners. 
+- zethora-evm: The core execution engine.
+- zethora-rpc-l2: The public JSON-RPC wrapper (Port 8545, Chain ID 2600).
+- zethora-dex: A constant product AMM (Uniswap V2 style) with shielded LP notes.
