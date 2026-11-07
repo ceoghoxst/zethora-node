@@ -3,8 +3,8 @@
 | Field   | Value |
 |---------|-------|
 | Status  | Draft (devnet phase) |
-| Version | 0.4 (per-transaction turnstile) |
-| Date    | 2026-10-28 |
+| Version | 0.5 (own-transaction drop) |
+| Date    | 2026-11-07 |
 | Authors | Zethora contributors |
 | Related | ZTH-SPEC-008 (fee pool), ZTH-IMPL-020 (RandomZ DoS ban), Zethora_Lightpaper_v0.3 |
 
@@ -193,7 +193,7 @@ The turnstile arithmetic itself is a pure function, unit-tested (`turnstile_is_s
 
 - The merge loop keeps a running balance that starts at the selected parent's sealed `shielded_balance` (`consensus/src/pipeline/virtual_processor/utxo_validation.rs:153`).
 - For each merged block in merge order, and for its valid transactions in block order: `new = remaining + pool_in - pool_out`. If `new < 0` (or it overflows), the transaction is **not accepted**. It is dropped before any effect is applied: UTXO diff and UTXO commitment, coin tags, private state fingerprint, coin list appends, fees and coinbase payout, pool flows, acceptance data, seq-commit. Otherwise it is accepted and `remaining = new` (`utxo_validation.rs:529-560`).
-- A chain block's **own** transactions must all pass the same running check, starting from the balance its mergeset leaves, or the block is disqualified from the chain. This mirrors the own-transaction coin tag rule (`utxo_validation.rs:361`). So when a selected parent is replayed, none of its transactions is ever skipped.
+- A chain block's **own** transactions follow the same two rules against the state its mergeset leaves: none may spend a coin tag its mergeset already spent, and one at a time in block order none may overdraw the pool or overfill the coin list. A transaction that fails is **not accepted**: it is left out of the block's effects, and the block itself stays a chain block (`utxo_validation.rs::drop_unaccepted_own_transactions`). Disqualifying the block instead misfires on a BlockDAG: a mergeset may contain a parallel block that spent the same coin tag or drained the pool, every later chain block merges this one, so the chain would stall, and two nodes that saw the blocks in a different order could disagree. Dropping gives the same answer everywhere: the block's child replays it as its selected parent from the same sealed balance, coin list and coin tags, and drops exactly the same transactions. A transaction that is invalid on its own (bad signature, unspendable input, coin tag spent on the chain) still disqualifies the block with `InvalidTransactionsInUtxoContext`.
 - The block template refuses a transaction whose `pool_out` is more than the pool has left for the block. Same-block `pool_in` is not counted, so the template passes the running check in any order (`consensus/src/pipeline/virtual_processor/processor.rs:1475-1493`). An honest spend never needs a coin shielded in the same block, because the coin's snapshot must mature first.
 - The per-block `ledger_step` turnstile stays as a backstop. With the running check in place it cannot fire: the sum of accepted flows never goes below zero.
 
@@ -273,6 +273,7 @@ Test: `fully_private_payment_needs_no_visible_coin` in `tx_validation_in_isolati
 | Isolation checks + ban distinction | `consensus/src/processes/transaction_validator/tx_validation_in_isolation.rs::check_private_payment` |
 | Turnstile arithmetic | `consensus/src/processes/zethora_supply.rs::ledger_step`, `check_balanced` |
 | Per-transaction turnstile | `consensus/src/processes/zethora_supply.rs::turnstile_accepts`, `utxo_validation.rs::validate_transactions_with_muhash_in_parallel` |
+| Own-transaction drop rule | `utxo_validation.rs::drop_unaccepted_own_transactions` |
 | Template turnstile | `consensus/src/pipeline/virtual_processor/processor.rs::build_block_template`, `virtual_shielded_balance` |
 | Supply cap | `consensus/src/processes/zethora_supply.rs::CAP_UNITS` |
 | Emergency switch | `consensus/src/processes/transaction_validator/mod.rs::private_spends_enabled` |
@@ -293,7 +294,8 @@ Test: `fully_private_payment_needs_no_visible_coin` in `tx_validation_in_isolati
 | `overdrawing_payment_is_skipped_and_the_merging_block_stays_valid` | `pipeline/tests/zethora_turnstile.rs` | §7.2 (F1) |
 | `skipped_payment_leaves_exactly_the_state_of_the_block_without_it` | `pipeline/tests/zethora_turnstile.rs` | §7.2 (F1, all effects excluded) |
 | `overdraw_siblings_give_identical_state_in_both_arrival_orders` | `pipeline/tests/zethora_turnstile.rs` | §7.2 (F1, determinism) |
-| `chain_block_whose_own_payment_overdraws_is_disqualified` | `pipeline/tests/zethora_turnstile.rs` | §7.2 (F1, own transactions) |
+| `chain_block_whose_own_payment_overdraws_drops_the_payment_and_stays_qualified` | `pipeline/tests/zethora_turnstile.rs` | §7.2 (own transactions, ZTH-CRIT-02: dropped, block stays a chain block) |
+| `own_transactions_their_mergeset_makes_unspendable_are_dropped_and_the_block_stays_qualified` | `utxo_validation.rs` | §7.2 (own transactions, all three rules, ZTH-CRIT-02) |
 | `block_template_leaves_out_a_payment_the_pool_cannot_cover` | `pipeline/tests/zethora_turnstile.rs` | §7.2 (F1, template) |
 | `counterfeit_alone_passes_every_other_check` | `pipeline/tests/zethora_turnstile.rs` | positive control for the F1 tests |
 | `spent_element_is_deterministic_and_distinct` | `zethora_supply.rs` | §6.4 |
@@ -327,3 +329,4 @@ Specific questions an external reviewer should examine. These are the "here is w
 | 0.2 | 2026-10-19 | Appendix C item 2: anchor reorg transition covered by consensus/src/pipeline/tests/zethora_anchor_reorg.rs. Version bumped. |
 | 0.3 | 2026-10-23 | §7.3 level (a) fully specified: testnet and mainnet refuse ALL private payments (shielding, private sends, unshielding), not only spends. Refusal fires at isolation time, before decode and proof. Tests split into `shielding_is_accepted_when_spends_on` and `private_payments_are_refused_when_spends_off`; the second is shown failing on pre-G11 code. Appendix C item 3 closed. Appendix B row split. |
 | 0.4 | 2026-10-28 | §7.2: per-transaction turnstile in merge order (F1). A transaction that would overdraw the pool is not accepted and has none of its effects. The chain block's own transactions and the block template follow the same rule. Appendix A, B rows added. Appendix C item 7 addressed. |
+| 0.5 | 2026-11-07 | §7.2: a chain block's own transaction that its mergeset makes unspendable (coin tag already spent, turnstile overdraw, coin list full) is dropped from the block's effects instead of disqualifying the block (ZTH-CRIT-02). A transaction invalid on its own still disqualifies. Appendix A, B rows updated. |

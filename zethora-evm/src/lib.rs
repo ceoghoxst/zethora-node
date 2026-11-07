@@ -495,6 +495,27 @@ impl EvmExecutor {
         self.block.gas_limit
     }
 
+    /// The timestamp of the block this executor is filling — `block.timestamp`.
+    ///
+    /// It defaults to zero, which makes the clock explicit rather than ambient: a
+    /// caller that only wants "now" gets a value it can reproduce, and a deadline
+    /// check is a comparison against a number the caller set rather than against
+    /// the host's wall clock.
+    pub fn block_timestamp(&self) -> U256 {
+        self.block.timestamp
+    }
+
+    /// Sets `block.timestamp` and leaves the rest of the block environment alone.
+    ///
+    /// [`EvmExecutor::set_block`] replaces the whole environment, `gas_limit`
+    /// included, which also resets the batch budget
+    /// [`EvmExecutor::execute_batch`] checks. This is the narrow form for code
+    /// that only needs to move the clock — a deadline, say — and must not disturb
+    /// the budget the next batch is measured against.
+    pub fn set_block_timestamp(&mut self, timestamp: U256) {
+        self.block.timestamp = timestamp;
+    }
+
     /// Read-only access to the underlying in-memory database for inspection.
     ///
     /// revm's `Database::storage` takes `&mut self`, so this returns a mutable

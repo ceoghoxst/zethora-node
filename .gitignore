@@ -46,3 +46,7 @@ Master Context.txt
 Master Context.txt
 
 
+
+# Audit bundles - never commit
+zethora-audit*.zip
+*.zip
