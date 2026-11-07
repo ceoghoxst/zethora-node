@@ -66,7 +66,6 @@ fn expect_accepted<E: std::fmt::Debug>(result: Result<BlockStatus, E>, what: &st
     }
 }
 
-
 /// Builds the DAG the attack needs, on the real pipeline:
 ///
 /// ```text
@@ -98,24 +97,44 @@ async fn build_forked_dag(tc: &TestConsensus) -> (Hash, Hash) {
     (a2, side)
 }
 
-
 /// Builds the honest twin and the attack block from the same virtual state, and asserts that parent order is
 /// their only difference. Returns `(honest, attack)`.
+///
+/// Why the attack does not name an *unknown* (fake) hash at level 0: the header phase refuses a block whose
+/// parents are not in the DAG (`MissingParents`, i.e. it is parked as an orphan) long before the virtual
+/// processor gets to qualify the chain, so a fabricated parent hash can never reach the rule under test — it
+/// would surface as anything but `StatusDisqualifiedFromChain`. The lie a real miner can actually get away with
+/// is ordering a *fully accepted* parent set wrongly, because `direct_parents()` order is part of the header they
+/// sign. That is the shape built here, and it is strictly harder to reject: every parent, commitment and score
+/// in the attack block is honest.
 fn build_twin_blocks(tc: &TestConsensus, a2: Hash, side: Hash) -> (MutableBlock, MutableBlock) {
-    // `build_block_template_from_virtual_state` asserts that the selected parent is `parents[0]`
-    // (processor.rs:1644/1646), so `[a2, side]` is the GHOSTDAG order: `a2` is the heavier of the two.
+    // The builder itself asserts that level 0 starts with the GHOSTDAG selected parent
+    // (`build_block_template_from_virtual_state`, processor.rs:1644/1646), so the template it returns is the
+    // honest, correctly ordered block. Building the attack from the same call keeps every other field identical.
     let honest =
         tc.build_utxo_valid_block_with_parents(Hash::from_u64_word(HONEST_TWIN), vec![a2, side], miner_data(), vec![]);
     let mut attack = tc.build_utxo_valid_block_with_parents(Hash::from_u64_word(ATTACK), vec![a2, side], miner_data(), vec![]);
 
-    // The attack: swap level 0 only. `set_direct_parents` keeps every deeper level untouched.
-    attack.header.parents_by_level.set_direct_parents(vec![side, a2]);
+    // Take level 0 from the builder rather than restating it, so the test cannot drift from the builder's own
+    // ordering rule, then swap it: the peer the node ranks second is promoted to `direct_parents()[0]`.
+    let honest_level0 = honest.header.direct_parents().to_vec();
+    assert_eq!(
+        honest_level0.first().copied(),
+        Some(a2),
+        "premise: the builder names the heavier tip first, so a2 is the GHOSTDAG selected parent of the pair"
+    );
+    let mut attack_level0 = honest_level0.clone();
+    // `a2` moves to the back, so the peer the node ranks second (`side`) becomes `direct_parents()[0]`.
+    attack_level0.reverse();
+    // `set_direct_parents` rewrites level 0 only; every deeper level is left exactly as built.
+    attack.header.parents_by_level.set_direct_parents(attack_level0.clone());
     // A real attacker's header hash commits to the order they chose, so re-finalize instead of keeping the
     // precomputed label.
     attack.header.finalize();
 
-    assert_eq!(honest.header.direct_parents(), &[a2, side][..], "the honest twin must name the selected parent first");
-    assert_eq!(attack.header.direct_parents(), &[side, a2][..], "the attack block must name the weaker peer first");
+    assert_eq!(honest.header.direct_parents(), &honest_level0[..], "the honest twin must name the selected parent first");
+    assert_eq!(attack.header.direct_parents(), &attack_level0[..], "the attack block must name the weaker peer first");
+    assert_eq!(attack.header.direct_parents()[0], side, "the attack must lead with the peer that is NOT the selected parent");
     assert_eq!(
         honest.header.direct_parents().iter().copied().collect::<HashSet<_>>(),
         attack.header.direct_parents().iter().copied().collect::<HashSet<_>>(),
@@ -143,7 +162,6 @@ fn build_twin_blocks(tc: &TestConsensus, a2: Hash, side: Hash) -> (MutableBlock,
 
     (honest, attack)
 }
-
 
 /// I-G3: a block that names a weaker peer as `direct_parents()[0]` — with an otherwise perfect header — is
 /// disqualified from the virtual chain and never takes the sink, while the honest chain keeps progressing

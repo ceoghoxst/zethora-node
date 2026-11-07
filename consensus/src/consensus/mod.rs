@@ -9,6 +9,8 @@ pub mod test_consensus;
 mod utxo_set_override;
 #[cfg(test)]
 mod zethora_import_tests;
+#[cfg(test)]
+mod zethora_ghostdag_integration_tests;
 
 use crate::{
     config::Config,
