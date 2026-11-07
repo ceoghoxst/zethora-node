@@ -10,7 +10,3 @@
 - Public L2 RPC (Port 8545, Chain ID 2600)
 - Block Explorer (Rust Axum)
 - Adversarial Doomsday Test Suite (Coinbase, PoW, DEX, RPC)
-
-## Pending
-- Independent Orchard Cryptographic Audit
-- Multi-Node Seed Network (Eclipse Attack Resistance)
