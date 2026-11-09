@@ -80,6 +80,15 @@ kaspa-p2p-flows = { workspace = true, features = ["test-smt-small-chunks"] }
 kaspa-p2p-lib = { workspace = true }
 tonic = { workspace = true }
 tokio-stream = { workspace = true }
+# --- Zethora L2 E2E test (tests/zethora_e2e_testnet.rs) ---------------------
+# The E2E test drives the full Zethora stack against a real L1 TestConsensus, so
+# it links the bridge, the EVM executor and the DEX, plus the alloy primitive
+# types their public APIs speak in. Test-only wiring: nothing in the library
+# depends on these, and no code under consensus/ or zethora-bridge/ is touched.
+zethora-bridge = { path = "../../zethora-bridge" }
+zethora-evm = { path = "../../zethora-evm" }
+zethora-dex = { path = "../../zethora-dex" }
+alloy-primitives = "1"
 
 [features]
 heap = ["dhat"]
