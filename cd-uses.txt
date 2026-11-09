@@ -1,0 +1,6 @@
+857: fn cands() -> Vec<(&'static str, Cand)> {
+887: fn payloads() -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
+932: fn scratch_calibration() {
+934: let (t1, t2, t3, t4a, t4b, t4c, _) = payloads();
+952: for (name, f) in cands() {
+966: println!("f(t1)={:?} f(t2)={:?} f(honest)={:?}", cands()[1].1(&t1, max), cands()[1].1(&t2, max), cands()[1].1(&honest, max));

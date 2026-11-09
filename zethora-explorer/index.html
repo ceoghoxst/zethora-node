@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Zethora Explorer</title>
+    <style>
+        body { background: #0b0b10; color: #e0e0e0; font-family: 'Segoe UI', sans-serif; text-align: center; padding-top: 50px; }
+        h1 { color: #8c6eff; font-size: 2.5rem; }
+        input { width: 500px; padding: 12px; border-radius: 8px; border: 1px solid #333; background: #1a1a24; color: white; }
+        button { padding: 12px 24px; border-radius: 8px; background: #8c6eff; color: white; border: none; cursor: pointer; font-weight: bold; }
+        pre { text-align: left; background: #1a1a24; padding: 20px; border-radius: 8px; max-width: 800px; margin: 30px auto; overflow: auto; border: 1px solid #333; }
+    </style>
+</head>
+<body>
+    <h1>Zethora Block Explorer</h1>
+    <input type="text" id="query" placeholder="Enter Block Hash or TxID">
+    <button onclick="doSearch()">Search</button>
+    <pre id="result">Waiting for query...</pre>
+    <script>
+        async function doSearch() {
+            const q = document.getElementById('query').value;
+            const res = document.getElementById('result');
+            res.textContent = "Loading...";
+            try {
+                const response = await fetch('/api/search?q=' + encodeURIComponent(q));
+                const json = await response.json();
+                res.textContent = JSON.stringify(json, null, 2);
+            } catch (e) { res.textContent = "Error: " + e.message; }
+        }
+    </script>
+</body>
+</html>

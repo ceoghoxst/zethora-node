@@ -1,0 +1,19 @@
+warning: use of deprecated method `std::sync::atomic::Atomic::<usize>::fetch_update`: renamed to `try_update` for consistency
+   --> notify\src\subscription\single.rs:401:47
+    |
+401 |             match UTXOS_CHANGED_SUBSCRIPTIONS.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| count.checked_sub(1)) {
+    |                                               ^^^^^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+help: replace the use of the deprecated method
+    |
+401 -             match UTXOS_CHANGED_SUBSCRIPTIONS.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| count.checked_sub(1)) {
+401 +             match UTXOS_CHANGED_SUBSCRIPTIONS.try_update(Ordering::SeqCst, Ordering::SeqCst, |count| count.checked_sub(1)) {
+    |
+
+warning: `kaspa-notify` (lib) generated 1 warning (run `cargo fix --lib -p kaspa-notify` to apply 1 suggestion)
+   Compiling kaspa-consensus v2.1.0 (C:\Users\Rac436\zethora-node\consensus)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 22s
+     Running unittests src\lib.rs (target\debug\deps\kaspa_consensus-bc9e677654b380fe.exe)
+error: Unrecognized option: 'no-run'
+error: test failed, to rerun pass `-p kaspa-consensus --lib`

@@ -1,0 +1,48 @@
+    Blocking waiting for file lock on build directory
+warning: use of deprecated method `std::sync::atomic::Atomic::<usize>::fetch_update`: renamed to `try_update` for consistency
+   --> notify\src\subscription\single.rs:401:47
+    |
+401 |             match UTXOS_CHANGED_SUBSCRIPTIONS.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| count.checked_sub(1)) {
+    |                                               ^^^^^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+help: replace the use of the deprecated method
+    |
+401 -             match UTXOS_CHANGED_SUBSCRIPTIONS.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| count.checked_sub(1)) {
+401 +             match UTXOS_CHANGED_SUBSCRIPTIONS.try_update(Ordering::SeqCst, Ordering::SeqCst, |count| count.checked_sub(1)) {
+    |
+
+warning: `kaspa-notify` (lib) generated 1 warning (run `cargo fix --lib -p kaspa-notify` to apply 1 suggestion)
+warning: trailing semicolon in macro used in expression position
+   --> rpc\wrpc\server\src\service.rs:142:56
+    |
+142 | ...   service.server.stop().unwrap_or_else(|err| warn!("wRPC unable to signal shutdown: `{err}`"));
+    |                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = note: for more information, see issue #79813 <https://github.com/rust-lang/rust/issues/79813>
+    = note: `#[warn(semicolon_in_expressions_from_non_local_macros)]` (part of `#[warn(future_incompatible)]`) on by default
+    = note: this warning originates in the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: trailing semicolon in macro used in expression position
+   --> rpc\wrpc\server\src\service.rs:143:62
+    |
+143 |             service.server.join().await.unwrap_or_else(|err| warn!("wRPC error: `{err}"));
+    |                                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = note: for more information, see issue #79813 <https://github.com/rust-lang/rust/issues/79813>
+    = note: this warning originates in the macro `warn` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: trailing semicolon in macro used in expression position
+   --> rpc\wrpc\server\src\service.rs:154:34
+    |
+154 |                         Ok(_) => info!("WRPC Server stopped on: {}", listen_address),
+    |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = note: for more information, see issue #79813 <https://github.com/rust-lang/rust/issues/79813>
+    = note: this warning originates in the macro `info` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `kaspa-wrpc-server` (lib) generated 3 warnings
+    Finished `release` profile [optimized] target(s) in 38.18s

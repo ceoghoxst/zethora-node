@@ -1,13 +1,13 @@
-use kaspa_grpc_client::GrpcClient;
+﻿use kaspa_grpc_client::GrpcClient;
 use kaspa_rpc_core::api::rpc::RpcApi;
 use prettytable::{format, Cell, Row, Table};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("Connecting to Zethora node at 127.0.0.1:26610...");
+    println!("Connecting to Zethora node at 127.0.0.1:26210...");
 
     // Connect to the local node
-    let client = match GrpcClient::connect("grpc://127.0.0.1:26610".to_string()).await {
+    let client = match GrpcClient::connect("grpc://127.0.0.1:26210".to_string()).await {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Failed to connect: {}", e);
@@ -45,3 +45,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     table.printstd();
     Ok(())
 }
+

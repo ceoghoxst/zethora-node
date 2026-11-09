@@ -15,11 +15,39 @@ publish = false
 name = "zethora-faucet"
 path = "src/main.rs"
 
+# The same file, built twice: the binary above, and a library so `tests/attack_tests.rs` can mount the real router.
+# One source, no second implementation of a claim.
+[lib]
+name = "zethora_faucet"
+path = "src/main.rs"
+
+# The adversarial suite: real HTTP over a real socket, against the real router. It needs the `test-hooks` feature to
+# mount the production routes in a test process; the binary itself never sees it.
+[[test]]
+name = "attack_tests"
+path = "tests/attack_tests.rs"
+required-features = ["test-hooks"]
+
 [dependencies]
 axum = "0.8"
 serde = { version = "1.0.190", features = ["derive"] }
 serde_json = "1.0.107"
 tokio = { version = "1.42.1", features = ["rt-multi-thread", "macros", "net", "process", "fs", "time"] }
 tower-http = { version = "0.5.2", features = ["fs"] }
+
+[dev-dependencies]
+# The red-team suite in tests/attack_tests.rs drives the real router over a real socket. These are the pieces the
+# production dependencies already compile, named explicitly so a test can build a request body and call the service,
+# and so it can speak HTTP/1 to the faucet's port. Versions are pinned to what axum already resolved.
+bytes = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "service"] }
+tower = { version = "0.5", features = ["util"] }
+
+[features]
+# Opens the router to the integration tests. Off for every normal build, so a release binary has no test-only code in
+# it; `cargo test` turns it on by itself (`required-features` on the test target below).
+test-hooks = []
 
 [workspace]

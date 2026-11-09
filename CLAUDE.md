@@ -556,8 +556,9 @@ merged block's valid txs are walked in block order with
 zethora_supply::turnstile_accepts; a tx that would go below zero is
 dropped before ANY effect (UTXO diff + muhash, coin tags, fingerprint,
 note tree, fees, pool flows, acceptance data, seq-commit). Chain
-block's own txs get the same running check (else disqualified, like the
-own-tx coin tag rule). Template refuses pool_out above what is left
+block's own txs get the same running check (then disqualifying the block;
+superseded 2026-11-07 by ZTH-CRIT-02: such a tx is dropped and the block
+stays on chain). Template refuses pool_out above what is left
 (ignores same-block pool_in). Per-block ledger_step turnstile kept as
 backstop. No stored-state change, no devnet reset. Tests:
 pipeline/tests/zethora_turnstile.rs (6) + 2 zethora_supply unit tests;
@@ -681,5 +682,29 @@ and carries no private payments. DEVNET RESET only if private payments were made
 Pack 1 #5: PROOF_MASS_BASE 40,000 per payment + PROOF_MASS_PER_ACTION 9,000 (was 15,000 per action only), priced
 from zethora-shielded/tests/proof_speed.rs (sandbox Xeon 2.1 GHz 2 vCPU: 13.8 ms + 3.0 ms/action; full block of any
 payment size <= ~150 ms sandbox, ~90 ms Ryzen est.). Mempool per-tx limits = block limits (no 100k standard
-limit in this Kaspa version), so every 1..16-action payment is relayable (test). All F3 items (F3a-F3f) are
-done; left from the seam review: pack 1 #14 (goes with the testnet privacy switch) and P4-11 (launch item).
+limit in this Kaspa version), so every 1..16-action payment is relayable (test). All F3 items (F3a-F3f) are done. Left from the seam review: pack 1 #14 (goes with the testnet privacy switch) and P4-11 (launch item).
+
+2026-11-07 - ZTH-CRIT-02 (ZTH-SPEC-006 v0.5): a chain block's own private transaction that its
+mergeset makes unspendable no longer disqualifies the block. Three rules depend on the mergeset
+and not on the block alone: no private coin tag its mergeset already spent, the turnstile over the
+pool its mergeset leaves (one at a time, block order), and room in the private coin list it leaves.
+Disqualifying the block there misfired on the DAG: a mergeset can hold a parallel block that spent
+the same coin tag or drained the pool, every later chain block merges this block, so the chain
+stalled, and two nodes that saw the blocks in a different order could disagree. utxo_validation.rs:
+the own-tx check became drop_unaccepted_own_transactions, which returns the transactions it leaves
+out; they are simply not accepted (none of their effects: UTXO diff and muhash, coin tags,
+fingerprint, coin list, fees, pool flows, acceptance data, seq-commit) and the block stays a chain
+block. The next chain block replays it as its selected parent from the same sealed balance, coin
+list and coin tags and drops the same ones, so every node reaches the same state. A transaction
+invalid on its own (bad signature, unspendable input, coin tag spent on the chain) still
+disqualifies with InvalidTransactionsInUtxoContext, which keeps every transaction of a chain block
+valid. The per-block ledger_step turnstile stays as a backstop. No stored-state change, no devnet
+reset. Tests: pipeline/tests/zethora_turnstile.rs
+chain_block_whose_own_payment_overdraws_drops_the_payment_and_stays_qualified (now StatusUTXOValid,
+sink advances, accepted_count 0, no recorded coin tags, pool unchanged, plus the exact-fit positive
+control that ends at zero) and the utxo_validation.rs unit test
+own_transactions_their_mergeset_makes_unspendable_are_dropped_and_the_block_stays_qualified (coin
+tag, turnstile and coin list each drop exactly b; a dropped transaction is charged nothing; an
+invalid-on-its-own transaction still refuses with (1, 2)).
+
+

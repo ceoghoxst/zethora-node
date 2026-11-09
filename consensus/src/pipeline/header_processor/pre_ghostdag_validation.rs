@@ -127,18 +127,20 @@ impl HeaderProcessor {
     /// parents when some are unknown (a node that is behind treats it like any far-ahead block and syncs), otherwise as
     /// invalid. Valid headers are never refused here: the range only rules out DAA scores that consensus rejects anyway.
     fn check_pow_epoch_plausible(&self, header: &Header, trusted: bool) -> BlockProcessResult<()> {
-        if self.skip_proof_of_work {
-            return Ok(());
-        }
-        let Some(pruning_point_daa_score) = self
-            .pruning_point_store
-            .read()
-            .pruning_point()
-            .optional()
-            .unwrap()
-            .and_then(|pruning_point| self.headers_store.get_daa_score(pruning_point).optional().unwrap())
-        else {
-            return Ok(()); // Not initialized yet (nothing to compare with)
+        // Zethora (blackhat I-P5): the epoch window below is a consensus rule, not merely a guard on the cost of the
+        // RandomZ setup. It must therefore run even when `skip_proof_of_work` is set (simnet / test mining): otherwise
+        // that flag would let a pseudo-miner forge a header with an arbitrary DAA score and bypass the window entirely.
+        // Only the PoW work itself is skipped by the flag (see `check_pow_and_calc_block_level`), never this bound.
+        let Some(pruning_point) = self.pruning_point_store.read().pruning_point().optional().unwrap() else {
+            return Ok(()); // genesis: no pruning point, nothing to compare with
+        };
+        let Some(pruning_point_daa_score) = self.headers_store.get_daa_score(pruning_point).optional().unwrap() else {
+            // Structural inconsistency: pruning point set but its header DAA score unreadable.
+            // Atomic advance at consensus/mod.rs:565 writes pruning_point and all supporting
+            // stores in one WriteBatch; get_and_verify_path_to_new_pruning_point requires
+            // get_ghostdag_data(new_pruning_point) to succeed (implying the header exists).
+            // Unreachable except RocksDB-level corruption. Fail CLOSED.
+            return Err(RuleError::PruningPointHeaderUnavailable(pruning_point).into());
         };
         let pruning_point_epoch = kaspa_pow::randomz::epoch_of(pruning_point_daa_score);
         let (low, high, highest_epoch) = if trusted {

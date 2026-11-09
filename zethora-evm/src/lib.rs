@@ -57,9 +57,10 @@ use revm::{
 
 /// EVM chain id the executor validates `chain_id` against.
 ///
-/// Zethora L2 uses `1` so that unmodified Ethereum tooling (which defaults to
-/// mainnet) produces transactions this engine accepts.
-pub const CHAIN_ID: u64 = 1;
+/// Zethora L2 uses its own chain id (`2600`) rather than Ethereum mainnet's `1`,
+/// so a transaction signed for another network can never be replayed on Zethora
+/// (and vice versa). Signers must set `chain_id = 2600`.
+pub const CHAIN_ID: u64 = 2600;
 
 /// Gas limit granted to a block.
 pub const BLOCK_GAS_LIMIT: u64 = 30_000_000;
@@ -399,9 +400,10 @@ pub struct EvmExecutor {
     chain_id: u64,
     /// Account that receives [`MINER_TREASURY_FEE_BPS`] of every gas fee.
     ///
-    /// Settable through [`EvmExecutor::set_miner_treasury`]; the default is the
-    /// zero address, which routes the slice to the zero address (i.e. burns it)
-    /// until a real treasury is configured.
+    /// Configured once at construction through
+    /// [`EvmExecutor::with_miner_treasury`]; the default is the zero address,
+    /// which routes the slice to the zero address (i.e. burns it) until a real
+    /// treasury is configured.
     miner_treasury: Address,
 }
 
@@ -441,22 +443,14 @@ impl EvmExecutor {
     /// Creates an executor that routes the treasury slice of every gas fee to
     /// `miner_treasury`.
     ///
-    /// This is the constructor form of [`EvmExecutor::set_miner_treasury`], so a
-    /// node can wire the treasury in one call at startup instead of remembering
-    /// to set it afterwards.
+    /// This is the only way to configure the treasury: it is set once, at
+    /// construction time, by whoever builds the executor. There is deliberately
+    /// no later setter, so no unauthenticated caller can redirect the fee
+    /// stream after the fact.
     pub fn with_miner_treasury(spec: SpecId, miner_treasury: Address) -> Self {
         let mut executor = Self::with_spec(spec);
         executor.miner_treasury = miner_treasury;
         executor
-    }
-
-    /// Sets the account that receives [`MINER_TREASURY_FEE_BPS`] of every gas
-    /// fee.
-    ///
-    /// The treasury is deliberately plain state: it holds no code and needs no
-    /// authorisation to receive a transfer, so a fresh sequential address works.
-    pub fn set_miner_treasury(&mut self, miner_treasury: Address) {
-        self.miner_treasury = miner_treasury;
     }
 
     /// The account that receives [`MINER_TREASURY_FEE_BPS`] of every gas fee.
@@ -499,6 +493,27 @@ impl EvmExecutor {
     /// consume more than this.
     pub fn block_gas_limit(&self) -> u64 {
         self.block.gas_limit
+    }
+
+    /// The timestamp of the block this executor is filling — `block.timestamp`.
+    ///
+    /// It defaults to zero, which makes the clock explicit rather than ambient: a
+    /// caller that only wants "now" gets a value it can reproduce, and a deadline
+    /// check is a comparison against a number the caller set rather than against
+    /// the host's wall clock.
+    pub fn block_timestamp(&self) -> U256 {
+        self.block.timestamp
+    }
+
+    /// Sets `block.timestamp` and leaves the rest of the block environment alone.
+    ///
+    /// [`EvmExecutor::set_block`] replaces the whole environment, `gas_limit`
+    /// included, which also resets the batch budget
+    /// [`EvmExecutor::execute_batch`] checks. This is the narrow form for code
+    /// that only needs to move the clock — a deadline, say — and must not disturb
+    /// the budget the next batch is measured against.
+    pub fn set_block_timestamp(&mut self, timestamp: U256) {
+        self.block.timestamp = timestamp;
     }
 
     /// Read-only access to the underlying in-memory database for inspection.
@@ -599,7 +614,16 @@ impl EvmExecutor {
             let mut evm = Context::mainnet()
                 .with_db(&mut self.db)
                 .with_block(self.block.clone())
-                .modify_cfg_chained(|cfg| cfg.set_spec_and_mainnet_gas_params(self.spec))
+                .modify_cfg_chained(|cfg| {
+                    cfg.set_spec_and_mainnet_gas_params(self.spec);
+                    // revm's `CfgEnv` defaults to chain id 1 (Ethereum mainnet), so
+                    // leaving it alone makes the handler reject every transaction
+                    // that `tx_env` correctly stamps with [`CHAIN_ID`] as
+                    // `InvalidChainId`. Pinning it to the executor's chain id keeps
+                    // the engine and the transaction on the same network; changing
+                    // it via [`EvmExecutor::set_chain_id`] moves both at once.
+                    cfg.chain_id = self.chain_id;
+                })
                 .build_mainnet();
 
             evm.transact_commit(tx_env).map_err(|err| format!("evm error: {err}"))
@@ -631,10 +655,12 @@ impl EvmExecutor {
     ///   and only the part of that above the base fee is the tip.
     ///
     /// The base fee is burned by the protocol rather than paid to anyone, which is
-    /// why it is subtracted instead of split. `saturating_sub` covers a fee cap the
-    /// base fee has outgrown; revm rejects such a transaction before execution, so
-    /// on the routed path it is a no-op guard.
-    fn priority_fee_per_gas(&self, tx: &Transaction) -> u128 {
+    /// why it is subtracted instead of split. `checked_sub` reports an error if
+    /// the effective gas price is below the base fee instead of silently clamping
+    /// to zero: revm rejects such a transaction before execution, so an underflow
+    /// here means the split would be computed from a price that was never
+    /// charged, and the executor refuses it rather than routing a phantom fee.
+    fn priority_fee_per_gas(&self, tx: &Transaction) -> Result<u128, String> {
         let basefee = u128::from(self.block.basefee);
         // `max_fee_per_gas` is the flat price on a legacy transaction and the fee
         // cap on an EIP-1559 one, which is exactly revm's `gas_price` view.
@@ -643,7 +669,9 @@ impl EvmExecutor {
             None => gas_price,
             Some(max_priority_fee) => gas_price.min(basefee.saturating_add(max_priority_fee)),
         };
-        effective_gas_price.saturating_sub(basefee)
+        effective_gas_price
+            .checked_sub(basefee)
+            .ok_or_else(|| format!("effective gas price {effective_gas_price} is below the block base fee {basefee}"))
     }
 
     /// Executes a raw, RLP-encoded Ethereum transaction and returns its output.
@@ -876,7 +904,7 @@ impl EvmExecutor {
     /// basis-point share and the beneficiary keeps the remainder. Rounding down
     /// also means a dust fee can never mint value out of nothing.
     fn route_miner_treasury_fee(&mut self, result: &ExecutionResult<HaltReason>, tx: &Transaction) -> Result<FeeRouting, String> {
-        let priority_fee = self.priority_fee_per_gas(tx);
+        let priority_fee = self.priority_fee_per_gas(tx)?;
         let gas_used = u128::from(result.tx_gas_used());
 
         // A halted transaction still pays for what it burned; a reverted one pays
@@ -1181,7 +1209,7 @@ mod tests {
         executor.set_chain_id(5);
         let tx = sign_legacy(legacy_tx(TxKind::Call(contract_address()), Bytes::new()));
         let err = executor.execute(&tx).expect_err("wrong chain id must be rejected");
-        assert!(err.contains("invalid chain id 1"), "unexpected error: {err}");
+        assert!(err.contains(&format!("invalid chain id {CHAIN_ID}")), "unexpected error: {err}");
     }
 
     #[test]
@@ -1567,3 +1595,4 @@ mod tests {
         assert_eq!(B256::from(outcome.state_root), executor.state_root());
     }
 }
+

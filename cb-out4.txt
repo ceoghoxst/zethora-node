@@ -1,0 +1,41 @@
+
+running 23 tests
+test processes::coinbase::tests::a_too_long_coinbase_payload_is_refused_when_building ... ok
+test processes::coinbase::tests::a_coinbase_claiming_more_than_the_clamp_is_refused ... ok
+test processes::coinbase::tests::an_overflowing_coinbase_sum_is_refused_not_wrapped ... ok
+test processes::coinbase::tests::every_genesis_starts_the_reward_schedule_at_zero ... ok
+test processes::coinbase::tests::expected_coinbase_transaction_uses_toccata_version ... ok
+test processes::coinbase::tests::long_script_standard_payload_falls_back_to_zero_pool ... ok
+test processes::coinbase::tests::modify_payload_test ... ok
+test processes::coinbase::tests::payload_serialization_test ... ok
+test processes::coinbase::tests::pool_flows_of_red_and_non_daa_blocks_are_counted ... ok
+test processes::coinbase::tests::shortest_standard_payload_parses_with_zero_pool ... ok
+test processes::coinbase::tests::standard_kaspa_payload_parses_with_zero_pool ... ok
+test processes::coinbase::tests::standard_payload_with_long_extra_data_parses_with_zero_pool ... ok
+test processes::coinbase::tests::unreadable_payload_is_refused_without_panicking ... FAILED
+test processes::transaction_validator::tx_validation_in_isolation::zethora_coinbase_parser_attack_tests::a_payload_cut_before_the_miner_tag_is_ignored ... ok
+test processes::coinbase::tests::subsidy_is_clamped_to_reach_the_cap_exactly ... ok
+test processes::transaction_validator::tx_validation_in_isolation::zethora_coinbase_parser_attack_tests::attack_lying_script_length_never_panics ... ok
+test processes::transaction_validator::tx_validation_in_isolation::zethora_coinbase_parser_attack_tests::attack_tag_smuggling_cannot_bypass_the_rejection ... ok
+test processes::transaction_validator::tx_validation_in_isolation::zethora_coinbase_parser_attack_tests::control_honest_shielded_coinbase_is_refused_when_spends_off ... ok
+test processes::transaction_validator::tx_validation_in_isolation::zethora_coinbase_parser_attack_tests::control_ordinary_coinbase_is_accepted_when_spends_off ... ok
+test processes::transaction_validator::tx_validation_in_isolation::zethora_coinbase_parser_attack_tests::tag_bytes_inside_the_payout_script_are_not_a_request ... ok
+test processes::transaction_validator::tx_validation_in_isolation::zethora_private_payment_tests::ordinary_coinbase_rewards_are_untouched_when_spends_off ... ok
+test processes::transaction_validator::tx_validation_in_isolation::zethora_private_payment_tests::shielded_coinbase_reward_is_refused_when_spends_off ... ok
+test processes::transaction_validator::tx_validation_in_isolation::zethora_coinbase_parser_attack_tests::attack_short_payload_never_panics ... ok
+
+failures:
+
+---- processes::coinbase::tests::unreadable_payload_is_refused_without_panicking stdout ----
+
+thread 'processes::coinbase::tests::unreadable_payload_is_refused_without_panicking' (10224) panicked at consensus\src\processes\coinbase.rs:549:9:
+assertion failed: matches!(cbm.deserialize_coinbase_payload(&payload),
+    Err(CoinbaseError::PayloadScriptPublicKeyLenAboveMax(200, 150)))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    processes::coinbase::tests::unreadable_payload_is_refused_without_panicking
+
+test result: FAILED. 22 passed; 1 failed; 0 ignored; 0 measured; 145 filtered out; finished in 0.01s
+

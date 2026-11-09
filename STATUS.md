@@ -5,7 +5,7 @@ The core L1, Privacy Layer, and L2 EVM are fully integrated and operational. The
 
 ### Core Architecture (Complete)
 - **L1 Consensus:** Live. GHOSTDAG, PoW, and Coinbase rules are locked and passing 168/168 regression tests.
-- **L2 EVM:** Live. Native evm integration with Chain ID 2600. 
+- **L2 EVM:** Live. Native `revm` integration with Chain ID 2600. 
 - **Bridge:** Live. Secp256k1 threshold signatures implemented. Reorg and forgery resistant.
 - **Privacy Layer:** Integrated. Orchard Halo2 circuits are wired into consensus (Feature-flagged off for mainnet until audit completes).
 

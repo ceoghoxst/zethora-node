@@ -339,6 +339,13 @@ pub fn create_core_with_runtime(runtime: &Runtime, args: &Args, fd_total_budget:
     // Print package name and version
     info!("{} v{}", env!("CARGO_PKG_NAME"), git::with_short_hash(version()));
 
+    // Zethora: print this network's genesis hash on start, so a freshly built node can be checked against the genesis
+    // the network runs (rebuilding the genesis constants silently changes it)
+    info!(
+        "Zethora genesis [{}]: hash {} (timestamp {}, bits {:#010x})",
+        config.params.net, config.genesis.hash, config.genesis.timestamp, config.genesis.bits
+    );
+
     assert!(!db_dir.to_str().unwrap().is_empty());
     info!("Application directory: {}", app_dir.display());
     info!("Data directory: {}", db_dir.display());

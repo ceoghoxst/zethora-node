@@ -1,0 +1,7 @@
+﻿=== cargo/rustc processes ===
+cargo.exe pid=18772 : "C:\Users\Rac436\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin\cargo.exe" test -p kaspa-consensus --lib -- coinbase
+=== lock files ===
+C:\Users\Rac436\zethora-node\target\debug\.cargo-lock
+C:\Users\Rac436\zethora-node\target\release\.cargo-lock
+=== files ===
+cb-test.log size=54

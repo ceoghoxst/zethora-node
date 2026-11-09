@@ -54,6 +54,8 @@ pub enum RuleError {
 
     #[error("pruning point {0} is not in the past of this block")]
     PruningViolation(Hash),
+    #[error("pruning point {0} header DAA score is unreadable; refusing to skip the epoch window")]
+    PruningPointHeaderUnavailable(Hash),
 
     #[error("expected header daa score {0} but got {1}")]
     UnexpectedHeaderDaaScore(u64, u64),

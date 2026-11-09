@@ -1,0 +1,5 @@
+﻿cargo pid=13592 cpu=1.8 ws=139MB
+cl pid=8324 cpu=2.5 ws=123MB
+cl pid=14152 cpu=5.4 ws=73MB
+cargo-err-log-size=911
+test-out-log-size=0

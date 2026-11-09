@@ -114,9 +114,8 @@ fn signed_call() -> Transaction {
 /// The steps mirror a node: configure the treasury, install the block, fund the
 /// account out of band, then execute.
 fn run_single_transfer() -> (EvmExecutor, ExecutionOutcome) {
-    let mut executor = EvmExecutor::with_spec(SpecId::PRAGUE);
-    // The producer's settlement account.
-    executor.set_miner_treasury(treasury());
+    // The producer's settlement account is configured once, at construction.
+    let mut executor = EvmExecutor::with_miner_treasury(SpecId::PRAGUE, treasury());
     // A real base fee and a named beneficiary; every other field keeps its
     // default, which is what leaves the executor's block gas limit in place.
     executor.set_block(BlockEnv { basefee: BASEFEE, beneficiary: beneficiary(), ..Default::default() });

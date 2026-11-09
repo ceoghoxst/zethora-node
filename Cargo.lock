@@ -1697,10 +1697,13 @@ checksum = "31b698c5f9a010f6573133b09e0de5408834d0c82f8d7475a89fc1867a71cd90"
 dependencies = [
  "axum-core 0.5.6",
  "bytes",
+ "form_urlencoded",
  "futures-util",
  "http",
  "http-body",
  "http-body-util",
+ "hyper",
+ "hyper-util",
  "itoa",
  "matchit 0.8.4",
  "memchr",
@@ -1708,10 +1711,15 @@ dependencies = [
  "percent-encoding",
  "pin-project-lite",
  "serde_core",
+ "serde_json",
+ "serde_path_to_error",
+ "serde_urlencoded",
  "sync_wrapper",
+ "tokio",
  "tower 0.5.3",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -1751,6 +1759,7 @@ dependencies = [
  "sync_wrapper",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -13595,6 +13604,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "zethora-dex"
+version = "2.1.0"
+dependencies = [
+ "alloy-consensus 2.5.0",
+ "alloy-primitives",
+ "alloy-signer 2.5.0",
+ "alloy-signer-local 2.5.0",
+ "alloy-sol-types",
+ "axum 0.8.9",
+ "clap",
+ "revm",
+ "serde",
+ "serde_json",
+ "tokio",
+ "zethora-evm",
+]
+
+[[package]]
 name = "zethora-evm"
 version = "2.1.0"
 dependencies = [
@@ -13648,6 +13675,26 @@ dependencies = [
  "sp1-build",
  "sp1-sdk",
  "sp1-zkvm",
+ "zethora-evm",
+]
+
+[[package]]
+name = "zethora-rpc-l2"
+version = "2.1.0"
+dependencies = [
+ "alloy-consensus 2.5.0",
+ "alloy-eips 2.5.0",
+ "alloy-primitives",
+ "alloy-signer 2.5.0",
+ "alloy-signer-local 2.5.0",
+ "axum 0.8.9",
+ "http-body-util",
+ "revm",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower 0.5.3",
+ "tower-http 0.5.2",
  "zethora-evm",
 ]
 
