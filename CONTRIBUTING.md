@@ -1,12 +1,22 @@
 # Contributing to Zethora
 
-We welcome contributions from the community! 
+We are thrilled that you are interested in contributing to Zethora! 
 
-## Code Style
-As Zethora is built on a Kaspa fork and integrates Zcash Orchard, we strictly follow the style guidelines of the upstream projects. For Rust code, please run `cargo fmt` before submitting a pull request.
+## Code of Conduct
+By participating in this project, you agree to abide by our Code of Conduct. Please be respectful and constructive in all communications.
 
-## Pull Requests
-1. Fork the repo and create your branch from `zethora-wallet-cli`.
-2. Ensure all tests pass (`cargo test`).
-3. Update the README.md with details of changes if applicable.
-4. Issue the pull request.
+## How to Contribute
+1. **Fork the repository** and create your branch from main.
+2. **Ensure the test suite passes** (cargo test).
+3. **Format your code** (cargo fmt).
+4. **Issue a Pull Request** with a clear description of the problem and the solution.
+
+## Contribution Guidelines (Librustzcash Style)
+- All new public functions must have doc comments (///).
+- Commit messages must be descriptive. Use the imperative mood (e.g., "Add bridge signature check", not "Added bridge signature check").
+- Ensure no unhandled unwrap() in production code; use proper error propagation.
+
+## Security Disclosures
+If you find a security vulnerability, **DO NOT open a public issue**. Please refer to our SECURITY.md file for responsible disclosure guidelines.
+
+Thank you for helping us build the Apex Predator L1!
