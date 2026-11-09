@@ -13590,6 +13590,7 @@ dependencies = [
  "alloy-signer 2.5.0",
  "alloy-signer-local 2.5.0",
  "alloy-sol-types",
+ "secp256k1 0.29.1",
  "zethora-evm",
 ]
 
