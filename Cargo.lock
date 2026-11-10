@@ -6189,6 +6189,7 @@ dependencies = [
 name = "kaspa-testing-integration"
 version = "2.1.0"
 dependencies = [
+ "alloy-primitives",
  "async-channel 2.3.1",
  "async-trait",
  "bincode",
@@ -6250,6 +6251,9 @@ dependencies = [
  "tokio-stream",
  "tonic 0.14.5",
  "workflow-perf-monitor",
+ "zethora-bridge",
+ "zethora-dex",
+ "zethora-evm",
 ]
 
 [[package]]
