@@ -46,3 +46,6 @@ error.txt
 Master Context.txt
 Master Context*.bak
 MasterContext_DIAGNOSTIC.txt
+
+# Encrypted backup vault (Section 489)
+Vault/
