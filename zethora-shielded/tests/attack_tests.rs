@@ -10,7 +10,7 @@ use orchard::circuit::VerifyingKey;
 use std::sync::OnceLock;
 use zethora_shielded::{
     CIRCUIT, codec,
-    scan::{Scanner},
+    scan::Scanner,
     verify_payment,
     wallet::{PrivateWallet, shielding_payment},
 };
@@ -77,7 +77,32 @@ fn funded_scanner(amount: u64) -> (Scanner, PrivateWallet) {
 ///
 /// Fail-when-removed: if a spend ever produced a fresh tag per payment (e.g. by re-randomising the note), the two
 /// spends would not share a tag and every node's double-spend check would silently stop working — this test goes red.
+#[test]
+fn a_coin_spent_twice_verifies_twice_and_shares_its_tag() {
+    // One 50,000-zet coin, spent twice in two different transactions. Each spend is bound to its own transaction
+    // digest, so neither payment knows about the other — exactly what an attacker sends.
+    const SECOND_TX: [u8; 32] = [0x78; 32];
+    let (scanner, me) = funded_scanner(50_000);
+    let coins = scanner.pick_coins(0, 50_000).unwrap();
+    let tag = coins[0].nullifier;
+    let first = scanner.spend_payment(0, &coins, &[(me.address(), 50_000)], &TX).unwrap();
+    let second = scanner.spend_payment(0, &coins, &[(me.address(), 50_000)], &SECOND_TX).unwrap();
 
+    // Both verify: the cryptographic layer has no way to see the other spend, so it cannot be what stops the attack.
+    assert!(node_accepts(&first, &TX), "the first spend verifies on its own");
+    assert!(node_accepts(&second, &SECOND_TX), "the second spend verifies on its own");
+
+    // What links them is the tag: the coin reveals the same one in both payments, so a node that remembers the tags it
+    // has seen can refuse the second (see `consensus/tests/zethora_privacy_blackhat.rs`, which drives the node's own
+    // double-spend rules).
+    assert!(tags(&first).contains(&tag), "the first spend reveals the coin's tag");
+    assert!(tags(&second).contains(&tag), "the second spend reveals the same tag");
+    assert_eq!(
+        tags(&first).iter().filter(|t| tags(&second).contains(t)).count(),
+        1,
+        "the two spends share exactly one tag: the coin that was spent twice"
+    );
+}
 
 /// Attack: hide the double-spend inside ONE payment, so one coin pays two recipients. Orchard's actions are
 /// independent, so a payment carrying the same coin twice would satisfy every per-action check; only a payment-wide
@@ -94,15 +119,19 @@ fn the_isolation_rule_sees_a_tag_repeated_inside_one_payment() {
     let payment = scanner.spend_payment(0, &coins, &[(me.address(), 50_000)], &TX).unwrap();
     assert!(node_accepts(&payment, &TX));
 
-    // Rewrite the second action so it carries the first action's tag: the shape the isolation rule must refuse.
+    // Rewrite the other action so it carries the spent coin's tag: the shape the isolation rule must refuse. Orchard
+    // pads a one-coin payment with a dummy spend in an action of its own choosing, so find the real spend first rather
+    // than assuming it is the first action.
+    let at = tags(&payment).iter().position(|t| *t == tag).expect("the spent coin's tag is in one of the actions");
+    let real = 3 + at * codec::ACTION_SIZE + 32; // the nullifier inside that action
+    let other = 3 + (1 - at) * codec::ACTION_SIZE + 32;
+    let real_tag = payment[real..real + 32].to_vec();
     let mut doubled = payment.clone();
-    let (first_action, second_action) = (3, 3 + codec::ACTION_SIZE);
-    let src = first_action + 32..first_action + 64; // the nullifier inside action 0
-    doubled[second_action + 32..second_action + 64].copy_from_slice(&payment[src]);
+    doubled[other..other + 32].copy_from_slice(&real_tag);
     let t = tags(&doubled);
     assert_eq!(t.len(), 2, "the payment still has two actions");
-    assert_eq!(t[0], tag);
-    assert_eq!(t[1], tag, "the same tag now appears in both actions");
+    assert_eq!(t[0], t[1], "the same tag now appears in both actions");
+    assert_eq!(t[0], tag, "and that tag is the spent coin's");
 
     // This is exactly the check the node runs, and it fires.
     let mut seen = std::collections::HashSet::new();
@@ -111,7 +140,6 @@ fn the_isolation_rule_sees_a_tag_repeated_inside_one_payment() {
     // The doctored payment is refused anyway (its proof no longer matches), so the attack fails twice over.
     assert!(!node_accepts(&doubled, &TX), "a payment with a rewritten action must not verify");
 }
-
 
 // ---------------------------------------------------------------------------
 // A.2 — Turnstile inflation: take more out of the private pool than was ever put in.
@@ -127,7 +155,36 @@ fn the_isolation_rule_sees_a_tag_repeated_inside_one_payment() {
 ///
 /// Fail-when-removed: if a shield reported a value balance with the wrong sign or magnitude, the running total would
 /// not fall short and the turnstile would let the unshield through — this test goes red.
+#[test]
+fn the_turnstile_refuses_an_unshield_larger_than_the_pool() {
+    // The honest pool: a miner shields exactly 1,000 zets, and that is all the pool ever holds.
+    let shield = shielding_payment(attacker().address(), 1_000, &TX).unwrap();
+    assert!(node_accepts(&shield, &TX), "the shield is a real payment");
+    assert_eq!(value_balance(&shield), -1_000, "shielding brings 1,000 zets into the pool");
 
+    // The drain: an unshield of 1,000,000 zets, built from a coin this pool never held.
+    let (rich, _) = funded_scanner(1_000_000);
+    let rich_coins = rich.pick_coins(0, 1_000_000).unwrap();
+    let drain = rich.spend_payment(0, &rich_coins, &[], &TX).unwrap();
+
+    // The cryptography does not stop it: on its own, the drain is a perfectly valid payment.
+    assert!(node_accepts(&drain, &TX), "the crypto alone cannot stop the drain: the payment verifies");
+    assert_eq!(value_balance(&drain), 1_000_000, "the drain claims to take 1,000,000 zets out of the pool");
+
+    // The accounting is what stops it: the pool's public balance is the running sum of the value balances, and the
+    // drain asks for far more than the pool holds
+    // (`utxo_validation.rs::check_private_payment_fits_pool` at admission, and the per-block pass).
+    let mut pool: i128 = 0;
+    pool -= value_balance(&shield) as i128; // value in
+    assert_eq!(pool, 1_000, "after the shield the pool holds exactly what was put in");
+    let out = value_balance(&drain) as i128; // value out
+    assert!(out > pool, "the numbers do not add up: {out} zets wanted out of a pool that holds {pool}");
+    assert_eq!(pool - out, -999_000, "the pool would end up 999,000 zets below zero");
+
+    // Honest contrast: an unshield of exactly what the pool holds moves it to zero, which the turnstile allows. The
+    // rule refuses the drain because of its size, not because it takes value out.
+    assert_eq!(pool - 1_000, 0);
+}
 
 /// Attack: inflate the pool by making a payment claim it brings value in while it actually takes value out (or vice
 /// versa) — the sign-flip trick. A shield reports a negative balance and an unshield a positive one; if an attacker
@@ -137,11 +194,27 @@ fn the_isolation_rule_sees_a_tag_repeated_inside_one_payment() {
 /// Fail-when-removed: the sign of the value balance must follow from the payment's own effects, not from a byte an
 /// attacker can flip. Flipping it here breaks the binding signature, because the value balance is part of what the
 /// bundle commits to — this test goes red if that commitment stops covering it.
+#[test]
+fn a_sign_flipped_value_balance_breaks_the_binding_signature() {
+    // A real shield: it brings 5,000 zets INTO the pool, so its value balance is negative.
+    let shield = shielding_payment(attacker().address(), 5_000, &TX).unwrap();
+    assert!(node_accepts(&shield, &TX));
+    assert_eq!(value_balance(&shield), -5_000, "shielding brings value in, so the balance is negative");
+
+    // The attacker rewrites the 8-byte value balance in the encoded payment, so the very same bytes now claim to take
+    // 5,000 zets OUT of the pool. If the sign were the attacker's to choose, this shield and its flipped copy would
+    // cancel out (-5,000 + 5,000 = 0) instead of moving the turnstile by 10,000 zets.
+    let (bundle, _) = codec::decode(&shield).unwrap();
+    let at = anchor_offset(bundle.actions().len()) - 8; // the value balance sits right in front of the anchor
+    let mut flipped = shield.clone();
+    flipped[at..at + 8].copy_from_slice(&5_000i64.to_le_bytes());
+    assert_ne!(flipped, shield, "precondition: the bytes really changed");
+    assert_eq!(value_balance(&flipped), 5_000, "the doctored payment now claims the opposite direction");
+    assert_eq!(-5_000i64 + value_balance(&flipped), 0, "a free sign would let a shield and a drain cancel out");
 
     // ...but it no longer verifies: the binding signature covers the value balance.
     assert!(!node_accepts(&flipped, &TX), "a sign-flipped value balance must break the binding signature");
 }
-
 
 // ---------------------------------------------------------------------------
 // A.3 — Anchor maturity: spend against a coin list snapshot the chain will not use.
@@ -215,7 +288,6 @@ fn a_spend_cannot_strip_or_forge_its_anchor() {
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // A.4 — Malformed payloads must be refused cleanly, never panic a node.
 // ---------------------------------------------------------------------------
@@ -263,4 +335,3 @@ fn no_malformed_payment_can_crash_the_decoder() {
     // A payload that is only the marker.
     assert!(!node_accepts(b"", &TX), "an empty payload is not a payment");
 }
-
