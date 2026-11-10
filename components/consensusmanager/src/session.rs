@@ -19,8 +19,10 @@ use kaspa_consensus_core::{
     trusted::{ExternalGhostdagData, TrustedBlock},
     tx::{MutableTransaction, Transaction, TransactionId, TransactionOutpoint, TransactionQueryResult, TransactionType, UtxoEntry},
 };
+use kaspa_core::error;
 use kaspa_utils::sync::rwlock::*;
 use std::{ops::Deref, sync::Arc};
+use tokio::task::JoinError;
 
 pub use tokio::task::spawn_blocking;
 
@@ -163,12 +165,60 @@ impl ConsensusSessionOwned {
     /// Uses [`tokio::task::spawn_blocking`] to run the provided consensus closure on a thread where blocking is acceptable.
     /// Note that this function is only available on the *owned* session, and requires cloning the session. In fact this
     /// function is the main motivation for a separate session type.
+    ///
+    /// F-04: the join result is matched, never `unwrap()`ed -- see [`Self::try_spawn_blocking()`]. A blocking task that
+    /// panicked (or that the runtime cancelled during shutdown) is logged there, and its *original* panic payload is
+    /// re-raised here rather than tokio's opaque `JoinError`. This variant is infallible by signature (it must yield an
+    /// `R` and no `R` can be fabricated for a poisoned operation), so any caller that can turn a poisoned pool
+    /// operation into an error for a *single* request -- RPC handlers, P2P flows -- must call
+    /// [`Self::try_spawn_blocking()`] instead.
     pub async fn spawn_blocking<F, R>(self, f: F) -> R
     where
         F: FnOnce(&dyn ConsensusApi) -> R + Send + 'static,
         R: Send + 'static,
     {
-        spawn_blocking(move || f(self.consensus.as_ref())).await.unwrap()
+        match self.try_spawn_blocking(f).await {
+            Ok(res) => res,
+            // Already logged with the consensus context by `try_spawn_blocking`; this variant has no value to hand
+            // back, so surface the failure the way it arrived, with the payload the blocking task actually died with.
+            Err(err) => match err.try_into_panic() {
+                Ok(payload) => std::panic::resume_unwind(payload),
+                Err(err) => panic!("a blocking consensus operation was cancelled by the runtime: {err}"),
+            },
+        }
+    }
+
+    /// Fallible variant of [`Self::spawn_blocking()`] -- **the F-04 fix**.
+    ///
+    /// [`tokio::task::spawn_blocking`] reports a panicking closure as `Err(JoinError)`. Joining it with `unwrap()`
+    /// re-raises that panic *inside the async task that was driving the call* (a gRPC handler, a flow task, the
+    /// miner), which kills the whole task -- and with it every other request served by the same connection --
+    /// instead of failing the one operation that broke an invariant. This method never panics: the `JoinError`
+    /// (panic payload included) is logged and returned to the caller, so one poisoned mempool operation costs one
+    /// failed request.
+    ///
+    /// ```
+    /// # async fn example(session: kaspa_consensusmanager::ConsensusProxy) -> Result<(), String> {
+    /// let sink = session.clone().try_spawn_blocking(|c| c.get_sink()).await.map_err(|err| err.to_string())?;
+    /// # let _ = sink;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn try_spawn_blocking<F, R>(self, f: F) -> Result<R, JoinError>
+    where
+        F: FnOnce(&dyn ConsensusApi) -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        spawn_blocking(move || f(self.consensus.as_ref())).await.map_err(|err| {
+            if err.is_panic() {
+                // `Display` for a panicked `JoinError` carries the payload the closure died with, i.e. the message
+                // of the violated `assert!` -- exactly what an operator needs in order to find the invariant.
+                error!("[Consensus session] a blocking consensus operation panicked, containing the failure to this call: {err}");
+            } else {
+                error!("[Consensus session] a blocking consensus operation was cancelled by the runtime: {err}");
+            }
+            err
+        })
     }
 }
 
