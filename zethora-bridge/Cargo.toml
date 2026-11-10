@@ -17,6 +17,11 @@ alloy-primitives = { version = "1", features = ["k256"] }
 # The L2 execution layer. The contract is executed by `EvmExecutor`, so a mint
 # is a real EVM transaction against the same engine the sequencer uses.
 zethora-evm = { path = "../zethora-evm" }
+# Federation signatures. A mint proof is signed by the federation that custodies
+# the L1 deposits, so the L2 accepts only mints the federation authorised. The
+# workspace dependency already enables the `global-context` feature, so the
+# signing/verification context is the pre-computed one the rest of the node uses.
+secp256k1.workspace = true
 
 [dev-dependencies]
 # Signing the fixture transactions with a real secp256k1 key, exactly as the

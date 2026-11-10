@@ -29,10 +29,10 @@
 //! A test passes when the attack *fails*. A failing test is a live vulnerability,
 //! and the fix belongs in `src/`, not in the test.
 
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, U256, keccak256};
 use zethora_bridge::{
-    AMOUNT_CEILING, BLOCK_MAGIC, FederationLock, L1Watcher, MintError, MintProof,
-    PROOF_CHAIN_ID, decode_mint_calldata, mint, mint_selector, mint_storage_slot, minted_slot, wzthr_balance,
+    AMOUNT_CEILING, BLOCK_MAGIC, FederationSigner, L1Watcher, MintError, MintProof, decode_mint_calldata, mint_selector,
+    mint_storage_slot, minted_slot, wzthr_balance,
 };
 use zethora_evm::EvmExecutor;
 
@@ -52,9 +52,26 @@ fn attacker() -> Address {
 }
 
 /// A 2-of-3 federation with deterministic, distinct member keys.
-fn federation() -> FederationLock {
-    let keys = vec![vec![0x02; 33], vec![0x03; 33], vec![0x04; 33]];
-    FederationLock::new(keys, 2).expect("a 2-of-3 federation is valid")
+///
+/// The fixture holds the members' secret keys because these tests drive the
+/// coordinator's side of the bridge: proving an honest deposit means signing it. The
+/// public half — the lock script a deposit is sent to — is derived from the keys, so
+/// the blocks the tests build and the keys the contract checks against are the same
+/// federation by construction. An *attacker* has neither.
+fn federation() -> FederationSigner {
+    let secret_keys = vec![[0x11; 32], [0x22; 32], [0x33; 32]];
+    FederationSigner::new(secret_keys, 2).expect("a 2-of-3 federation is valid")
+}
+
+/// The contract's `mint`, authorised by the federation this file signs with.
+///
+/// Every honest mint is checked against the federation the watcher holds, so the
+/// wrapper names it once instead of in every attack. The attacks are aimed at the
+/// statement and the calldata, not at the signature check, so they all mint through
+/// the honest federation; a proof signed by *another* federation is F-3, and lives in
+/// `zethora_bridge_blackhat.rs` where it is called directly.
+fn mint(executor: &mut EvmExecutor, contract: Address, to: Address, amount: U256, proof: &[u8]) -> Result<(), MintError> {
+    zethora_bridge::mint(executor, federation().lock(), contract, to, amount, proof)
 }
 
 // ---------------------------------------------------------------------------
@@ -67,6 +84,7 @@ fn push_output(
     out: &mut Vec<u8>,
     tx_index: u16,
     output_index: u16,
+    txid: [u8; 32],
     script: &[u8],
     amount: u64,
     fee: u64,
@@ -75,6 +93,7 @@ fn push_output(
 ) {
     out.extend_from_slice(&tx_index.to_le_bytes());
     out.extend_from_slice(&output_index.to_le_bytes());
+    out.extend_from_slice(&txid);
     out.push(u8::from(spent));
     out.extend_from_slice(&(script.len() as u32).to_le_bytes());
     out.extend_from_slice(script);
@@ -88,12 +107,44 @@ fn block_bytes(block_height: u64, outputs: impl FnOnce(&mut Vec<u8>)) -> Vec<u8>
     let mut body = Vec::new();
     outputs(&mut body);
     let count = count_outputs(&body);
-    let mut out = Vec::with_capacity(BLOCK_MAGIC.len() + 12 + body.len());
+    let mut out = Vec::with_capacity(BLOCK_MAGIC.len() + 44 + body.len());
     out.extend_from_slice(&BLOCK_MAGIC);
     out.extend_from_slice(&block_height.to_be_bytes());
+    out.extend_from_slice(&block_hash(block_height));
     out.extend_from_slice(&(count as u32).to_le_bytes());
     out.extend_from_slice(&body);
     out
+}
+
+/// A stand-in for the L1 block hash of the block at `height`.
+///
+/// The watcher reports the block a deposit was seen in, so every encoded block has
+/// to carry 32 hash bytes. Deriving them from the height keeps the fixture
+/// deterministic — rebuilding a block must be byte-identical — while still giving
+/// two different heights two unrelated-looking hashes, which is what a reorg
+/// produces.
+///
+/// It is deliberately *not* what identifies a deposit: identity comes from the
+/// transaction's [`txid`], because a reorg rewrites the block a transaction sits in
+/// and must not be able to give the same deposit a second identity.
+fn block_hash(block_height: u64) -> [u8; 32] {
+    let mut preimage = Vec::with_capacity(32 + 8);
+    preimage.extend_from_slice(b"zethora-bridge-test/block");
+    preimage.extend_from_slice(&block_height.to_be_bytes());
+    keccak256(&preimage).0
+}
+
+/// A stand-in txid for the transaction the fixtures place at `tx_index`.
+///
+/// A deposit is identified by `keccak256(txid || output_index)`, so a record has to
+/// name the transaction that created it. Two different transactions get unrelated
+/// ids, and the same transaction from the same fixture keeps its id; the block it is
+/// reported in plays no part.
+fn txid(tx_index: u16) -> [u8; 32] {
+    let mut preimage = Vec::new();
+    preimage.extend_from_slice(b"zethora-bridge-test/tx");
+    preimage.extend_from_slice(&tx_index.to_be_bytes());
+    keccak256(&preimage).0
 }
 
 /// Walks an encoded body to count its records, so the header cannot drift from
@@ -102,8 +153,9 @@ fn count_outputs(body: &[u8]) -> usize {
     let mut offset = 0;
     let mut count = 0;
     while offset < body.len() {
-        let script_len = u32::from_le_bytes(body[offset + 5..offset + 9].try_into().expect("4-byte length")) as usize;
-        offset += 9 + script_len + 8 + 8 + 20;
+        // tx index, output index, txid, flags — then the script length.
+        let script_len = u32::from_le_bytes(body[offset + 37..offset + 41].try_into().expect("4-byte length")) as usize;
+        offset += 41 + script_len + 8 + 8 + 20;
         count += 1;
     }
     count
@@ -114,7 +166,8 @@ fn count_outputs(body: &[u8]) -> usize {
 /// Used by the attacks that lie about the header rather than about a record.
 #[allow(dead_code)]
 fn set_output_count(block: &mut [u8], count: u32) {
-    let start = BLOCK_MAGIC.len() + 8;
+    // Magic, then the height, then the 32-byte block hash, then the count.
+    let start = BLOCK_MAGIC.len() + 8 + 32;
     if block.len() >= start + 4 {
         block[start..start + 4].copy_from_slice(&count.to_le_bytes());
     }
@@ -124,7 +177,7 @@ fn set_output_count(block: &mut [u8], count: u32) {
 fn deposit_block(amount: u64, fee: u64, recipient: Address) -> Vec<u8> {
     let script = federation().lock_script();
     block_bytes(100, |body| {
-        push_output(body, 0, 0, &script, amount, fee, recipient, false);
+        push_output(body, 0, 0, txid(0), &script, amount, fee, recipient, false);
     })
 }
 
@@ -160,12 +213,14 @@ fn attack_1_zero_value_poisoning_is_refused_and_consumes_nothing() {
 
     // The watcher refuses to prove it rather than emit a mint that can only
     // revert, and it refuses before any state exists to poison.
-    let err = watcher.generate_mint_proof(&locks[0]).expect_err("a deposit worth only its fee is not provable");
+    let err = watcher
+        .generate_mint_proof(&locks[0], executor.chain_id())
+        .expect_err("a deposit worth only its fee is not provable");
     assert!(err.contains("nothing to mint"), "the refusal explains itself: {err}");
 
     // Going around the watcher and hand-rolling the proof does not help: the
     // contract refuses a zero mint on its own.
-    let forged = MintProof::new(&locks[0], attacker());
+    let forged = MintProof::new(&locks[0], executor.chain_id(), attacker(), &federation());
     assert!(forged.amount.is_zero());
     let err = mint(&mut executor, contract_address(), attacker(), forged.amount, &forged.encode())
         .expect_err("a zero mint must be refused");
@@ -186,7 +241,9 @@ fn attack_1_zero_value_poisoning_is_refused_and_consumes_nothing() {
         .scan_for_locks(&deposit_block(500, 0, victim()))
         .expect("the block decodes")
         .remove(0);
-    let honest_proof = watcher.generate_mint_proof(&honest).expect("a live lock can be proven");
+    let honest_proof = watcher
+        .generate_mint_proof(&honest, executor.chain_id())
+        .expect("a live lock can be proven");
     let err = mint(&mut executor, contract_address(), victim(), U256::ZERO, &honest_proof.encode())
         .expect_err("a zero mint is not a mint");
     assert_eq!(err, MintError::ZeroAmount);
@@ -224,7 +281,9 @@ fn attack_2_address_bit_flip_cannot_redirect_a_deposit() {
         .scan_for_locks(&deposit_block(900, 0, victim()))
         .expect("the block decodes")
         .remove(0);
-    let proof = watcher.generate_mint_proof(&lock).expect("a live lock can be proven");
+    let proof = watcher
+        .generate_mint_proof(&lock, executor.chain_id())
+        .expect("a live lock can be proven");
 
     // Every bit of the 20-byte address, one at a time.
     let honest_bytes = victim().into_array();
@@ -247,10 +306,9 @@ fn attack_2_address_bit_flip_cannot_redirect_a_deposit() {
 
     // The commitment is a function of the recipient. Pinned directly, so the
     // property survives a refactor of `mint`.
-    let for_victim =
-        MintProof::commitment_for(proof.lock_id, proof.amount, proof.block_height, PROOF_CHAIN_ID, victim());
-    let for_attacker =
-        MintProof::commitment_for(proof.lock_id, proof.amount, proof.block_height, PROOF_CHAIN_ID, attacker());
+    let chain = executor.chain_id();
+    let for_victim = MintProof::commitment_for(proof.lock_id, proof.amount, proof.block_height, chain, victim());
+    let for_attacker = MintProof::commitment_for(proof.lock_id, proof.amount, proof.block_height, chain, attacker());
     assert_ne!(for_victim, for_attacker, "the commitment must be recipient-binding");
 
     // Addresses differing only in their last byte must not share a commitment.
@@ -258,7 +316,7 @@ fn attack_2_address_bit_flip_cannot_redirect_a_deposit() {
     near[19] ^= 0xff;
     let near_address = Address::from(near);
     assert_ne!(
-        MintProof::commitment_for(proof.lock_id, proof.amount, proof.block_height, PROOF_CHAIN_ID, near_address),
+        MintProof::commitment_for(proof.lock_id, proof.amount, proof.block_height, chain, near_address),
         for_victim,
         "a near-collision address must not share a commitment"
     );
@@ -282,15 +340,15 @@ fn attack_2_address_bit_flip_cannot_redirect_a_deposit() {
 /// `decode_block` guards the header with
 /// `count * MIN_OUTPUT_LEN <= remaining`, which bounds the *count* by the size of
 /// the input. That is a bound on the number of records, not on their cost: a
-/// real lock script is 204 bytes, so a legitimate record is ~209 bytes, while
-/// `MIN_OUTPUT_LEN` is 45. The guard therefore lets through four times as many
-/// records as the input could honestly hold.
+/// real lock script is 204 bytes, so a legitimate record is ~281 bytes, while
+/// `MIN_OUTPUT_LEN` is 77. The guard therefore lets through nearly four times as
+/// many records as the input could honestly hold.
 ///
 /// So the cheapest hostile block is not many distinct records; it is many
-/// *identical* ones. `scan_for_locks` deduplicates outpoints, so a `Vec` of
-/// duplicate records costs the watcher one `LockEvent` each and yields one lock.
-/// The dedupe works — the attacker cannot mint twice — but the memory is already
-/// spent by the time it runs.
+/// *identical* ones. `scan_for_locks` deduplicates by UTXO — transaction id and
+/// output index — so a `Vec` of duplicate records costs the watcher one
+/// `LockEvent` each and yields one lock. The dedupe works — the attacker cannot
+/// mint twice — but the memory is already spent by the time it runs.
 ///
 /// Attack: send 4000 duplicate locks in a block. Without the `MAX_LOCKS_PER_BLOCK`
 /// limit, the watcher would allocate memory for each one before deduplication.
@@ -302,7 +360,7 @@ fn attack_3_watcher_memory_bomb_cannot_amplify_input() {
     const COPIES: u16 = 4_000;
     let bomb = block_bytes(100, |body| {
         for _ in 0..COPIES {
-            push_output(body, 7, 3, &script, 1_000, 0, attacker(), false);
+            push_output(body, 7, 3, txid(7), &script, 1_000, 0, attacker(), false);
         }
     });
 
@@ -313,7 +371,7 @@ fn attack_3_watcher_memory_bomb_cannot_amplify_input() {
     // A block within the limit still works.
     let small = block_bytes(100, |body| {
         for i in 0..10u16 {
-            push_output(body, i, 0, &script, 500, 0, attacker(), false);
+            push_output(body, i, 0, txid(i), &script, 500, 0, attacker(), false);
         }
     });
     let locks = watcher.scan_for_locks(&small).expect("a small block is accepted");
@@ -349,7 +407,9 @@ fn attack_6_balance_namespace_collision_cannot_overwrite_a_balance() {
         .scan_for_locks(&deposit_block(1_000, 0, victim()))
         .expect("the block decodes")
         .remove(0);
-    let proof = watcher.generate_mint_proof(&lock).expect("a live lock can be proven");
+    let proof = watcher
+        .generate_mint_proof(&lock, executor.chain_id())
+        .expect("a live lock can be proven");
     mint(&mut executor, contract_address(), victim(), proof.amount, &proof.encode()).expect("the deposit mints");
     let victim_slot = mint_storage_slot(victim());
     assert_eq!(executor.storage(contract_address(), victim_slot), U256::from(1_000u64));
@@ -419,7 +479,9 @@ fn attack_7_calldata_decoder_confusion_cannot_move_a_field() {
         .scan_for_locks(&deposit_block(750, 0, victim()))
         .expect("the block decodes")
         .remove(0);
-    let proof = watcher.generate_mint_proof(&lock).expect("a live lock can be proven");
+    let proof = watcher
+        .generate_mint_proof(&lock, executor.chain_id())
+        .expect("a live lock can be proven");
     let honest = proof.calldata(victim());
 
     // The canonical layout is `selector || to || amount || offset || len || bytes`.

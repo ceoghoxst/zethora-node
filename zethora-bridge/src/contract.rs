@@ -18,6 +18,7 @@ use alloy_primitives::{Address, U256, keccak256};
 use alloy_sol_types::{SolCall, SolError, SolValue, sol};
 use zethora_evm::EvmExecutor;
 
+use crate::FederationLock;
 use crate::watcher::MintProof;
 
 sol! {
@@ -70,7 +71,6 @@ pub fn minted_slot(lock_id: [u8; 32]) -> U256 {
     let encoded = (U256::from_be_bytes(lock_id), MINTED_NAMESPACE).abi_encode();
     U256::from_be_bytes::<32>(keccak256(&encoded).0)
 }
-
 
 /// The calldata of a `mint(to, amount, proof)` call.
 ///
@@ -127,24 +127,20 @@ pub fn decode_mint_calldata(calldata: &[u8]) -> Result<(Address, U256, Vec<u8>),
             calldata.len()
         ));
     }
-    
+
     let call = WZthrBridge::mintCall::abi_decode(calldata).map_err(|err| format!("cannot decode mint calldata: {err}"))?;
-    
+
     // Strict length check: ensure the calldata matches the exact expected length
     let expected_proof_padded_len = (call.proof.len() + 31) / 32 * 32;
     let expected_total_len = 4 + 32 + 32 + 32 + 32 + expected_proof_padded_len;
-    
+
     if calldata.len() != expected_total_len {
-        return Err(format!(
-            "cannot decode mint calldata: invalid length. Expected {}, got {}",
-            expected_total_len,
-            calldata.len()
-        ));
+        return Err(format!("cannot decode mint calldata: invalid length. Expected {}, got {}", expected_total_len, calldata.len()));
     }
 
     Ok((call.to, call.amount, call.proof.to_vec()))
 }
-    
+
 /// Result of a `mint` call that the contract itself rejected.
 ///
 /// A rejected mint is not an error of the bridge software: it is the contract
@@ -203,25 +199,43 @@ impl std::fmt::Display for MintError {
 
 impl std::error::Error for MintError {}
 
-
 /// The `mint(address to, uint256 amount, bytes proof)` entry point.
 ///
 /// Returns `Ok(true)` when the balance was credited. Everything genuinely wrong
 /// with the call is an `Err`; a replay is one of those, because silently doing
 /// nothing would hide a double-spend attempt from the coordinator.
 ///
+/// `federation` is the contract's copy of the bridge authority: the public keys a
+/// proof has to be signed by. It is a parameter rather than part of the executor's
+/// state for the same reason the chain id is — the caller supplies what the contract
+/// is configured with, and a proof is only as good as the federation checking it.
+///
 /// The checks run in this order, and the order is part of the contract:
 ///
 /// 1. **amount** — a zero mint would only burn a lock id, and an amount that
 ///    cannot be a balance must be refused before any state is touched;
-/// 2. **proof** — verified against `to` and `amount` *from the calldata*, so a
-///    proof for one deposit can never be presented as a proof for another;
+/// 2. **proof** — verified against `to` and `amount` *from the calldata*, against
+///    the chain this executor is running (`evm.chain_id()`), and against
+///    `federation`'s keys, so a proof for one deposit, one made for another chain or
+///    one signed by someone else can never be presented as a proof here;
 /// 3. **replay** — the lock id it names must not have been minted before;
 /// 4. **credit** — the id is marked and the balance written.
 ///
 /// Verification precedes the replay check on purpose: a forged proof must not be
 /// able to probe, let alone consume, a lock id.
-pub fn mint(executor: &mut EvmExecutor, contract: Address, to: Address, amount: U256, proof: &[u8]) -> Result<(), MintError> {
+///
+/// The proof check is what makes an unbacked mint impossible: an attacker can compute
+/// any commitment they like ([`MintProof::commitment_for`] is public arithmetic), but
+/// the commitment only counts if a threshold of the federation signed it, and that
+/// needs secret keys this function never sees.
+pub fn mint(
+    executor: &mut EvmExecutor,
+    federation: &FederationLock,
+    contract: Address,
+    to: Address,
+    amount: U256,
+    proof: &[u8],
+) -> Result<(), MintError> {
     if amount.is_zero() {
         return Err(MintError::ZeroAmount);
     }
@@ -230,7 +244,10 @@ pub fn mint(executor: &mut EvmExecutor, contract: Address, to: Address, amount: 
     }
 
     let proof = MintProof::decode(proof).map_err(|_| MintError::InvalidProof)?;
-    proof.verify(to, amount).map_err(|_| MintError::InvalidProof)?;
+    // The chain id comes from the executor, never from a constant and never from the
+    // proof: a proof that commits to another chain is not a proof on this one, and a
+    // proof cannot relabel itself because it carries no chain field to edit.
+    proof.verify(federation, executor.chain_id(), to, amount).map_err(|_| MintError::InvalidProof)?;
 
     let lock_id = proof.lock_id;
     let minted = minted_slot(lock_id);
@@ -255,10 +272,7 @@ pub fn mint(executor: &mut EvmExecutor, contract: Address, to: Address, amount: 
     // well, so it is a real supply bound and a finite balance must eventually
     // refuse a maximal deposit. Both refusals happen before the replay marker is
     // written, so a deposit that cannot be credited is never consumed.
-    let updated = balance
-        .checked_add(amount)
-        .filter(|sum| *sum <= crate::AMOUNT_CEILING)
-        .ok_or(MintError::AmountTooLarge(amount))?;
+    let updated = balance.checked_add(amount).filter(|sum| *sum <= crate::AMOUNT_CEILING).ok_or(MintError::AmountTooLarge(amount))?;
 
     // Mark the id before the credit lands, so a failure to write the balance can
     // never leave a lock that is credited *and* still mintable.

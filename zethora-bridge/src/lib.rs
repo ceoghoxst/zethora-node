@@ -16,9 +16,14 @@
 //!
 //! Between the two sits a proof. The L2 cannot see the L1 chain, so it must be told
 //! about a lock in a way it can *check* rather than in a way it has to trust.
-//! [`L1Watcher::generate_mint_proof`] produces that artifact; today it is a mock,
-//! and it will become an SP1 proof that the lock is in the L1 UTXO set, confirmed
-//! and unspent.
+//! [`L1Watcher::generate_mint_proof`] produces that artifact: the deposit statement
+//! as a commitment, signed by a threshold of the federation that custodies the L1
+//! funds. The contract checks both — the statement against the calldata it is
+//! executing, the signature against the federation's public keys — so a mint can only
+//! happen for a deposit the federation approved. What is still mocked is the
+//! statement's *evidence*: eventually an SP1 proof will carry the L1 UTXO-set
+//! membership that the federation's signatures currently assert on the watcher's
+//! behalf.
 //!
 //! # The contract is Rust, executed by revm
 //!
@@ -49,13 +54,13 @@ mod federation;
 mod watcher;
 
 pub use contract::{
-    MINT_STORAGE_INITIAL_SLOT, MintError, WZthrBridge, balances_selector, decode_mint_calldata, mint, mint_calldata,
-    mint_selector, mint_storage_slot, minted_slot, wzthr_balance,
+    MINT_STORAGE_INITIAL_SLOT, MintError, WZthrBridge, balances_selector, decode_mint_calldata, mint, mint_calldata, mint_selector,
+    mint_storage_slot, minted_slot, wzthr_balance,
 };
-pub use federation::{FederationLock, MAX_KEYS};
+pub use federation::{FederationLock, FederationSigner, MAX_KEYS};
 pub use watcher::{
-    BLOCK_MAGIC, BlockOutput, L1Watcher, LockEvent, LockStatus, MAX_LOCKS_PER_BLOCK, MAX_OUTPUTS_PER_BLOCK, MintProof,
-    ScanReport, decode_block,
+    BLOCK_MAGIC, BlockOutput, L1Watcher, LockEvent, LockStatus, MAX_LOCKS_PER_BLOCK, MAX_OUTPUTS_PER_BLOCK, MintProof, ScanReport,
+    decode_block,
 };
 
 /// Name of the L2 token the contract mints.
@@ -65,15 +70,13 @@ pub use watcher::{
 pub const WRAPPED_TOKEN_SYMBOL: &str = "wZTHR";
 
 /// Domain separator mixed into every proof, so a proof made for this bridge can
-/// never be replayed into another contract or another chain.
-pub const PROOF_DOMAIN: &[u8] = b"zethora-bridge/wzthr/v1";
-
-/// The chain id every mint proof is bound to.
+/// never be replayed into another contract.
 ///
-/// The chain id the L2 validates transactions against is also the chain id the
-/// proof commits to, so a proof cannot cross chains any more than a transaction
-/// can.
-pub const PROOF_CHAIN_ID: u64 = zethora_evm::CHAIN_ID;
+/// The network is bound separately: the chain id is committed as its own field of the
+/// statement and supplied by the verifier ([`zethora_evm::EvmExecutor::chain_id`]), so
+/// the domain names *which bridge* a proof is for and the chain id names *which chain*
+/// it is valid on, and neither stands in for the other.
+pub const PROOF_DOMAIN: &[u8] = b"zethora-bridge/wzthr/v1";
 
 /// The largest amount a single mint may credit, in the smallest unit of ZTHR.
 ///
