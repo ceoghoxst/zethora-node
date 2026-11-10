@@ -91,9 +91,9 @@ mod tests {
 
     #[test]
     fn header_chunks_pack_by_compressed_wire_size() {
-        let large = header_with_parents(1, 250_000, 1);
+        let large = header_with_parents(1, 100_000, 1);
         let small = header_with_parents(1, 1, 2);
-        // The large header has one compressed run containing 250,000 transmitted parents.
+        // The large header has one compressed run containing 100,000 transmitted parents.
         // Two such headers fit alongside 200 small headers; a third does not.
         let mut first_level = vec![large.clone(), large.clone()];
         first_level.extend(vec![small.clone(); 200]);

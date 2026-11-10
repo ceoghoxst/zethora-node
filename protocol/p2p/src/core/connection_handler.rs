@@ -43,8 +43,15 @@ pub enum ConnectionError {
     ProtocolError(#[from] ProtocolError),
 }
 
-/// Maximum P2P decoded gRPC message size to send and receive
-const P2P_MAX_MESSAGE_SIZE: usize = 256 * 1024 * 1024; // 256MB
+/// Maximum P2P decoded gRPC message size to send and receive.
+///
+/// Zethora (OBS-1): the codec buffers and decodes a whole frame before any flow sees it, so this constant is the
+/// bound on what one hostile message can cost the node. It used to be 256 MiB, which let a single
+/// `RequestRelayBlocks` message make the node hold a quarter of a gigabyte in one allocation. No honest message
+/// comes anywhere near 10 MiB: the largest legitimate payloads are the header and trusted-data chunks, which the
+/// serving flows cut at `HEADERS_CHUNK_SIZE`/`TRUSTED_DATA_CHUNK_SIZE` (8 MiB each), and every other payload
+/// (a block, a UTXO/SMT/private-state chunk, an address list) is smaller still.
+const P2P_MAX_MESSAGE_SIZE: usize = 10 * 1024 * 1024; // 10 MiB
 
 const MAX_PENDING_INBOUND_HANDSHAKES: usize = 32;
 const MAX_PENDING_INBOUND_HANDSHAKES_PER_IP: usize = 2;

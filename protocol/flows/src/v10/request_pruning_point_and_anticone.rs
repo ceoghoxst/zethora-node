@@ -19,7 +19,10 @@ use std::{mem::size_of_val, sync::Arc};
 
 use super::request_headers::estimated_header_size;
 
-const TRUSTED_DATA_CHUNK_SIZE: usize = 20 * 1024 * 1024;
+/// Zethora (OBS-1): how many bytes of DAA-window trusted headers one `TrustedDataChunk` message may carry. Like
+/// `HEADERS_CHUNK_SIZE` it must stay below `P2P_MAX_MESSAGE_SIZE` (10 MiB) so the receiving node accepts the chunks
+/// this node sends; honest trusted headers are a few hundred bytes each, so real chunks are far smaller.
+const TRUSTED_DATA_CHUNK_SIZE: usize = 8 * 1024 * 1024;
 
 use crate::{flow_context::FlowContext, flow_trait::Flow, ibd::IBD_BATCH_SIZE};
 
@@ -230,8 +233,8 @@ mod tests {
     }
 
     #[test]
-    fn trusted_chunks_use_compressed_parent_size_and_twenty_mib_budget() {
-        let headers = (0..5).map(|i| trusted_header(i, 1, 250_000, 10)).collect::<Vec<_>>();
+    fn trusted_chunks_use_compressed_parent_size_and_eight_mib_budget() {
+        let headers = (0..5).map(|i| trusted_header(i, 1, 100_000, 10)).collect::<Vec<_>>();
         let chunks = trusted_data_chunks(&headers, TRUSTED_DATA_CHUNK_SIZE).collect::<Vec<_>>();
         assert_eq!(chunks.iter().map(|(chunk, _)| chunk.headers.len()).collect::<Vec<_>>(), [2, 2, 1]);
         for (chunk, size) in chunks {

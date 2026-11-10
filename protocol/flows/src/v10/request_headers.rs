@@ -13,7 +13,12 @@ use log::debug;
 
 use crate::{flow_context::FlowContext, flow_trait::Flow};
 
-pub(crate) const HEADERS_CHUNK_SIZE: usize = 20 * 1024 * 1024;
+/// Zethora (OBS-1): how many bytes of headers one `BlockHeaders`/`PruningPointProofChunk` message may carry. This
+/// must stay below `P2P_MAX_MESSAGE_SIZE` in `protocol/p2p/src/core/connection_handler.rs` (10 MiB): the receiver
+/// refuses a larger frame, so a chunk budget at or above the frame limit would break header sync between two nodes
+/// that both enforce the limit. Honest chunks are far smaller (a `RequestHeaders` answer is at most `MAX_BLOCKS`
+/// headers), so the budget only matters for pathological headers.
+pub(crate) const HEADERS_CHUNK_SIZE: usize = 8 * 1024 * 1024;
 
 pub struct RequestHeadersFlow {
     ctx: FlowContext,
@@ -111,7 +116,8 @@ pub(super) fn estimated_header_size(header: &Header) -> usize {
     const MAX_U32_VARINT_SIZE: usize = 5;
     const MAX_U64_VARINT_SIZE: usize = 10;
     // Each BlockLevelParents entry in BlockHeader.parents is prefixed with its encoded byte length.
-    // Since the entire P2P message is limited to 21 MiB, four bytes are enough for this protobuf varint.
+    // Since the entire P2P message is limited to 10 MiB (`P2P_MAX_MESSAGE_SIZE`), four bytes are enough for this
+    // protobuf varint.
     const MAX_BLOCK_LEVEL_PARENTS_LENGTH_PREFIX_SIZE: usize = 4;
     const HASH_MESSAGE_SIZE: usize = TAG_SIZE + 1 + size_of::<Hash>(); // bytes field: tag, length and value.
     const HASH_FIELD_SIZE: usize = TAG_SIZE + 1 + HASH_MESSAGE_SIZE; // Hash field: tag, message length and message.

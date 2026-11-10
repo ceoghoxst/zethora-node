@@ -1,4 +1,8 @@
-use crate::{flow_context::FlowContext, flow_trait::Flow};
+use crate::{
+    flow_context::FlowContext,
+    flow_trait::Flow,
+    v10::MAX_BLOCK_HASHES_PER_REQUEST,
+};
 use kaspa_core::debug;
 use kaspa_p2p_lib::{
     IncomingRoute, Router,
@@ -38,6 +42,15 @@ impl HandleRelayBlockRequests {
 
         loop {
             let (msg, request_id) = dequeue_with_request_id!(self.incoming_route, Payload::RequestRelayBlocks)?;
+            // Zethora (OBS-4): one cheap message must not turn into an unbounded amount of work and traffic. A peer
+            // that names more hashes than an honest peer ever does is dropped before a single block is served, so the
+            // request cannot be amplified and cannot be retried on this connection.
+            if msg.hashes.len() > MAX_BLOCK_HASHES_PER_REQUEST {
+                return Err(ProtocolError::OtherOwned(format!(
+                    "requested {} relay blocks in one message, over the limit of {MAX_BLOCK_HASHES_PER_REQUEST}",
+                    msg.hashes.len()
+                )));
+            }
             let hashes: Vec<_> = msg.try_into()?;
 
             let session = self.ctx.consensus().unguarded_session();

@@ -36,6 +36,14 @@ use kaspa_p2p_lib::{KaspadMessagePayloadType, Router, SharedIncomingRoute};
 use kaspa_utils::channel;
 use std::sync::Arc;
 
+/// Zethora (OBS-4): the most block hashes one block-serving request may name. Every `RequestRelayBlocks`,
+/// `RequestIbdBlocks` or `RequestBlockBodies` message costs the node one database read and one outbound block
+/// message per hash, so an uncapped list lets a few kilobytes of request produce far more work and far more
+/// outbound data than the request itself (amplification). An honest peer never comes close: `HandleRelayInvsFlow`
+/// requests relay blocks one hash at a time and IBD asks for `IBD_BATCH_SIZE` (99) block bodies per message, so a
+/// request naming more hashes than this is refused as a protocol error, which disconnects its sender.
+pub(crate) const MAX_BLOCK_HASHES_PER_REQUEST: usize = 128;
+
 pub fn register(ctx: FlowContext, router: Arc<Router>) -> Vec<Box<dyn Flow>> {
     register_flows(ctx, router, false)
 }

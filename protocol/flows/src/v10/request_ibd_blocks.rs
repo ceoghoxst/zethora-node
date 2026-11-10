@@ -1,4 +1,8 @@
-use crate::{flow_context::FlowContext, flow_trait::Flow};
+use crate::{
+    flow_context::FlowContext,
+    flow_trait::Flow,
+    v10::MAX_BLOCK_HASHES_PER_REQUEST,
+};
 use kaspa_core::debug;
 use kaspa_p2p_lib::{
     IncomingRoute, Router, common::ProtocolError, dequeue_with_request_id, make_response, pb::kaspad_message::Payload,
@@ -30,6 +34,14 @@ impl HandleIbdBlockRequests {
     async fn start_impl(&mut self) -> Result<(), ProtocolError> {
         loop {
             let (msg, request_id) = dequeue_with_request_id!(self.incoming_route, Payload::RequestIbdBlocks)?;
+            // Zethora (OBS-4): same cap as `RequestRelayBlocks` -- one message may not name an unbounded number of
+            // blocks, so a peer that tries is dropped instead of being served.
+            if msg.hashes.len() > MAX_BLOCK_HASHES_PER_REQUEST {
+                return Err(ProtocolError::OtherOwned(format!(
+                    "requested {} IBD blocks in one message, over the limit of {MAX_BLOCK_HASHES_PER_REQUEST}",
+                    msg.hashes.len()
+                )));
+            }
             let hashes: Vec<_> = msg.try_into()?;
 
             debug!("got request for {} IBD blocks", hashes.len());

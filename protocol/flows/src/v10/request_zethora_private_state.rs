@@ -56,9 +56,13 @@ impl RequestZethoraPrivateStateFlow {
     }
 
     async fn handle_request(&mut self, expected_pp: Hash) -> Result<(), ProtocolError> {
+        // OBS-3: the limiter refuses either a pruning point this connection already asked about
+        // `MAX_REQUESTS_PER_PRUNING_POINT` times or a pruning point beyond what it is willing to track (it remembers
+        // counts instead of wiping them). Both are protocol errors, so the peer is disconnected rather than answered.
         if !self.requests.allow(expected_pp) {
             return Err(ProtocolError::OtherOwned(format!(
-                "asked for the private state of pruning point {expected_pp} more than {MAX_REQUESTS_PER_PRUNING_POINT} times"
+                "asked for the private state of pruning point {expected_pp} more than {MAX_REQUESTS_PER_PRUNING_POINT} times, \
+                 or for more distinct pruning points than one connection may"
             )));
         }
         // Seam review P3-1: built once per pruning point (under one consensus session, so pruning cannot rewrite the
