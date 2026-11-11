@@ -36,7 +36,6 @@ pub const INTERNAL_ERROR: i32 = -32603;
 /// Ethereum nodes use it for "the request was well formed but the node refuses
 /// it": a transaction the EVM would not include is the canonical case.
 pub const SERVER_ERROR: i32 = -32000;
-
 /// The number of bytes in an EVM address.
 const ADDRESS_BYTES: usize = 20;
 
@@ -228,7 +227,24 @@ pub fn quantity_u64(value: u64) -> String {
 /// zeros. Trimming them, as [`quantity`] does, would produce a value no client
 /// could look up.
 pub fn data(bytes: B256) -> String {
-    format!("0x{}", encode_hex(bytes.as_slice()))
+    data_bytes(bytes.as_slice())
+}
+
+/// Formats any byte string as JSON-RPC **data**: `0x` plus all of its digits.
+///
+/// Used for values that are byte strings of a known width — an address, or the
+/// 256-byte logs bloom — where trimming a leading zero, as [`quantity`] does,
+/// would change the value's width and therefore its meaning.
+pub fn data_bytes(bytes: &[u8]) -> String {
+    format!("0x{}", encode_hex(bytes))
+}
+
+/// Formats an address as JSON-RPC **data**: `0x` plus its 20 bytes.
+///
+/// An address is not a number: it is exactly 20 bytes and keeps every one of
+/// them, leading zeros included.
+pub fn address(value: Address) -> String {
+    data_bytes(value.as_slice())
 }
 
 /// Parses a 20-byte address from a `0x`-prefixed hex string.

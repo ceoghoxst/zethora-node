@@ -1,4 +1,4 @@
-//! The endpoint itself: one axum handler, one dispatcher, four methods.
+//! The endpoint itself: one axum handler, one dispatcher, the Ethereum methods.
 //!
 //! The dispatcher is deliberately separate from the HTTP handler. [`handle`] only
 //! knows how to read a body and answer with JSON; [`dispatch`] takes a `&[u8]` and
@@ -9,14 +9,15 @@
 //! into a JSON-RPC error, because a handler that panics takes down the connection
 //! and, with a `Mutex`, can take the chain state with it.
 
-use alloy_primitives::Address;
+use alloy_primitives::{Address, B256};
 use axum::{Json, body::Bytes, extract::State};
 use serde_json::Value;
+use zethora_evm::BLOCK_GAS_LIMIT;
 
-use crate::chain::{L2Error, L2Rpc};
+use crate::chain::{L2BlockHeader, L2Error, L2Rpc, TransactionReceipt};
 use crate::types::{
-    INTERNAL_ERROR, JSONRPC_VERSION, RpcError, RpcRequest, RpcResponse, data, decode_hex, parse_address, quantity,
-    quantity_u64, validate_block_tag,
+    INTERNAL_ERROR, JSONRPC_VERSION, RpcError, RpcRequest, RpcResponse, address, data, data_bytes, decode_hex,
+    parse_address, quantity, quantity_u64, validate_block_tag,
 };
 
 /// The axum handler mounted at [`crate::RPC_PATH`].
@@ -136,6 +137,54 @@ fn call(rpc: &L2Rpc, request: &RpcRequest) -> Result<Value, RpcError> {
             // zeros.
             Ok(Value::String(data(submitted.hash)))
         }
+        "eth_getTransactionReceipt" => {
+            let params = Params::new(request)?;
+            let hash = params.hash(0)?;
+            let receipt = rpc
+                .with_chain(|chain| chain.receipt(hash).cloned())
+                .map_err(RpcError::internal)?;
+            // `null`, not an error, for a transaction this node does not know: that
+            // is the JSON-RPC answer for "not found", and a wallet polls until the
+            // receipt appears.
+            Ok(receipt.map(|receipt| receipt_object(&receipt)).unwrap_or(Value::Null))
+        }
+        "eth_estimateGas" => {
+            // MetaMask calls this before signing to learn how much gas to attach.
+            // The call object is validated for shape but not executed — executing it
+            // here would consume the sender's nonce and change state on what is, by
+            // contract, a dry run. The honest estimate on a chain with no fee market
+            // is the whole block budget, so a real transaction can never run out of
+            // a limit it was estimated to need.
+            let params = Params::new(request)?;
+            params.object(0)?;
+            params.block_tag(1)?;
+            Ok(Value::String(quantity_u64(BLOCK_GAS_LIMIT)))
+        }
+        "eth_gasPrice" => {
+            // Zero, as a quantity. The L2 has no fee market, so the price of gas is
+            // zero and a wallet multiplies any limit by zero to reach a zero fee.
+            Ok(Value::String(quantity_u64(0)))
+        }
+        "eth_getBlockByNumber" => {
+            let params = Params::new(request)?;
+            let tag = params.optional_string(0)?;
+            // `full_transactions` is read only so a malformed flag is still a clean
+            // `-32602`; the node cannot honour it, see `block_object`.
+            let full = params.bool(1)?;
+            let number = resolve_block(rpc, tag)?;
+            let header = rpc.with_chain(|chain| chain.block(number).cloned()).map_err(RpcError::internal)?;
+            Ok(header.map(|header| block_object(&header, full)).unwrap_or(Value::Null))
+        }
+        "net_version" => {
+            // A decimal string, not a hex quantity: MetaMask compares this against
+            // the network it believes it is talking to, and `0xa28` is not `2600`.
+            let chain_id = rpc.with_chain(|chain| chain.chain_id()).map_err(RpcError::internal)?;
+            Ok(Value::String(chain_id.to_string()))
+        }
+        "web3_clientVersion" => {
+            // A stable identifier. MetaMask only prints it; nothing parses it.
+            Ok(Value::String(format!("zethora-rpc-l2/v{}", env!("CARGO_PKG_VERSION"))))
+        }
         other => Err(RpcError::method_not_found(other)),
     }
 }
@@ -146,6 +195,83 @@ fn transaction_error(error: L2Error) -> RpcError {
         L2Error::InvalidTransaction(reason) => RpcError::invalid_params(format!("the transaction cannot be decoded: {reason}")),
         L2Error::Rejected(reason) => RpcError::server(format!("the transaction was rejected: {reason}")),
     }
+}
+
+/// Resolves a block identifier to a block number.
+///
+/// `latest`, `pending`, `safe` and `finalized` all name the head: this chain has
+/// instant finality, so there is no block that is mined but not yet final.
+/// `earliest` is genesis. A `0x`-prefixed number is the height itself.
+fn resolve_block(rpc: &L2Rpc, tag: Option<&str>) -> Result<u64, RpcError> {
+    let head = rpc.with_chain(|chain| chain.block_number()).map_err(RpcError::internal)?;
+    match tag {
+        None | Some("latest") | Some("pending") | Some("safe") | Some("finalized") => Ok(head),
+        Some("earliest") => Ok(0),
+        Some(numbered) if numbered.starts_with("0x") || numbered.starts_with("0X") => {
+            u64::from_str_radix(&numbered[2..], 16)
+                .map_err(|_| RpcError::invalid_params(format!("block number {numbered:?} is not a hex number")))
+        }
+        Some(other) => Err(RpcError::invalid_params(format!(
+            "unknown block tag {other:?}: expected latest, earliest, pending, safe, finalized, or a hex block number"
+        ))),
+    }
+}
+
+/// A JSON-RPC block object for `eth_getBlockByNumber`.
+///
+/// The fields this node cannot know — proof-of-work difficulty, uncles, a real
+/// bloom — are answered as zero or empty, which is what a client needs to render
+/// the block without inventing data. `full_transactions` is accepted but cannot be
+/// honoured: this node remembers only the transaction hashes, not the transactions
+/// themselves, so hashes are returned in both cases.
+fn block_object(header: &L2BlockHeader, _full_transactions: bool) -> Value {
+    let transactions: Vec<Value> =
+        header.transactions.iter().map(|hash| Value::String(data(*hash))).collect();
+    serde_json::json!({
+        "number": quantity_u64(header.number),
+        "hash": data(header.hash),
+        "parentHash": data(header.parent_hash),
+        "nonce": "0x0000000000000000",
+        "sha3Uncles": data(B256::ZERO),
+        "logsBloom": zero_bloom(),
+        "transactionsRoot": data(B256::ZERO),
+        "stateRoot": data(header.state_root),
+        "receiptsRoot": data(B256::ZERO),
+        "miner": address(Address::ZERO),
+        "difficulty": "0x0",
+        "totalDifficulty": "0x0",
+        "extraData": "0x",
+        "size": quantity_u64(0),
+        "gasLimit": quantity_u64(BLOCK_GAS_LIMIT),
+        "gasUsed": quantity_u64(header.gas_used),
+        "timestamp": quantity_u64(header.timestamp),
+        "transactions": transactions,
+        "uncles": [],
+    })
+}
+
+/// A JSON-RPC receipt object for `eth_getTransactionReceipt`.
+fn receipt_object(receipt: &TransactionReceipt) -> Value {
+    serde_json::json!({
+        "transactionHash": data(receipt.hash),
+        "transactionIndex": quantity_u64(receipt.transaction_index),
+        "blockHash": data(receipt.block_hash),
+        "blockNumber": quantity_u64(receipt.block_number),
+        "from": address(receipt.from),
+        "to": receipt.to.map(address),
+        "cumulativeGasUsed": quantity_u64(receipt.cumulative_gas_used),
+        "gasUsed": quantity_u64(receipt.gas_used),
+        "contractAddress": receipt.contract_address.map(address),
+        "logs": [],
+        "logsBloom": zero_bloom(),
+        "status": if receipt.success { "0x1" } else { "0x0" },
+        "type": quantity_u64(u64::from(receipt.transaction_type)),
+    })
+}
+
+/// The 256-byte all-zero logs bloom this node always reports.
+fn zero_bloom() -> String {
+    data_bytes(&[0u8; 256])
 }
 
 /// Serialises a response, or a protocol-level error if that were ever impossible.
@@ -220,6 +346,56 @@ impl<'a> Params<'a> {
         let raw = self.string(index)?;
         decode_hex(raw)
             .map_err(|reason| RpcError::invalid_params(format!("parameter {index} of {} is not hex: {reason}", self.method)))
+    }
+
+    /// The optional parameter at `index`, which must be a string when present.
+    fn optional_string(&self, index: usize) -> Result<Option<&'a str>, RpcError> {
+        match self.values.get(index) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::String(value)) => Ok(Some(value.as_str())),
+            Some(other) => Err(RpcError::invalid_params(format!(
+                "parameter {index} of {} must be a string, got {other}",
+                self.method
+            ))),
+        }
+    }
+
+    /// The optional parameter at `index`, which must be a boolean when present.
+    fn bool(&self, index: usize) -> Result<bool, RpcError> {
+        match self.values.get(index) {
+            None | Some(Value::Null) => Ok(false),
+            Some(Value::Bool(value)) => Ok(*value),
+            Some(other) => Err(RpcError::invalid_params(format!(
+                "parameter {index} of {} must be a boolean, got {other}",
+                self.method
+            ))),
+        }
+    }
+
+    /// The parameter at `index`, which must be a JSON object (a transaction call).
+    fn object(&self, index: usize) -> Result<(), RpcError> {
+        match self.value(index)? {
+            Value::Object(_) => Ok(()),
+            other => Err(RpcError::invalid_params(format!(
+                "parameter {index} of {} must be a transaction call object, got {other}",
+                self.method
+            ))),
+        }
+    }
+
+    /// The parameter at `index`, which must be a 32-byte hex hash.
+    fn hash(&self, index: usize) -> Result<B256, RpcError> {
+        let raw = self.string(index)?;
+        let bytes = decode_hex(raw)
+            .map_err(|reason| RpcError::invalid_params(format!("parameter {index} of {} is not hex: {reason}", self.method)))?;
+        if bytes.len() != 32 {
+            return Err(RpcError::invalid_params(format!(
+                "parameter {index} of {} must be a 32-byte hash, got {} bytes",
+                self.method,
+                bytes.len()
+            )));
+        }
+        Ok(B256::from_slice(&bytes))
     }
 
     /// The optional parameter at `index`, which must be a block tag or number.

@@ -18,7 +18,7 @@ axum = "0.8"
 # different origin. The workspace entry enables the body-mapping layers; `cors`
 # is added here because nothing else in the workspace needs it.
 tower-http = { workspace = true, features = ["cors"] }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "signal"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # Addresses, U256, B256 and keccak256. The same crate `zethora-evm` builds on, so

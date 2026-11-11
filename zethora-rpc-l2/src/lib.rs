@@ -25,6 +25,12 @@
 //! | `eth_blockNumber` | the number of the newest sealed block |
 //! | `eth_getBalance` | an account's balance, in wei |
 //! | `eth_sendRawTransaction` | the hash of a transaction that is already in a block |
+//! | `eth_getTransactionReceipt` | the receipt of an accepted transaction |
+//! | `eth_getBlockByNumber` | a sealed block header, from bounded history |
+//! | `eth_estimateGas` | the block gas budget (no fee market, so the dry run is free) |
+//! | `eth_gasPrice` | `0x0`: the L2 has no fee market |
+//! | `net_version` | the chain id as a decimal string |
+//! | `web3_clientVersion` | a stable client identifier |
 //!
 //! Batches (a JSON array of requests) are answered element by element. Every
 //! request is answered with HTTP 200 carrying a JSON-RPC `error` object when the
@@ -44,9 +50,11 @@
 //! The consequences are worth stating plainly, because they are the boundary of
 //! what this endpoint can answer:
 //!
-//! * **No history.** Only current state exists, so `eth_getBalance` answers for
-//!   the present whatever block tag it is given, and `eth_getBlockByNumber` does
-//!   not exist. State is lost when the process exits.
+//! * **Bounded history.** Only current account state exists, so `eth_getBalance`
+//!   answers for the present whatever block tag it is given, and
+//!   `eth_getBlockByNumber` answers only for the last few thousand headers this
+//!   node still remembers. Account state survives a restart through the on-disk
+//!   dump wired in by `main`.
 //! * **No mempool.** `eth_sendRawTransaction` executes as it arrives and returns
 //!   the hash of a transaction that already has a block; there is no pending
 //!   pool to inspect and nothing to re-broadcast.
@@ -61,6 +69,7 @@
 //! plausible-looking lie.
 
 mod chain;
+mod persist;
 mod rpc;
 mod types;
 
