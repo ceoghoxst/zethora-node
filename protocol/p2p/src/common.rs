@@ -106,10 +106,9 @@ impl ProtocolError {
         matches!(self, Self::PruningImportError(PruningImportError::ZethoraPowEpochImplausible(..)))
     }
 
-    /// Zethora (seam review P4-1): the peer sent a header whose proof of work was not earned: a nonce that fails
-    /// RandomZ, a difficulty or DAA score that the header's own parents contradict, a RandomZ epoch no valid header can
-    /// have, or a pruning proof with an implausible epoch or a header whose work fails or is below its level (P4-5). Honest nodes check every one of these before they relay or
-    /// serve a header, so each counts as a strike against the sender (3 in 10 minutes get its IP banned).
+    /// Zethora (seam review P4-1): the peer sent a header whose proof of work was not earned, or a pruning proof with a
+    /// deterministically invalid structure. Honest nodes check these rules before serving a proof, so each counts as a
+    /// strike against the sender (3 in 10 minutes get its IP banned).
     /// Zethora (seam review P3-4): the peer served a pruning point private state that does not match what the pruning
     /// point seals. Honest nodes compute it exactly, so this is a strike. (A local problem reading our own copy of the
     /// pruning point is a different error, `ZethoraPruningPointUnreadable`, and no strike.)
@@ -127,7 +126,18 @@ impl ProtocolError {
             || matches!(
                 self,
                 Self::PruningImportError(
-                    PruningImportError::ProofOfWorkFailed(..) | PruningImportError::PruningProofWrongBlockLevel(..)
+                    PruningImportError::ProofOfWorkFailed(..)
+                        | PruningImportError::PruningProofWrongBlockLevel(..)
+                        | PruningImportError::PruningProofHeaderWithNoKnownParents(..)
+                        | PruningImportError::NonGenesisParentlessHeader(..)
+                        | PruningImportError::PruningProofInconsistentBlueWork(..)
+                        | PruningImportError::PruningProofMissingBlockAtDepthMFromNextLevel(..)
+                        | PruningImportError::PruningProofSelectedTipIsNotThePruningPoint(..)
+                        | PruningImportError::PruningProofSelectedTipNotParentOfPruningPoint(..)
+                        | PruningImportError::PruningProofSelectedTipNotEnoughBlueScore(..)
+                        | PruningImportError::PruningProofSelectedTipNotLast(..)
+                        | PruningImportError::PruningProofNotEnoughHeaders
+                        | PruningImportError::PruningProofDuplicateHeaderAtLevel(..)
                 )
             )
             || matches!(
@@ -327,6 +337,16 @@ mod zethora_ban_tests {
             ProtocolError::PruningImportError(PruningImportError::ZethoraPowEpochImplausible(Hash::default(), 42, 1, 2)),
             ProtocolError::PruningImportError(PruningImportError::ProofOfWorkFailed(Hash::default(), 3)),
             ProtocolError::PruningImportError(PruningImportError::PruningProofWrongBlockLevel(Hash::default(), 1, 3)),
+            ProtocolError::PruningImportError(PruningImportError::PruningProofHeaderWithNoKnownParents(Hash::default(), 3)),
+            ProtocolError::PruningImportError(PruningImportError::NonGenesisParentlessHeader(Hash::default())),
+            ProtocolError::PruningImportError(PruningImportError::PruningProofInconsistentBlueWork(Hash::default(), 3)),
+            ProtocolError::PruningImportError(PruningImportError::PruningProofMissingBlockAtDepthMFromNextLevel(2, 3)),
+            ProtocolError::PruningImportError(PruningImportError::PruningProofSelectedTipIsNotThePruningPoint(Hash::default(), 3)),
+            ProtocolError::PruningImportError(PruningImportError::PruningProofSelectedTipNotParentOfPruningPoint(Hash::default(), 3)),
+            ProtocolError::PruningImportError(PruningImportError::PruningProofSelectedTipNotEnoughBlueScore(Hash::default(), 3, 0)),
+            ProtocolError::PruningImportError(PruningImportError::PruningProofSelectedTipNotLast(Hash::default(), Hash::default(), 3)),
+            ProtocolError::PruningImportError(PruningImportError::PruningProofNotEnoughHeaders),
+            ProtocolError::PruningImportError(PruningImportError::PruningProofDuplicateHeaderAtLevel(Hash::default(), 3)),
         ];
         for err in &strikes {
             assert!(err.is_unearned_pow(), "{err} must be a strike");
@@ -337,6 +357,8 @@ mod zethora_ban_tests {
             ProtocolError::RuleError(RuleError::MissingParents(vec![Hash::default()])),
             ProtocolError::RuleError(RuleError::PruningViolation(Hash::default())),
             ProtocolError::RuleError(RuleError::KnownInvalid),
+            // The expected level count is a network/version parameter, so a coordinated activation mismatch must not ban peers.
+            ProtocolError::PruningImportError(PruningImportError::ProofNotEnoughLevels(251)),
             ProtocolError::PruningImportError(PruningImportError::ZethoraPrivateStateMismatch(Hash::default(), "test".into())),
             ProtocolError::Timeout(DEFAULT_TIMEOUT),
             ProtocolError::Other("anything else"),
