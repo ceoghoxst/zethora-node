@@ -286,6 +286,92 @@ pub fn precompute_light(items: &[(u64, [u8; POW_INPUT_LEN])]) -> Vec<Uint256> {
     results.into_iter().map(|v| v.expect("every item computed")).collect()
 }
 
+/// Computes light-mode values in epoch groups and validates each value before computing the next value in that group.
+///
+/// This has the same four-epoch parallelism and temporary-cache behavior as [`precompute_light`], but lets callers stop
+/// an untrusted batch at its first invalid item instead of hashing the entire batch up front. Equivalent `(epoch, input)`
+/// pairs are computed once and checked at every index, so callers can attach different requirements to duplicate work.
+pub fn precompute_light_checked<E, F>(items: &[(u64, [u8; POW_INPUT_LEN])], check: F) -> Result<(), E>
+where
+    E: Send,
+    F: Fn(usize, Uint256) -> Result<(), E> + Sync,
+{
+    let remembered: Vec<Option<Uint256>> = items.iter().map(|(epoch, input)| memo_get(*epoch, input)).collect();
+    for (index, value) in remembered.iter().enumerate() {
+        if let Some(value) = value {
+            check(index, *value)?;
+        }
+    }
+
+    let mut first_seen: HashMap<(u64, [u8; POW_INPUT_LEN]), usize> = HashMap::new();
+    let mut equivalent_indexes: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut groups: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
+    for (index, item) in items.iter().copied().enumerate() {
+        if remembered[index].is_some() {
+            continue;
+        }
+        if let Some(first) = first_seen.get(&item).copied() {
+            equivalent_indexes.get_mut(&first).expect("first index inserted").push(index);
+        } else {
+            first_seen.insert(item, index);
+            equivalent_indexes.insert(index, vec![index]);
+            groups.entry(item.0).or_default().push(index);
+        }
+    }
+    if groups.is_empty() {
+        return Ok(());
+    }
+
+    let groups: Vec<(u64, Vec<usize>)> = groups.into_iter().collect();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let failed = Mutex::new(None);
+    let computed = Mutex::new(Vec::with_capacity(items.len()));
+    let workers = std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 4).min(groups.len());
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                loop {
+                    if failed.lock().unwrap().is_some() {
+                        break;
+                    }
+                    let group_index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some((epoch, indexes)) = groups.get(group_index) else { break };
+                    let cache = kept_light_cache(*epoch).unwrap_or_else(|| new_cache(*epoch).0);
+                    let vm = RandomXVM::new(flags(), Some(cache), None).expect("RandomX VM init failed");
+                    for &index in indexes {
+                        if failed.lock().unwrap().is_some() {
+                            break;
+                        }
+                        let value = to_value(vm.calculate_hash(&items[index].1).expect("RandomX hash failed"));
+                        let mut error = None;
+                        for &equivalent_index in equivalent_indexes.get(&index).expect("equivalent indexes inserted") {
+                            if let Err(err) = check(equivalent_index, value) {
+                                error = Some(err);
+                                break;
+                            }
+                        }
+                        if let Some(err) = error {
+                            let mut first_error = failed.lock().unwrap();
+                            if first_error.is_none() {
+                                *first_error = Some(err);
+                            }
+                            break;
+                        }
+                        computed.lock().unwrap().push((index, value));
+                    }
+                }
+            });
+        }
+    });
+
+    let computed = computed.into_inner().unwrap();
+    memo_put(Memo::Batch, computed.iter().map(|&(index, value)| (items[index].0, items[index].1, value)).collect());
+    match failed.into_inner().unwrap() {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
+}
+
 /// Builds the full ~2 GiB dataset for fast mining with the key of `epoch`. Takes about half a minute.
 /// Fallible version of new_mining_dataset, used by the miner when it prebuilds
 /// the next epoch in the background (returns None if memory is too low).
@@ -449,6 +535,22 @@ mod tests {
         assert_eq!(memo_get(1, &pow_input(&[5u8; 32], 0, 7)), Some(Uint256::from_u64(7)));
         // Negative control: the batch memo itself did clear (the entry before the full batch is gone)
         assert_eq!(memo_get(0, &pow_input(&[4u8; 32], 0, 0)), None);
+    }
+
+    #[test]
+    fn checked_proof_batches_stop_at_the_first_invalid_item() {
+        let epoch = 424_242;
+        let items =
+            [(epoch, pow_input(&[11u8; 32], 0, 1)), (epoch, pow_input(&[12u8; 32], 0, 2)), (epoch, pow_input(&[13u8; 32], 0, 3))];
+        let checked = Mutex::new(Vec::new());
+        let result = precompute_light_checked(&items, |index, _| {
+            checked.lock().unwrap().push(index);
+            if index == 1 { Err(index) } else { Ok(()) }
+        });
+        assert_eq!(result, Err(1));
+        assert_eq!(checked.into_inner().unwrap(), vec![0, 1]);
+        assert!(memo_get(epoch, &items[0].1).is_some(), "successful work is remembered");
+        assert!(memo_get(epoch, &items[2].1).is_none(), "work after the failure is never computed");
     }
 
     /// Seam review P4-8: the next epoch's light setup is prepared once, only near the end of an epoch.
