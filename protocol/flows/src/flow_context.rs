@@ -914,6 +914,12 @@ impl ConnectionInitializer for FlowContext {
         // Send and receive the ready signal
         handshake.exchange_ready_messages().await?;
 
+        // The handshake is now complete: from here on the full message-type set is allowed. Until
+        // this point the router only accepts `Version`/`Verack`/`Ready` and a strict size bound
+        // (see `Router::route_to_flow`), so a peer cannot force the protobuf decoder to
+        // materialize a huge object graph while the connection is still pre-handshake.
+        router.mark_handshake_complete();
+
         info!("Registering p2p flows for peer {} for protocol version {}", router, applied_protocol_version);
 
         // Launch all flows. Note we launch only after the ready signal was exchanged

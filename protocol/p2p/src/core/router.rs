@@ -6,11 +6,12 @@ use crate::{Peer, make_message};
 use kaspa_core::{debug, error, info, trace, warn};
 use kaspa_utils::networking::PeerId;
 use parking_lot::{Mutex, RwLock};
+use prost::Message;
 use seqlock::SeqLock;
 use std::fmt::{Debug, Display};
 use std::net::SocketAddr;
 use std::ops::{Deref, DerefMut};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Instant;
 use std::{collections::HashMap, sync::Arc};
 use tokio::select;
@@ -19,6 +20,7 @@ use tokio::sync::mpsc::{Receiver as MpscReceiver, Sender as MpscSender, channel 
 use tokio::sync::oneshot::{Sender as OneshotSender, channel as oneshot_channel};
 use tonic::Streaming;
 
+use super::connection_handler::P2P_MAX_PRE_HANDSHAKE_MESSAGE_SIZE;
 use super::peer::{PeerKey, PeerProperties};
 
 pub struct IncomingRoute {
@@ -139,6 +141,11 @@ pub struct Router {
 
     /// Used for managing router mutable state
     mutable_state: Mutex<RouterMutableState>,
+
+    /// Tracks whether the P2P handshake has completed. Until it completes, only `Version`, `Verack`
+    /// and `Ready` messages are accepted (see `route_to_flow`), so a hostile peer cannot make the
+    /// protobuf decoder materialize a huge object graph before any flow has subscribed to it.
+    handshake_complete: AtomicBool,
 }
 
 impl Display for Router {
@@ -172,6 +179,16 @@ fn message_summary(msg: &KaspadMessage) -> impl Debug {
     msg.payload.as_ref().map(std::convert::Into::<KaspadMessagePayloadType>::into)
 }
 
+/// The only message types that are legal while the P2P handshake is still in progress. `Version`,
+/// `Verack` and `Ready` are the sole messages exchanged by the handshake itself, and all three are
+/// tiny, so anything else arriving before the handshake completes is treated as a protocol violation.
+fn is_pre_handshake_message_type(msg_type: KaspadMessagePayloadType) -> bool {
+    matches!(
+        msg_type,
+        KaspadMessagePayloadType::Version | KaspadMessagePayloadType::Verack | KaspadMessagePayloadType::Ready
+    )
+}
+
 impl Router {
     pub(crate) async fn new(
         net_address: SocketAddr,
@@ -193,6 +210,7 @@ impl Router {
             outgoing_route,
             hub_sender,
             mutable_state: Mutex::new(RouterMutableState::new(Some(start_sender), Some(shutdown_sender))),
+            handshake_complete: AtomicBool::new(false),
         });
 
         let router_clone = router.clone();
@@ -298,6 +316,17 @@ impl Router {
         self.mutable_state.lock().last_ping_duration
     }
 
+    /// Marks the connection's handshake as complete, lifting the pre-handshake message-type and
+    /// size restrictions enforced by `route_to_flow`. Called by the `ConnectionInitializer` once
+    /// the `Ready` messages have been exchanged.
+    pub fn mark_handshake_complete(&self) {
+        self.handshake_complete.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_handshake_complete(&self) -> bool {
+        self.handshake_complete.load(Ordering::SeqCst)
+    }
+
     pub fn incoming_flow_baseline_channel_size() -> usize {
         256
     }
@@ -374,6 +403,29 @@ impl Router {
             return Err(ProtocolError::Other("received kaspad p2p message with empty payload"));
         }
         let msg_type: KaspadMessagePayloadType = msg.payload.as_ref().expect("payload was just verified").into();
+
+        // Fail fast on anything that is not part of the handshake protocol while the handshake is
+        // still in progress. `Streaming::message` has already fully decoded the frame into a Rust
+        // object graph by the time we get here, so this gate cannot un-materialize a payload that
+        // tonic already decoded -- which is exactly why pre-handshake messages are additionally
+        // bounded by `P2P_MAX_PRE_HANDSHAKE_MESSAGE_SIZE` below. Together these checks drop the
+        // connection before any unexpected or oversized message is ever routed to a flow.
+        if !self.is_handshake_complete() {
+            if !is_pre_handshake_message_type(msg_type) {
+                return Err(ProtocolError::MisbehavingPeer(format!(
+                    "peer sent a {:?} message before completing the handshake",
+                    msg_type
+                )));
+            }
+            let encoded_len = msg.encoded_len();
+            if encoded_len > P2P_MAX_PRE_HANDSHAKE_MESSAGE_SIZE {
+                return Err(ProtocolError::OtherOwned(format!(
+                    "pre-handshake message is {} bytes, over the limit of {} bytes",
+                    encoded_len, P2P_MAX_PRE_HANDSHAKE_MESSAGE_SIZE
+                )));
+            }
+        }
+
         // Handle the special case of a reject message ending the connection
         if msg_type == KaspadMessagePayloadType::Reject {
             let Some(KaspadMessagePayload::Reject(reject)) = msg.payload else { unreachable!() };

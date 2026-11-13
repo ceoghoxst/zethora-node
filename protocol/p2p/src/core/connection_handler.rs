@@ -53,6 +53,22 @@ pub enum ConnectionError {
 /// (a block, a UTXO/SMT/private-state chunk, an address list) is smaller still.
 const P2P_MAX_MESSAGE_SIZE: usize = 10 * 1024 * 1024; // 10 MiB
 
+/// Maximum decoded size accepted for a single message while the P2P handshake is still in progress.
+///
+/// Zethora (OBS-2): until the handshake completes, the only legal messages are `Version`, `Verack`
+/// and `Ready`, which are at most a few hundred bytes. A hostile peer can nonetheless send any
+/// message type in this window -- including a gzip-compressed payload that prost expands into
+/// millions of empty `DaaBlockV4`/`BlockHeader` elements -- and tonic's decoder fully materializes
+/// that object graph before `Router::route_to_flow` gets a chance to reject the type. Handshake
+/// messages are tiny, so while the connection is pre-handshake any message that decodes to more
+/// than this limit is dropped before it is ever routed to a flow. Enforced in `Router::route_to_flow`.
+///
+/// This limit alone cannot stop a gzip bomb: tonic decompresses accepted encodings itself, fully and
+/// without bound, before the router ever sees the message. Inbound gzip is therefore disabled at the
+/// tonic level in `ConnectionHandler::serve` so a compressed bomb is rejected before any decompression
+/// happens.
+pub(crate) const P2P_MAX_PRE_HANDSHAKE_MESSAGE_SIZE: usize = 16 * 1024; // 16 KiB
+
 const MAX_PENDING_INBOUND_HANDSHAKES: usize = 32;
 const MAX_PENDING_INBOUND_HANDSHAKES_PER_IP: usize = 2;
 
@@ -136,8 +152,21 @@ impl ConnectionHandler {
         let bytes_rx = self.counters.bytes_rx.clone();
 
         tokio::spawn(async move {
+            // Zethora (OBS-3): inbound gzip is deliberately NOT accepted here. Tonic decompresses any
+            // encoding enabled via `accept_compressed` on its own, before either the size limit or the
+            // router can observe the message, and its gzip decoder streams the payload into an unbounded
+            // buffer (`std::io::copy` into a `BytesMut`). `max_decoding_message_size` bounds the on-wire
+            // frame length, not the decompressed size, so a ~19 KiB compressed bomb can still expand into
+            // gigabytes inside tonic before `Router::route_to_flow` ever runs its pre-handshake check.
+            // Disabling inbound gzip means the on-wire length is the decoded length, so tonic rejects an
+            // oversized frame before allocating it, and a peer that sends a compressed frame anyway is
+            // cleanly rejected before any decompression occurs.
+            //
+            // `max_decoding_message_size` is fixed for the lifetime of the service (it cannot be lowered
+            // only while a given connection is still pre-handshake), so it stays at `P2P_MAX_MESSAGE_SIZE`
+            // (10 MiB); the stricter 16 KiB pre-handshake bound continues to be enforced on the already
+            // decoded message by `Router::route_to_flow`.
             let proto_server = ProtoP2pServer::new(connection_handler)
-                .accept_compressed(tonic::codec::CompressionEncoding::Gzip)
                 .send_compressed(tonic::codec::CompressionEncoding::Gzip)
                 .max_decoding_message_size(P2P_MAX_MESSAGE_SIZE);
 
@@ -182,10 +211,14 @@ impl ConnectionHandler {
             }))
             .service(channel);
 
-        let mut client = ProtoP2pClient::new(channel)
-            .send_compressed(tonic::codec::CompressionEncoding::Gzip)
-            .accept_compressed(tonic::codec::CompressionEncoding::Gzip)
-            .max_decoding_message_size(P2P_MAX_MESSAGE_SIZE);
+        // Zethora (OBS-3): gzip is disabled network-wide, matching the inbound server which no longer
+        // accepts compressed frames. Tonic decompresses any encoding enabled via `accept_compressed` on
+        // its own, fully and without bound, before either the size limit or the router can observe the
+        // message, so accepting gzip here would reintroduce the pre-handshake OOM vector through a peer's
+        // compressed response. Sending gzip is equally pointless now: peers on the new code reject
+        // compressed frames outright, so a compressed request would only get us disconnected. This is a
+        // coordinated network upgrade -- identity encoding only, on both sides of every P2P connection.
+        let mut client = ProtoP2pClient::new(channel).max_decoding_message_size(P2P_MAX_MESSAGE_SIZE);
 
         let (outgoing_route, outgoing_receiver) = mpsc_channel(Self::outgoing_network_channel_size());
         let incoming_stream = client.message_stream(ReceiverStream::new(outgoing_receiver)).await?.into_inner();
