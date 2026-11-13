@@ -49,3 +49,7 @@ MasterContext_DIAGNOSTIC.txt
 
 # Encrypted backup vault (Section 489)
 Vault/
+
+# Compiled binaries
+*.tar.gz
+*.zip
