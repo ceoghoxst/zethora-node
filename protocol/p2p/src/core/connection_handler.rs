@@ -1,8 +1,9 @@
 use crate::common::ProtocolError;
 use crate::core::hub::HubEvent;
 use crate::pb::{
-    KaspadMessage, p2p_client::P2pClient as ProtoP2pClient, p2p_server::P2p as ProtoP2p, p2p_server::P2pServer as ProtoP2pServer,
+    KaspadMessage, p2p_client::P2pClient as ProtoP2pClient, p2p_server::P2p as ProtoP2p,
 };
+use crate::core::router::PreflightCodec;
 use crate::{ConnectionInitializer, Router};
 use futures::FutureExt;
 use kaspa_core::{debug, info, warn};
@@ -13,15 +14,20 @@ use kaspa_utils_tower::{
 };
 use parking_lot::Mutex;
 use std::collections::HashMap;
+use std::convert::Infallible;
+use std::future::Future;
 use std::net::{IpAddr, ToSocketAddrs};
 use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::mpsc::{Sender as MpscSender, channel as mpsc_channel};
 use tokio::sync::oneshot::{Sender as OneshotSender, channel as oneshot_channel};
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
+use tonic::codegen::{Service, http};
+use tonic::server::{Grpc, NamedService, StreamingService};
 use tonic::transport::{Error as TonicError, Server as TonicServer};
 use tonic::{Request, Response, Status as TonicStatus, Streaming};
 
@@ -51,7 +57,7 @@ pub enum ConnectionError {
 /// comes anywhere near 10 MiB: the largest legitimate payloads are the header and trusted-data chunks, which the
 /// serving flows cut at `HEADERS_CHUNK_SIZE`/`TRUSTED_DATA_CHUNK_SIZE` (8 MiB each), and every other payload
 /// (a block, a UTXO/SMT/private-state chunk, an address list) is smaller still.
-const P2P_MAX_MESSAGE_SIZE: usize = 10 * 1024 * 1024; // 10 MiB
+pub(crate) const P2P_MAX_MESSAGE_SIZE: usize = 10 * 1024 * 1024; // 10 MiB
 
 /// Maximum decoded size accepted for a single message while the P2P handshake is still in progress.
 ///
@@ -166,9 +172,12 @@ impl ConnectionHandler {
             // only while a given connection is still pre-handshake), so it stays at `P2P_MAX_MESSAGE_SIZE`
             // (10 MiB); the stricter 16 KiB pre-handshake bound continues to be enforced on the already
             // decoded message by `Router::route_to_flow`.
-            let proto_server = ProtoP2pServer::new(connection_handler)
-                .send_compressed(tonic::codec::CompressionEncoding::Gzip)
-                .max_decoding_message_size(P2P_MAX_MESSAGE_SIZE);
+            // Zethora (OBS-4): `PreflightP2pServer` installs the preflight codec so every inbound
+            // frame is scanned for amplifier-shaped `TrustedDataChunk`/`BlockHeaders` payloads and
+            // rejected before prost allocates the object graph. The generated `P2pServer` hardcodes
+            // `tonic_prost::ProstCodec` with no codec hook, so the service is built by hand below;
+            // it keeps the same `send_compressed`/`max_decoding_message_size` configuration.
+            let proto_server = PreflightP2pServer::new(connection_handler);
 
             // TODO: check whether we should set tcp_keepalive
             let serve_result = TonicServer::builder()
@@ -293,6 +302,84 @@ impl ConnectionHandler {
 
     fn keep_alive() -> u64 {
         30_000
+    }
+}
+
+// -------------------------------------------------------------------------------------------------
+// Zethora (OBS-4): a hand-built gRPC service that installs `PreflightCodec`.
+// -------------------------------------------------------------------------------------------------
+//
+// The generated `P2pServer` hardcodes `tonic_prost::ProstCodec::default()` and exposes no codec
+// hook, so the preflight boundary cannot be applied through the generated builder. This service
+// mirrors the generated `Service`/`StreamingService` plumbing with `PreflightCodec` substituted
+// for the prost codec, keeping the same `send_compressed`/`max_decoding_message_size` config.
+
+/// The `Service` handed to `TonicServer::add_service`. It forwards the one P2P method to
+/// `Grpc::streaming` with `PreflightCodec` installed.
+#[derive(Clone)]
+struct PreflightP2pServer {
+    inner: Arc<ConnectionHandler>,
+}
+
+impl PreflightP2pServer {
+    fn new(inner: ConnectionHandler) -> Self {
+        Self { inner: Arc::new(inner) }
+    }
+}
+
+impl NamedService for PreflightP2pServer {
+    const NAME: &'static str = "protowire.P2P";
+}
+
+impl Service<http::Request<tonic::body::Body>> for PreflightP2pServer {
+    type Response = http::Response<tonic::body::Body>;
+    type Error = Infallible;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send + 'static>>;
+
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: http::Request<tonic::body::Body>) -> Self::Future {
+        match req.uri().path() {
+            "/protowire.P2P/MessageStream" => {
+                let inner = self.inner.clone();
+                Box::pin(async move {
+                    let method = MessageStreamSvc(inner);
+                    let codec = PreflightCodec::default();
+                    let mut grpc = Grpc::new(codec)
+                        .send_compressed(tonic::codec::CompressionEncoding::Gzip)
+                        .max_decoding_message_size(P2P_MAX_MESSAGE_SIZE);
+                    Ok(grpc.streaming(method, req).await)
+                })
+            }
+            _ => {
+                // Replicate the generated server's response for unrecognised paths.
+                Box::pin(async move {
+                    let mut response = http::Response::new(tonic::body::Body::default());
+                    let headers = response.headers_mut();
+                    headers.insert(TonicStatus::GRPC_STATUS, (tonic::Code::Unimplemented as i32).into());
+                    headers.insert(http::header::CONTENT_TYPE, tonic::metadata::GRPC_CONTENT_TYPE);
+                    Ok(response)
+                })
+            }
+        }
+    }
+}
+
+/// The `StreamingService` handler passed to `Grpc::streaming`, mirroring the generated
+/// `MessageStreamSvc` and delegating to `ConnectionHandler::message_stream`.
+struct MessageStreamSvc(Arc<ConnectionHandler>);
+
+impl StreamingService<KaspadMessage> for MessageStreamSvc {
+    type Response = KaspadMessage;
+    type ResponseStream = <ConnectionHandler as ProtoP2p>::MessageStreamStream;
+    type Future =
+        Pin<Box<dyn Future<Output = Result<Response<Self::ResponseStream>, TonicStatus>> + Send + 'static>>;
+
+    fn call(&mut self, request: Request<Streaming<KaspadMessage>>) -> Self::Future {
+        let inner = Arc::clone(&self.0);
+        Box::pin(async move { <ConnectionHandler as ProtoP2p>::message_stream(&inner, request).await })
     }
 }
 
