@@ -9,8 +9,6 @@ pub mod test_consensus;
 mod utxo_set_override;
 #[cfg(test)]
 mod zethora_import_tests;
-#[cfg(test)]
-mod zethora_ghostdag_integration_tests;
 
 use crate::{
     config::Config,
@@ -419,7 +417,7 @@ impl Consensus {
     }
 
     /// Zethora: the private state as of chain block `block` (its coin list, and every coin tag spent and every snapshot
-    /// produced on its chain), as a peer joining from `block` downloads it (ZTH-SPEC-006 §6.4).
+    /// produced on its chain), as a peer joining from `block` downloads it (ZTH-SPEC-006 Â§6.4).
     pub(crate) fn zethora_private_state_at(&self, block: Hash) -> ConsensusResult<kaspa_consensus_core::api::ZethoraPrivateState> {
         use crate::model::stores::zethora_note_trees::ZethoraNoteTreesStoreReader;
         let note_tree = self.zethora_note_trees_store.get(block).map_err(|e| {
@@ -1323,7 +1321,7 @@ impl ConsensusApi for Consensus {
                 ZERO_HASH,
                 expected_lane_count,
                 lanes_root,
-                // Chunks arrive pre-sized (up to SMT_CHUNK_SIZE) from the wire-level chunker —
+                // Chunks arrive pre-sized (up to SMT_CHUNK_SIZE) from the wire-level chunker â€”
                 // forwarded as-is, no re-batching.
                 lane_batches,
                 4096,

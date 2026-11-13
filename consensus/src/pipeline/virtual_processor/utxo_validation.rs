@@ -433,18 +433,24 @@ impl VirtualStateProcessor {
     /// Records of pruned chain blocks are rewritten to `SPENT_FOR_GOOD` by the pruning processor, so every node
     /// gives the same answer whether or not it has pruned. If reachability is unexpectedly missing, it counts as spent.
     pub(crate) fn nullifier_spent_on_chain(&self, nullifier: &[u8; 32], selected_parent: Hash) -> bool {
-        use crate::model::stores::zethora_nullifiers::SPENT_FOR_GOOD;
-        self.zethora_nullifiers_store.accepting_blocks(nullifier).into_iter().any(|block| {
-            block == SPENT_FOR_GOOD || self.reachability_service.try_is_chain_ancestor_of(block, selected_parent).unwrap_or(true)
+        let reachability = &self.reachability_service;
+        self.zethora_nullifiers_store.is_spent_on_chain(nullifier, |block| {
+            reachability.try_is_chain_ancestor_of(block, selected_parent).unwrap_or(true)
         })
     }
 
     /// Zethora: does this transaction spend a private coin tag that is already spent, either on the chain of
-    /// `selected_parent` or in `pending` (tags accepted earlier in the same mergeset / block template)?
+    /// `selected_parent` (`nullifier_spent_on_chain`) or in `pending` (tags accepted earlier in the same mergeset /
+    /// block template)? A tag in `pending` counts only while it has no accepting chain block: once a chain block has
+    /// accepted the tag, that acceptance is authoritative, and a block that fell off the selected chain stops counting
+    /// (ZTH-SPEC-006 §6.3), so a reorged-off spend no longer freezes the coin.
     pub(crate) fn private_double_spend(&self, tx: &Transaction, selected_parent: Hash, pending: &HashSet<[u8; 32]>) -> bool {
         zethora_private::nullifiers(zethora_private::private_payload(tx))
             .iter()
-            .any(|nf| pending.contains(nf) || self.nullifier_spent_on_chain(nf, selected_parent))
+            .any(|nf| {
+                self.nullifier_spent_on_chain(nf, selected_parent)
+                    || (pending.contains(nf) && self.zethora_nullifiers_store.accepting_blocks(nf).is_empty())
+            })
     }
 
     /// Zethora: is `anchor` a private coin list snapshot that a spend accepted on top of `selected_parent` may use?

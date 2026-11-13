@@ -256,10 +256,12 @@ async fn anchor_reorg_end_to_end() {
     f.node.mine(vec![]).await;
     assert_eq!(vp.check_private_payment_in_context(&spend, f.node.tip, &HashSet::new()), Ok(()));
     // Node 1's virtual also merges the old branch A. With R now matured on B, the virtual re-accepts the ORIGINAL spend
-    // from A's block X (as for any transaction of a reorged-off block), so the mempool already sees the coin as taken
+    // from A's block X (as for any transaction of a reorged-off block), so its coin tag lands in the virtual's mergeset ...
     let virtual_nullifiers = f.node.tc.virtual_stores().read().state.get().unwrap().mergeset_nullifiers.clone();
     assert!(virtual_nullifiers.contains(&nf));
-    assert_eq!(mempool(&f.node, &spend), Err(TxRuleError::InvalidPrivatePayment("private coin already spent".to_string())));
+    // ... but that re-acceptance no longer counts: the block that accepted the spend (Y) left the selected chain, so the
+    // double-spend check finds no accepting block on the chain and the mempool accepts the spend (reorg liveness fix)
+    assert_eq!(mempool(&f.node, &spend), Ok(()), "the reorg must un-spend the nullifier on the new chain");
 
     // The coin is spendable again, only on B: the same spend is accepted exactly once there
     f.node.mine(vec![spend.clone()]).await;

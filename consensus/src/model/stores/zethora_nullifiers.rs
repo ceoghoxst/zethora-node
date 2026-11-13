@@ -43,6 +43,13 @@ impl DbZethoraNullifiersStore {
         }
     }
 
+    /// True if this tag counts as spent "as of" a block for which `on_chain` reports selected-chain membership:
+    /// either it was marked spent-for-good, or one of its accepting blocks is on that chain (ZTH-SPEC-006 §6.3).
+    /// A block that has fallen off the chain simply does not satisfy `on_chain`, so it stops counting.
+    pub fn is_spent_on_chain(&self, nullifier: &[u8; 32], mut on_chain: impl FnMut(Hash) -> bool) -> bool {
+        self.accepting_blocks(nullifier).into_iter().any(|block| block == SPENT_FOR_GOOD || on_chain(block))
+    }
+
     /// Records that `block` (a chain block) accepted these tags. Each tag must appear once in `nullifiers`.
     pub fn add_batch(&self, batch: &mut WriteBatch, block: Hash, nullifiers: &[[u8; 32]]) -> Result<(), StoreError> {
         if nullifiers.is_empty() {
