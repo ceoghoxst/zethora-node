@@ -1,22 +1,22 @@
 # Contributing to Zethora
 
-We are thrilled that you are interested in contributing to Zethora! 
+Zethora is a community-driven project. We welcome contributions from developers, security researchers, and miners.
 
-## Code of Conduct
-By participating in this project, you agree to abide by our Code of Conduct. Please be respectful and constructive in all communications.
+## Security Vulnerabilities
+**Do not open a public issue for security bugs.**
+If you find a vulnerability, email us at security@zethora.network (or DM a core team member on Discord). We operate on a responsible disclosure policy. 
 
-## How to Contribute
-1. **Fork the repository** and create your branch from main.
-2. **Ensure the test suite passes** (cargo test).
-3. **Format your code** (cargo fmt).
-4. **Issue a Pull Request** with a clear description of the problem and the solution.
+We reward critical findings with token allocations from the Ecosystem Fund at Mainnet.
 
-## Contribution Guidelines (Librustzcash Style)
-- All new public functions must have doc comments (///).
-- Commit messages must be descriptive. Use the imperative mood (e.g., "Add bridge signature check", not "Added bridge signature check").
-- Ensure no unhandled unwrap() in production code; use proper error propagation.
+## Pull Requests
+1. Fork the repo and create a new branch.
+2. Ensure your code passes cargo test.
+3. Do not submit AI-generated reports without a working PoC. We require end-to-end proof of impact.
+4. Submit a PR with a clear description of the change.
 
-## Security Disclosures
-If you find a security vulnerability, **DO NOT open a public issue**. Please refer to our SECURITY.md file for responsible disclosure guidelines.
+## Code Style
+- Rust: cargo fmt and cargo clippy must pass.
+- Solidity: Follow the OpenZeppelin style guide.
 
-Thank you for helping us build the Apex Predator L1!
+## Community
+Join the Discord to discuss architecture and testnet updates.

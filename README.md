@@ -1,19 +1,37 @@
 # Zethora: The Private Execution Layer
 
-Zethora is the **Apex Predator L1** and the **Dark Pool of DeFi**. It is a modular Proof-of-Work blockchain that fuses the high-throughput DAG structure of Kaspa with the cryptographic privacy of Zcash Orchard, powered by a native Rust EVM L2.
+Zethora is a fair-launch Layer-1 Proof-of-Work network fused with a native Rust EVM and Zcash Orchard privacy. 
+
+**No VC. No premine. 100M hard cap.**
 
 ## Architecture
-- **L1 Consensus:** Kaspa GHOSTDAG fork with 1-second blocks. CPU-mineable via RandomZ with a hard cap of 100,000,000 ZTHR. No premine. Fair launch.
-- **Privacy Layer:** Zcash Orchard (Halo2) zero-knowledge proofs integrated directly into the consensus pipeline. (Locked/Disabled pending external audit).
-- **Native L2 Execution:** Built a custom Rust EVM using evm with full EIP-1559 support. Chain ID: 2600. 
-- **Cross-Layer Bridge:** A trust-minimized bridge utilizing secp256k1 threshold signatures to move assets between L1 and L2.
+- **L1 (Kaspa Fork):** 1-second blocks via GHOSTDAG, mined with RandomZ (CPU-only).
+- **L2 (Rust EVM):** Full Solidity support, EIP-1559, Chain ID 2600.
+- **Privacy Layer:** Opt-in Zcash Orchard ZK circuits for shielded transactions.
 
-## Security Posture (The Doomsday Protocol)
-Zethora was not just built; it was attacked. Through our proprietary AI orchestration framework (Kortana), we ran continuous adversarial testing and patched critical zero-days across every layer:
-- **L1 Consensus:** Patched the MuHash Turnstile deadlock (ZTH-CRIT-02).
-- **Privacy Layer:** Proved Orchard padding spends cannot forge pool inflation.
-- **Bridge:** Patched Reorg Double-Mints (F-1), Cross-Chain Replay (F-2), and Commitment Forgery (F-3).
-- **P2P Network:** Hardened against Solana-style DoS halts (OBS-1, OBS-3, OBS-4).
+## Public Testnet
+The testnet is currently live and accepting remote miners.
 
-## Quick Start
-`cargo build --release -p kaspad`
+- **Seed Node:** grpc://95.216.185.137:26210
+- **L2 RPC:** https://95.216.185.137.nip.io (Chain ID: 2600)
+- **Faucet:** http://95.216.185.137:8080
+
+### How to Mine
+Download the latest miner from the [Releases](https://github.com/ceoghoxst/zethora-node/releases) page or the Discord.
+
+**Windows:**
+.\zethora-miner.exe --testnet --node grpc://95.216.185.137:26210
+
+**Linux:**
+./zethora-miner --testnet --node grpc://95.216.185.137:26210
+
+For more detailed instructions, see [SENTINELS.md](SENTINELS.md).
+
+## Development
+To build the node from source:
+cargo build --release
+
+## Security
+We do not claim to be audited. We are actively patching vulnerabilities found by our internal Red Team and community Sentinels. 
+
+If you find a bug, please refer to [CONTRIBUTING.md](CONTRIBUTING.md).
