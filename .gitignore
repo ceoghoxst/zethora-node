@@ -53,3 +53,4 @@ Vault/
 # Compiled binaries
 *.tar.gz
 *.zip
+wallet_*.txt
