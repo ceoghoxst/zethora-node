@@ -13,4 +13,5 @@ kaspa-grpc-client.workspace = true
 kaspa-pow.workspace = true
 kaspa-rpc-core.workspace = true
 secp256k1.workspace = true
+sysinfo.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }

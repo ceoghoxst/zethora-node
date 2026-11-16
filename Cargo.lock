@@ -13660,6 +13660,7 @@ dependencies = [
  "kaspa-pow",
  "kaspa-rpc-core",
  "secp256k1 0.29.1",
+ "sysinfo 0.31.4",
  "tokio",
 ]
 

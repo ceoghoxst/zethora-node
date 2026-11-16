@@ -1,13 +1,15 @@
 //! Zethora CPU miner (prototype). Devnet by default; pass --testnet for testnet.
 //!
-//! Connects to a local Zethora node, asks it for a block template, searches for a
-//! valid nonce on all CPU threads with RandomZ (fast mode), and submits the block.
+//! Connects to a Zethora node (the local one by default; `--node <url>` points the miner at
+//! another one), asks it for a block template, searches for a valid nonce on all CPU threads
+//! with RandomZ (fast mode), and submits the block.
 //! Repeats forever. Needs about 2.5 GB of RAM. The mining key changes every 2^20 DAA
 //! scores (about 12 days); the miner then rebuilds its dataset (about half a minute).
 //!
 //! Usage:
 //!   zethora-miner             devnet (node must run with: --devnet --enable-unsynced-mining)
 //!   zethora-miner --testnet   testnet (node must run with: --testnet --enable-unsynced-mining)
+//!   zethora-miner --node <grpc://host:port>  connect to this node instead of the built-in local one
 //!   zethora-miner --address <zethoratest:...>  pay rewards to this address instead of the key file's
 //!   zethora-miner --shielded <zs...>  pay rewards to a private (Orchard) address instead of the key's address
 //!   zethora-miner bench       RandomZ speed test; no node needed, stop the real miner first
@@ -45,6 +47,10 @@ const TESTNET_KEY_FILE: &str = "zethora-miner-key-testnet.txt";
 /// Get a fresh template this often, so we always build on the newest blocks.
 const TEMPLATE_REFRESH: Duration = Duration::from_millis(1000);
 const ZETS_PER_ZTHR: f64 = 10_000_000_000.0;
+/// Below 8 GiB of RAM the miner is forced into light mode: the fast-mode dataset needs about 2.5 GiB on top of the node.
+const LOW_RAM_BYTES: u64 = 8_589_934_592;
+/// Below 4 physical CPU cores the miner is forced into light mode with a 2-thread default.
+const LOW_CORE_COUNT: usize = 4;
 
 /// Seam review P4-10: reads a key file's 64 hex characters, with a clear error instead of a crash on a short or damaged
 /// file.
@@ -381,19 +387,42 @@ fn bench() {
 
 #[tokio::main]
 async fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let usage = "Usage:\n  zethora-miner             devnet (node: --devnet --enable-unsynced-mining)\n  zethora-miner --testnet   testnet (node: --testnet --enable-unsynced-mining)\n  zethora-miner --address <zethoratest:...>   mine to this address instead of the key file's\n  zethora-miner --testnet --address <zethoratest:...>   the same, on testnet\n  zethora-miner --shielded <zs...>   devnet, paying rewards to a private address\n  zethora-miner --testnet --shielded <zs...>   testnet, paying rewards to a private address\n  zethora-miner bench       RandomZ speed test (no node)\n  zethora-miner balance     devnet balance of your transparent mining address (node needs --utxoindex)\n  zethora-miner --testnet balance   testnet balance (node needs --testnet --utxoindex)\n\n--address takes a transparent address with the prefix of the network being mined\n(zethoratest: with --testnet, zethoradev: on devnet); a wrong prefix or a damaged address is refused.\nWithout --address the reward goes to the address held in zethora-miner-key-testnet.txt (testnet) or\nzethora-miner-key.txt (devnet). --address cannot be combined with --shielded.";
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    // Detect low-spec hardware (less than 8 GiB of RAM or fewer than 4 CPU cores) and switch to light mode with a
+    // small thread count before the command line is finalized, so the miner does not run out of memory. An explicit
+    // --mining-threads on the command line always wins over the auto-detected default.
+    {
+        let mut system = sysinfo::System::new();
+        system.refresh_cpu_list(sysinfo::CpuRefreshKind::everything());
+        system.refresh_memory();
+        let total_ram = system.total_memory();
+        let cores = system.physical_core_count().unwrap_or_else(|| system.cpus().len());
+        if total_ram < LOW_RAM_BYTES || cores < LOW_CORE_COUNT {
+            if !args.iter().any(|a| a == "--light-mode") {
+                args.push("--light-mode".to_string());
+            }
+            let user_set_threads = args.iter().any(|a| a == "--mining-threads" || a.starts_with("--mining-threads="));
+            if !user_set_threads {
+                args.push("--mining-threads".to_string());
+                args.push("2".to_string());
+            }
+        }
+    }
+    let usage = "Usage:\n  zethora-miner             devnet (node: --devnet --enable-unsynced-mining)\n  zethora-miner --testnet   testnet (node: --testnet --enable-unsynced-mining)\n  zethora-miner --node <grpc://host:port>   connect to this node instead of the local one (works in every mode)\n  zethora-miner --address <zethoratest:...>   mine to this address instead of the key file's\n  zethora-miner --testnet --address <zethoratest:...>   the same, on testnet\n  zethora-miner --shielded <zs...>   devnet, paying rewards to a private address\n  zethora-miner --testnet --shielded <zs...>   testnet, paying rewards to a private address\n  zethora-miner bench       RandomZ speed test (no node)\n  zethora-miner balance     devnet balance of your transparent mining address (node needs --utxoindex)\n  zethora-miner --testnet balance   testnet balance (node needs --testnet --utxoindex)\n\n--address takes a transparent address with the prefix of the network being mined\n(zethoratest: with --testnet, zethoradev: on devnet); a wrong prefix or a damaged address is refused.\nWithout --address the reward goes to the address held in zethora-miner-key-testnet.txt (testnet) or\nzethora-miner-key.txt (devnet). --address cannot be combined with --shielded.\n\n--node points the miner at another node (for example a public one): --node grpc://95.216.185.137:26210\n(or --node=grpc://95.216.185.137:26210). Without it the miner uses grpc://127.0.0.1:26610 (devnet)\nor grpc://127.0.0.1:26210 (testnet).";
     #[derive(PartialEq)]
     enum Mode {
         Mine,
         Bench,
         Balance,
     }
-    // `--shielded <address>` and `--address <address>` may sit before or after `--testnet`; everything else must
-    // match exactly.
+    // `--shielded <address>`, `--address <address>` and `--node <url>` may sit before or after `--testnet`;
+    // everything else must match exactly.
     let mut rest: Vec<&str> = Vec::with_capacity(args.len());
     let mut shielded_arg: Option<String> = None;
     let mut address_arg: Option<String> = None;
+    let mut node_arg: Option<String> = None;
+    let mut light_mode = false;
+    let mut mining_threads: Option<usize> = None;
     let mut remaining = args.iter().map(String::as_str);
     while let Some(arg) = remaining.next() {
         match arg {
@@ -401,6 +430,11 @@ async fn main() {
             _ if arg.starts_with("--shielded=") => shielded_arg = Some(arg["--shielded=".len()..].to_string()),
             "--address" => address_arg = remaining.next().map(str::to_string),
             _ if arg.starts_with("--address=") => address_arg = Some(arg["--address=".len()..].to_string()),
+            "--node" => node_arg = remaining.next().map(str::to_string),
+            _ if arg.starts_with("--node=") => node_arg = Some(arg["--node=".len()..].to_string()),
+            "--light-mode" => light_mode = true,
+            "--mining-threads" => mining_threads = remaining.next().and_then(|v| v.parse().ok()),
+            _ if arg.starts_with("--mining-threads=") => mining_threads = arg["--mining-threads=".len()..].parse().ok(),
             _ => rest.push(arg),
         }
     }
@@ -416,6 +450,30 @@ async fn main() {
     if shielded_arg.is_none() && args.iter().any(|a| a.starts_with("--shielded")) {
         usage_or_exit(Some("--shielded needs a private address after it, for example: zethora-miner --shielded zs...".into()));
     }
+    // `--node` names the node to use. A bare flag (no value) and an empty value are both bad arguments, so they are
+    // refused here rather than reaching the gRPC client as an empty URL.
+    if node_arg.is_none() && args.iter().any(|a| a.starts_with("--node")) {
+        usage_or_exit(Some(
+            "--node needs a node URL after it, for example: zethora-miner --node grpc://95.216.185.137:26210".into(),
+        ));
+    }
+    // `--mining-threads` names a thread count. A bare flag (no value) and a non-numeric value are both bad arguments,
+    // so they are refused here rather than silently falling back to all cores.
+    if mining_threads.is_none() && args.iter().any(|a| a.starts_with("--mining-threads")) {
+        usage_or_exit(Some(
+            "--mining-threads needs a number after it, for example: zethora-miner --mining-threads 4".into(),
+        ));
+    }
+    let node = match node_arg {
+        None => None,
+        Some(ref text) => {
+            let url = text.trim();
+            if url.is_empty() {
+                usage_or_exit(Some("--node was given an empty URL; pass one like grpc://95.216.185.137:26210".into()));
+            }
+            Some(url.to_string())
+        }
+    };
     let shielded = match shielded_arg {
         None => None,
         Some(ref text) => match payload_from_shielded_address(text.trim()) {
@@ -459,7 +517,8 @@ async fn main() {
         return tokio::task::spawn_blocking(bench).await.expect("speed test");
     }
     let network = if testnet { NetworkType::Testnet } else { NetworkType::Devnet };
-    let node_url = if testnet { TESTNET_NODE_URL } else { DEVNET_NODE_URL };
+    // `--node` wins over the built-in local URLs, so the miner can talk to any reachable node.
+    let node_url = node.as_deref().unwrap_or(if testnet { TESTNET_NODE_URL } else { DEVNET_NODE_URL });
     let key_file = if testnet { TESTNET_KEY_FILE } else { DEVNET_KEY_FILE };
     let network_name = if testnet { "testnet" } else { "devnet" };
     // `--address` names the coinbase destination itself, so it is checked before the key file is touched: a pool
@@ -498,7 +557,8 @@ async fn main() {
     } else {
         println!("Key file: {key_file}");
     }
-    println!("Node URL: {node_url}");
+    // Say which node is used, so a wrong --node shows up before a single block is mined.
+    println!("Node URL: {node_url}{}", if node.is_some() { " (from --node)" } else { "" });
     for line in &route.banner {
         println!("{line}");
     }
@@ -512,9 +572,12 @@ async fn main() {
         std::process::exit(3);
     }
 
-    let client = GrpcClient::connect(node_url.to_string())
-        .await
-        .expect("Cannot reach the node. Is it running with the matching network flag (--devnet or --testnet)?");
+    let client = GrpcClient::connect(node_url.to_string()).await.unwrap_or_else(|e| {
+        panic!(
+            "Cannot reach the node at {node_url} ({e}). Is it running with the matching network flag (--devnet or \
+             --testnet)? If you passed --node, check that URL (it should look like grpc://host:port)."
+        )
+    });
     // G13: show the balance of the mining address and exit (with --address, the address it was given)
     if mode == Mode::Balance {
         match client.get_balance_by_address(key_address.clone()).await {
@@ -530,7 +593,12 @@ async fn main() {
         }
         return;
     }
-    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    let threads = mining_threads
+        .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4))
+        .max(1);
+    if light_mode {
+        println!("Light mode: hashing with the 256 MiB cache (no ~2 GiB dataset), so the miner fits in low memory.");
+    }
     println!("Mining on {threads} threads. Press Ctrl+C to stop.\n");
 
     let mut mined: u64 = 0;
@@ -580,62 +648,67 @@ async fn main() {
         let state = Arc::new(kaspa_pow::State::new(&header));
         let epoch = state.epoch();
 
-        // B8: Prebuild the next epoch dataset in the background if we are close.
-        // Epoch boundaries are every 1,048,576 DAA scores (1 << 20).
-        let next_boundary = (epoch + 1) << 20;
-        let blocks_left = next_boundary.saturating_sub(header.daa_score);
+        // Fast mode only: manage the ~2 GiB dataset. Light mode hashes with the shared 256 MiB cache, so there is
+        // nothing to build or prebuild and no large allocation to make.
+        if !light_mode {
+            // B8: Prebuild the next epoch dataset in the background if we are close.
+            // Epoch boundaries are every 1,048,576 DAA scores (1 << 20).
+            let next_boundary = (epoch + 1) << 20;
+            let blocks_left = next_boundary.saturating_sub(header.daa_score);
 
-        if blocks_left < 2000 && prebuild_task.is_none() && next_dataset.is_none() {
-            let next_epoch = epoch + 1;
-            println!("Approaching epoch change. Prebuilding dataset for epoch {next_epoch} in the background...");
-            prebuild_task =
-                Some(tokio::task::spawn_blocking(move || (next_epoch, kaspa_pow::randomz::try_new_mining_dataset(next_epoch))));
-        }
-
-        // Check if the background prebuild finished
-        if let Some(task) = &prebuild_task
-            && task.is_finished()
-        {
-            let task = prebuild_task.take().unwrap();
-            match task.await {
-                Ok((built_epoch, Some(built_dataset))) => {
-                    println!("Background dataset for epoch {built_epoch} is ready.");
-                    next_dataset = Some((built_epoch, built_dataset));
-                }
-                Ok((built_epoch, None)) => {
-                    println!("Prebuild for epoch {built_epoch} failed (low memory). Will build synchronously later.");
-                }
-                Err(e) => println!("Background dataset task failed: {e}"),
+            if blocks_left < 2000 && prebuild_task.is_none() && next_dataset.is_none() {
+                let next_epoch = epoch + 1;
+                println!("Approaching epoch change. Prebuilding dataset for epoch {next_epoch} in the background...");
+                prebuild_task =
+                    Some(tokio::task::spawn_blocking(move || (next_epoch, kaspa_pow::randomz::try_new_mining_dataset(next_epoch))));
             }
-        }
 
-        if dataset.as_ref().is_none_or(|(built_for, _)| *built_for != epoch) {
-            // Try to swap in the prebuilt one first
-            if let Some((built_epoch, built_dataset)) = next_dataset.take() {
-                if built_epoch == epoch {
-                    println!("Swapped in prebuilt dataset for epoch {epoch} instantly.");
-                    dataset = Some((built_epoch, built_dataset));
-                    continue;
+            // Check if the background prebuild finished
+            if let Some(task) = &prebuild_task
+                && task.is_finished()
+            {
+                let task = prebuild_task.take().unwrap();
+                match task.await {
+                    Ok((built_epoch, Some(built_dataset))) => {
+                        println!("Background dataset for epoch {built_epoch} is ready.");
+                        next_dataset = Some((built_epoch, built_dataset));
+                    }
+                    Ok((built_epoch, None)) => {
+                        println!("Prebuild for epoch {built_epoch} failed (low memory). Will build synchronously later.");
+                    }
+                    Err(e) => println!("Background dataset task failed: {e}"),
+                }
+            }
+
+            if dataset.as_ref().is_none_or(|(built_for, _)| *built_for != epoch) {
+                // Try to swap in the prebuilt one first
+                if let Some((built_epoch, built_dataset)) = next_dataset.take() {
+                    if built_epoch == epoch {
+                        println!("Swapped in prebuilt dataset for epoch {epoch} instantly.");
+                        dataset = Some((built_epoch, built_dataset));
+                        continue;
+                    } else {
+                        println!("Prebuilt epoch {built_epoch} did not match current epoch {epoch}. Discarding.");
+                    }
+                }
+
+                // Fallback: build it synchronously
+                let first = dataset.is_none();
+                drop(dataset.take()); // free the old 2 GB first
+                if first {
+                    println!("Preparing the RandomZ dataset for mining key {epoch} (about 2 GB, takes about half a minute)...");
                 } else {
-                    println!("Prebuilt epoch {built_epoch} did not match current epoch {epoch}. Discarding.");
+                    println!("Mining key changed to {epoch} at DAA {}: rebuilding the dataset (about half a minute)...", header.daa_score);
                 }
+                let t0 = Instant::now();
+                let built = tokio::task::block_in_place(|| kaspa_pow::randomz::new_mining_dataset(epoch));
+                println!("Dataset ready in {:.0}s", t0.elapsed().as_secs_f64());
+                dataset = Some((epoch, built));
+                continue; // the template is old by now
             }
-
-            // Fallback: build it synchronously
-            let first = dataset.is_none();
-            drop(dataset.take()); // free the old 2 GB first
-            if first {
-                println!("Preparing the RandomZ dataset for mining key {epoch} (about 2 GB, takes about half a minute)...");
-            } else {
-                println!("Mining key changed to {epoch} at DAA {}: rebuilding the dataset (about half a minute)...", header.daa_score);
-            }
-            let t0 = Instant::now();
-            let built = tokio::task::block_in_place(|| kaspa_pow::randomz::new_mining_dataset(epoch));
-            println!("Dataset ready in {:.0}s", t0.elapsed().as_secs_f64());
-            dataset = Some((epoch, built));
-            continue; // the template is old by now
         }
-        let mining_dataset = dataset.as_ref().map(|(_, d)| d.clone()).expect("built above");
+        let mining_dataset: Option<kaspa_pow::randomz::SharedDataset> =
+            if light_mode { None } else { Some(dataset.as_ref().map(|(_, d)| d.clone()).expect("built above")) };
 
         // Search nonces on all threads until one wins or the template gets old.
         let found = Arc::new(AtomicBool::new(false));
@@ -647,23 +720,43 @@ async fn main() {
                 let (state, found, winner, hashes, dataset) =
                     (state.clone(), found.clone(), winner.clone(), hashes.clone(), mining_dataset.clone());
                 std::thread::spawn(move || {
-                    let hasher = kaspa_pow::randomz::FastHasher::new(&dataset);
-                    let target = state.target();
-                    let mut nonce = base.wrapping_add(t);
-                    let mut n = 0u64;
-                    while !found.load(Ordering::Relaxed) && Instant::now() < deadline {
-                        for _ in 0..16 {
-                            if hasher.pow_value(&state.pow_input(nonce)) <= target {
-                                if !found.swap(true, Ordering::Relaxed) {
-                                    winner.store(nonce, Ordering::Relaxed);
+                    if light_mode {
+                        // Light mode: hash with the shared 256 MiB cache, so no ~2 GiB dataset is ever allocated.
+                        let target = state.target();
+                        let mut nonce = base.wrapping_add(t);
+                        let mut n = 0u64;
+                        while !found.load(Ordering::Relaxed) && Instant::now() < deadline {
+                            for _ in 0..16 {
+                                if kaspa_pow::randomz::pow_value_light(epoch, &state.pow_input(nonce)) <= target {
+                                    if !found.swap(true, Ordering::Relaxed) {
+                                        winner.store(nonce, Ordering::Relaxed);
+                                    }
+                                    break;
                                 }
-                                break;
+                                nonce = nonce.wrapping_add(threads as u64);
+                                n += 1;
                             }
-                            nonce = nonce.wrapping_add(threads as u64);
-                            n += 1;
                         }
+                        hashes.fetch_add(n, Ordering::Relaxed);
+                    } else {
+                        let hasher = kaspa_pow::randomz::FastHasher::new(dataset.as_ref().expect("fast dataset built above"));
+                        let target = state.target();
+                        let mut nonce = base.wrapping_add(t);
+                        let mut n = 0u64;
+                        while !found.load(Ordering::Relaxed) && Instant::now() < deadline {
+                            for _ in 0..16 {
+                                if hasher.pow_value(&state.pow_input(nonce)) <= target {
+                                    if !found.swap(true, Ordering::Relaxed) {
+                                        winner.store(nonce, Ordering::Relaxed);
+                                    }
+                                    break;
+                                }
+                                nonce = nonce.wrapping_add(threads as u64);
+                                n += 1;
+                            }
+                        }
+                        hashes.fetch_add(n, Ordering::Relaxed);
                     }
-                    hashes.fetch_add(n, Ordering::Relaxed);
                 })
             })
             .collect();
@@ -674,7 +767,9 @@ async fn main() {
         if found.load(Ordering::Relaxed) {
             let mut block = template.block;
             block.header.nonce = winner.load(Ordering::Relaxed);
-            let daa = block.header.daa_score;
+            let daa_score = block.header.daa_score;
+            // For a linear (no-P2P) chain the blue score is the block height; keep both for the emission-curve log.
+            let block_height = block.header.blue_score;
             // Zethora supply ledger after this block, from the coinbase payload (ZTH-SPEC-006 §7.2):
             // bytes 16 pool, 24 burned, 32 issued, 40 visible supply, 48 private pool
             let cb = &block.transactions[0].payload;
@@ -683,17 +778,28 @@ async fn main() {
             let (issued, visible, private) = (read(32), read(40), read(48));
             // This block's subsidy for its DAA score (ZTH-SPEC-001 §5), as the node computed it and sealed it in the
             // coinbase payload (bytes 8..16); seam review P5-7: no separate (capped) walk in the miner.
-            let reward = read(8);
+            //
+            // Read the sealed subsidy defensively: a coinbase payload too short to carry the 8-byte subsidy field
+            // would otherwise look like an underflow and could silently end the mining loop. saturating_sub keeps
+            // the bounds check from wrapping; a missing field is clamped to 0 and reported instead of being fatal.
+            let reward = if cb.len().saturating_sub(8) < 8 {
+                eprintln!("Reward calculation underflow at DAA score {daa_score}, clamping reward to 0.");
+                0
+            } else {
+                read(8)
+            };
             let balanced = visible as u128 + pool_balance as u128 + total_burned as u128 + private as u128 == issued as u128;
             // Private coin list fingerprint (bytes 56..88): first 4 bytes are enough to see it change
             let coin_list: String = cb.get(56..60).map(|b| b.iter().map(|x| format!("{x:02x}")).collect()).unwrap_or_default();
+            // Debug the emission curve: show the score/height of this block and the subsidy the node sealed for it.
+            println!("Submitting block at DAA score {daa_score}, block height {block_height}, reward {reward} zets");
             match client.submit_block(block, false).await {
                 Ok(r) if r.report.is_success() => {
                     mined += 1;
                     total_reward += reward;
                     let rate = hashes.load(Ordering::Relaxed) as f64 / start.elapsed().as_secs_f64();
                     println!(
-                        "Block #{mined} | DAA {daa} | reward ~{:.10} | mined ~{:.4} ZTHR | pool {} zets | burned {} zets | {:.0} H/s",
+                        "Block #{mined} | DAA {daa_score} | reward ~{:.10} | mined ~{:.4} ZTHR | pool {} zets | burned {} zets | {:.0} H/s",
                         reward as f64 / ZETS_PER_ZTHR,
                         total_reward as f64 / ZETS_PER_ZTHR,
                         pool_balance,
