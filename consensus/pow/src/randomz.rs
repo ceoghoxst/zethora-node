@@ -88,8 +88,23 @@ fn flags() -> RandomXFlag {
     RandomXFlag::get_recommended_flags()
 }
 
-fn new_cache(epoch: u64) -> SharedCache {
-    SharedCache(RandomXCache::new(flags(), &key_for_epoch(epoch)).expect("RandomX cache init failed"))
+/// Light mode (cache-only hashing, no dataset) runs RandomX in the interpreter instead of the JIT. Both produce
+/// identical hashes, but the JIT generates and executes machine code, and a failure there is a native crash with no
+/// Rust panic message (invisible to the miner's panic handling). Fast mode (dataset mining) keeps the JIT for speed.
+fn light_flags() -> RandomXFlag {
+    flags() & !RandomXFlag::FLAG_JIT
+}
+
+fn new_cache(epoch: u64) -> Result<SharedCache, String> {
+    RandomXCache::new(flags(), &key_for_epoch(epoch)).map(SharedCache).map_err(|e| format!("RandomX cache init failed for epoch {epoch}: {e:?}"))
+}
+
+/// A light-mode cache (no JIT), so cache initialization does not JIT-compile the superscalar hash or the dataset init
+/// code. Returns an error instead of panicking when RandomX cannot allocate or initialize the cache.
+fn new_light_cache(epoch: u64) -> Result<SharedCache, String> {
+    RandomXCache::new(light_flags(), &key_for_epoch(epoch))
+        .map(SharedCache)
+        .map_err(|e| format!("RandomX light cache init failed for epoch {epoch}: {e:?}"))
 }
 
 /// The kept light-mode setups, by epoch, with when each was last used. Each slot is filled once (by whichever thread
@@ -101,9 +116,9 @@ struct LightCaches {
 
 static LIGHT_CACHES: Mutex<LightCaches> = Mutex::new(LightCaches { slots: BTreeMap::new(), clock: 0 });
 
-fn light_cache(epoch: u64) -> RandomXCache {
+fn light_cache(epoch: u64) -> Result<RandomXCache, String> {
     let slot = {
-        let mut caches = LIGHT_CACHES.lock().unwrap();
+        let mut caches = LIGHT_CACHES.lock().map_err(|_| "RandomX light cache lock poisoned".to_string())?;
         caches.clock += 1;
         let now = caches.clock;
         if !caches.slots.contains_key(&epoch) && caches.slots.len() >= KEPT_LIGHT_CACHES {
@@ -115,7 +130,13 @@ fn light_cache(epoch: u64) -> RandomXCache {
         entry.1 = now;
         entry.0.clone()
     };
-    slot.get_or_init(|| new_cache(epoch)).0.clone()
+    if let Some(cached) = slot.get() {
+        Ok(cached.0.clone())
+    } else {
+        let new_cache = new_light_cache(epoch)?;
+        let _ = slot.set(new_cache);
+        Ok(slot.get().unwrap().0.clone())
+    }
 }
 
 /// Seam review P4-8: how close to the end of an epoch (in DAA scores) the next epoch's light setup is prepared.
@@ -137,7 +158,7 @@ pub fn prepare_next_epoch(daa_score: u64) -> Option<u64> {
     std::thread::Builder::new()
         .name(format!("randomz-prepare-{next}"))
         .spawn(move || {
-            light_cache(next);
+            let _ = light_cache(next);
         })
         .ok()?;
     Some(next)
@@ -213,27 +234,37 @@ fn to_value(hash: Vec<u8>) -> Uint256 {
 
 /// Verifies with light mode, using the key of `epoch`. Used by every node for every block.
 pub fn pow_value_light(epoch: u64, input: &[u8]) -> Uint256 {
+    try_pow_value_light(epoch, input).unwrap_or_else(|e| panic!("RandomX light hash failed: {e}"))
+}
+
+/// Fallible light-mode PoW value, with the same memo as `pow_value_light`. The miner's worker threads call this so a
+/// RandomX cache/VM/hash failure ends one block's search instead of panicking (and killing the process).
+pub fn try_pow_value_light(epoch: u64, input: &[u8]) -> Result<Uint256, String> {
     if let Some(value) = memo_get(epoch, input) {
-        return value;
+        return Ok(value);
     }
-    let value = light_hash(epoch, input);
+    let value = try_light_hash(epoch, input)?;
     if let Ok(input) = input.try_into() {
         memo_put(Memo::Live, vec![(epoch, input, value)]);
     }
-    value
+    Ok(value)
 }
 
-/// One light-mode hash with this thread's VM (made for `epoch` when needed), without the memo.
-fn light_hash(epoch: u64, input: &[u8]) -> Uint256 {
+/// Fallible light-mode hash without the memo. Cache init, VM init and hashing return errors instead of panicking, and
+/// the VM (and cache) run without the JIT so a JIT failure cannot crash the process natively.
+fn try_light_hash(epoch: u64, input: &[u8]) -> Result<Uint256, String> {
     LIGHT_VM.with(|cell| {
         let mut slot = cell.borrow_mut();
         if slot.as_ref().is_none_or(|(e, _)| *e != epoch) {
             // Drop the old VM first, so its setup can be freed before a new one is made
             *slot = None;
-            let vm = RandomXVM::new(flags(), Some(light_cache(epoch)), None).expect("RandomX VM init failed");
+            let vm = RandomXVM::new(light_flags(), Some(light_cache(epoch)?), None)
+                .map_err(|e| format!("RandomX VM init failed for epoch {epoch}: {e:?}"))?;
             *slot = Some((epoch, vm));
         }
-        to_value(slot.as_ref().unwrap().1.calculate_hash(input).expect("RandomX hash failed"))
+        let (_, vm) = slot.as_ref().ok_or_else(|| "RandomX light VM is missing".to_string())?;
+        let hash = vm.calculate_hash(input).map_err(|e| format!("RandomX hash failed: {e:?}"))?;
+        Ok(to_value(hash))
     })
 }
 
@@ -266,8 +297,8 @@ pub fn precompute_light(items: &[(u64, [u8; POW_INPUT_LEN])]) -> Vec<Uint256> {
                     let g = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let Some((epoch, indexes)) = groups.get(g) else { break };
                     // Reuse a kept setup when there is one, else build a temporary one for this group only
-                    let cache = kept_light_cache(*epoch).unwrap_or_else(|| new_cache(*epoch).0);
-                    let vm = RandomXVM::new(flags(), Some(cache), None).expect("RandomX VM init failed");
+                    let cache = kept_light_cache(*epoch).unwrap_or_else(|| new_light_cache(*epoch).expect("RandomX light cache init failed").0);
+                    let vm = RandomXVM::new(light_flags(), Some(cache), None).expect("RandomX VM init failed");
                     let values: Vec<(usize, Uint256)> =
                         indexes.iter().map(|&i| (i, to_value(vm.calculate_hash(&items[i].1).expect("RandomX hash failed")))).collect();
                     computed.lock().unwrap().extend(values);
@@ -290,12 +321,12 @@ pub fn precompute_light(items: &[(u64, [u8; POW_INPUT_LEN])]) -> Vec<Uint256> {
 /// Fallible version of new_mining_dataset, used by the miner when it prebuilds
 /// the next epoch in the background (returns None if memory is too low).
 pub fn try_new_mining_dataset(epoch: u64) -> Option<SharedDataset> {
-    RandomXDataset::new(flags() | RandomXFlag::FLAG_FULL_MEM, new_cache(epoch).0, 0).ok().map(SharedDataset)
+    RandomXDataset::new(flags() | RandomXFlag::FLAG_FULL_MEM, new_cache(epoch).ok()?.0, 0).ok().map(SharedDataset)
 }
 
 pub fn new_mining_dataset(epoch: u64) -> SharedDataset {
     SharedDataset(
-        RandomXDataset::new(flags() | RandomXFlag::FLAG_FULL_MEM, new_cache(epoch).0, 0).expect("RandomX dataset init failed"),
+        RandomXDataset::new(flags() | RandomXFlag::FLAG_FULL_MEM, new_cache(epoch).expect("RandomX cache init failed").0, 0).expect("RandomX dataset init failed"),
     )
 }
 
@@ -384,9 +415,9 @@ mod tests {
             0xe0, 0xb8, 0x34, 0x00, 0x91, 0x55, 0x70, 0x7b, 0x4a, 0x4e, 0xa1, 0x61,
         ];
         // Hashed by this thread's VM (not the memo), switching keys and back
-        assert_eq!(light_hash(0, &input), Uint256::from_le_bytes(epoch0));
-        assert_eq!(light_hash(1, &input), Uint256::from_le_bytes(epoch1));
-        assert_eq!(light_hash(0, &input), Uint256::from_le_bytes(epoch0));
+        assert_eq!(try_light_hash(0, &input).unwrap(), Uint256::from_le_bytes(epoch0));
+        assert_eq!(try_light_hash(1, &input).unwrap(), Uint256::from_le_bytes(epoch1));
+        assert_eq!(try_light_hash(0, &input).unwrap(), Uint256::from_le_bytes(epoch0));
         // And through the public, remembering entry point
         assert_eq!(pow_value_light(1, &input), Uint256::from_le_bytes(epoch1));
         assert_eq!(pow_value_light(1, &input), Uint256::from_le_bytes(epoch1));
@@ -506,7 +537,7 @@ mod tests {
         let batch = precompute_light(&items);
         assert_eq!(batch.len(), items.len());
         for ((epoch, input), value) in items.iter().zip(&batch) {
-            assert_eq!(light_hash(*epoch, input), *value, "epoch {epoch}");
+            assert_eq!(try_light_hash(*epoch, input).unwrap(), *value, "epoch {epoch}");
         }
         // Remembered, and a second batch gives the same answers
         assert_eq!(memo_get(items[0].0, &items[0].1), Some(batch[0]));

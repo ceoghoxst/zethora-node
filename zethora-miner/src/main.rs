@@ -3,7 +3,8 @@
 //! Connects to a Zethora node (the local one by default; `--node <url>` points the miner at
 //! another one), asks it for a block template, searches for a valid nonce on all CPU threads
 //! with RandomZ (fast mode), and submits the block.
-//! Repeats forever. Needs about 2.5 GB of RAM. The mining key changes every 2^20 DAA
+//! Repeats forever. Needs about 2.5 GB of RAM; on a machine with less than 10 GiB the miner switches itself to light
+//! mode (256 MiB cache, no dataset) so it does not run out of memory. The mining key changes every 2^20 DAA
 //! scores (about 12 days); the miner then rebuilds its dataset (about half a minute).
 //!
 //! Usage:
@@ -47,8 +48,10 @@ const TESTNET_KEY_FILE: &str = "zethora-miner-key-testnet.txt";
 /// Get a fresh template this often, so we always build on the newest blocks.
 const TEMPLATE_REFRESH: Duration = Duration::from_millis(1000);
 const ZETS_PER_ZTHR: f64 = 10_000_000_000.0;
-/// Below 8 GiB of RAM the miner is forced into light mode: the fast-mode dataset needs about 2.5 GiB on top of the node.
-const LOW_RAM_BYTES: u64 = 8_589_934_592;
+/// Below 10 GiB of RAM the miner is forced into light mode: the fast-mode dataset needs about 2.5 GiB on top of the
+/// node. The old 8 GiB cutoff was too close to an 8 GiB Windows machine's reported total (exactly 8 GiB), so Fast Mode
+/// was still chosen there and ran out of memory at around block 51 (Access Violation 0xC0000005).
+const LOW_RAM_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 /// Below 4 physical CPU cores the miner is forced into light mode with a 2-thread default.
 const LOW_CORE_COUNT: usize = 4;
 
@@ -388,26 +391,26 @@ fn bench() {
 #[tokio::main]
 async fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
-    // Detect low-spec hardware (less than 8 GiB of RAM or fewer than 4 CPU cores) and switch to light mode with a
+    // Detect low-spec hardware (less than 10 GiB of RAM or fewer than 4 CPU cores) and switch to light mode with a
     // small thread count before the command line is finalized, so the miner does not run out of memory. An explicit
-    // --mining-threads on the command line always wins over the auto-detected default.
-    {
+    // --mining-threads on the command line always wins over the auto-detected default. `low_ram` is kept so the warning
+    // further down only fires for RAM, not for a low core count.
+    let (low_ram, forced_light_mode) = {
         let mut system = sysinfo::System::new();
         system.refresh_cpu_list(sysinfo::CpuRefreshKind::everything());
         system.refresh_memory();
         let total_ram = system.total_memory();
         let cores = system.physical_core_count().unwrap_or_else(|| system.cpus().len());
-        if total_ram < LOW_RAM_BYTES || cores < LOW_CORE_COUNT {
-            if !args.iter().any(|a| a == "--light-mode") {
-                args.push("--light-mode".to_string());
-            }
+        let low_ram = total_ram < LOW_RAM_BYTES;
+        if low_ram || cores < LOW_CORE_COUNT {
             let user_set_threads = args.iter().any(|a| a == "--mining-threads" || a.starts_with("--mining-threads="));
             if !user_set_threads {
                 args.push("--mining-threads".to_string());
                 args.push("2".to_string());
             }
         }
-    }
+        (low_ram, low_ram || cores < LOW_CORE_COUNT)
+    };
     let usage = "Usage:\n  zethora-miner             devnet (node: --devnet --enable-unsynced-mining)\n  zethora-miner --testnet   testnet (node: --testnet --enable-unsynced-mining)\n  zethora-miner --node <grpc://host:port>   connect to this node instead of the local one (works in every mode)\n  zethora-miner --address <zethoratest:...>   mine to this address instead of the key file's\n  zethora-miner --testnet --address <zethoratest:...>   the same, on testnet\n  zethora-miner --shielded <zs...>   devnet, paying rewards to a private address\n  zethora-miner --testnet --shielded <zs...>   testnet, paying rewards to a private address\n  zethora-miner bench       RandomZ speed test (no node)\n  zethora-miner balance     devnet balance of your transparent mining address (node needs --utxoindex)\n  zethora-miner --testnet balance   testnet balance (node needs --testnet --utxoindex)\n\n--address takes a transparent address with the prefix of the network being mined\n(zethoratest: with --testnet, zethoradev: on devnet); a wrong prefix or a damaged address is refused.\nWithout --address the reward goes to the address held in zethora-miner-key-testnet.txt (testnet) or\nzethora-miner-key.txt (devnet). --address cannot be combined with --shielded.\n\n--node points the miner at another node (for example a public one): --node grpc://95.216.185.137:26210\n(or --node=grpc://95.216.185.137:26210). Without it the miner uses grpc://127.0.0.1:26610 (devnet)\nor grpc://127.0.0.1:26210 (testnet).";
     #[derive(PartialEq)]
     enum Mode {
@@ -421,7 +424,8 @@ async fn main() {
     let mut shielded_arg: Option<String> = None;
     let mut address_arg: Option<String> = None;
     let mut node_arg: Option<String> = None;
-    let mut light_mode = false;
+    // Low-spec hardware detected above wins over the default; an explicit --light-mode still turns it on as before.
+    let mut light_mode = forced_light_mode;
     let mut mining_threads: Option<usize> = None;
     let mut remaining = args.iter().map(String::as_str);
     while let Some(arg) = remaining.next() {
@@ -515,6 +519,12 @@ async fn main() {
     }
     if mode == Mode::Bench {
         return tokio::task::spawn_blocking(bench).await.expect("speed test");
+    }
+    // An 8 GiB Windows machine reports exactly 8 GiB of total RAM, so Fast Mode's ~2 GiB-per-thread dataset did not fit
+    // next to the node and Windows ended the miner around block 51 (Access Violation 0xC0000005). Say why the miner
+    // switched, so the light-mode line below is not a surprise. `bench` and `balance` above do not mine, so they skip it.
+    if low_ram && mode == Mode::Mine {
+        eprintln!("Low RAM detected (<10GB). Forcing RandomX Light Mode to prevent crash.");
     }
     let network = if testnet { NetworkType::Testnet } else { NetworkType::Devnet };
     // `--node` wins over the built-in local URLs, so the miner can talk to any reachable node.
@@ -624,17 +634,21 @@ async fn main() {
         // Pillar 2: the private address now travels in the coinbase the node builds. Saying it once, next to the
         // block we actually asked for, keeps the screen honest: the node still pays the transparent address.
         if route.shielded.is_some() && !warned_shielded_route {
-            let seal = coinbase_shielded_tag(&template.block.transactions[0].payload);
-            match seal {
-                Some(tag) if tag == route.coinbase_tag => println!(
-                    "Coinbase carries the shielded address ({} bytes of miner tag). The reward is still credited to \
-                     {addr_str}.",
-                    tag.len()
-                ),
-                _ => println!(
-                    "Note: this node does not put the shielded address into the coinbase (shielded coinbase is not \
-                     implemented in consensus yet), so the reward stays with {addr_str}."
-                ),
+            if let Some(coinbase) = template.block.transactions.first() {
+                let seal = coinbase_shielded_tag(&coinbase.payload);
+                match seal {
+                    Some(tag) if tag == route.coinbase_tag => println!(
+                        "Coinbase carries the shielded address ({} bytes of miner tag). The reward is still credited to \
+                         {addr_str}.",
+                        tag.len()
+                    ),
+                    _ => println!(
+                        "Note: this node does not put the shielded address into the coinbase (shielded coinbase is not \
+                         implemented in consensus yet), so the reward stays with {addr_str}."
+                    ),
+                }
+            } else {
+                println!("Malformed template (no transactions), skipping shielded-coinbase check.");
             }
             warned_shielded_route = true;
         }
@@ -644,7 +658,14 @@ async fn main() {
             println!("Warning: the node says it is not synced; blocks mined now may build on an old chain.");
             warned_unsynced = Some(Instant::now());
         }
-        let header: Header = (&template.block.header).try_into().expect("bad template header");
+        let header: Header = match (&template.block.header).try_into() {
+            Ok(header) => header,
+            Err(_) => {
+                println!("Malformed template (bad header), skipping.");
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                continue;
+            }
+        };
         let state = Arc::new(kaspa_pow::State::new(&header));
         let epoch = state.epoch();
 
@@ -726,8 +747,17 @@ async fn main() {
                         let mut nonce = base.wrapping_add(t);
                         let mut n = 0u64;
                         while !found.load(Ordering::Relaxed) && Instant::now() < deadline {
+                            let mut failed = false;
                             for _ in 0..16 {
-                                if kaspa_pow::randomz::pow_value_light(epoch, &state.pow_input(nonce)) <= target {
+                                let pow = match kaspa_pow::randomz::try_pow_value_light(epoch, &state.pow_input(nonce)) {
+                                    Ok(pow) => pow,
+                                    Err(e) => {
+                                        println!("Light-mode hash failed ({e}); stopping this block.");
+                                        failed = true;
+                                        break;
+                                    }
+                                };
+                                if pow <= target {
                                     if !found.swap(true, Ordering::Relaxed) {
                                         winner.store(nonce, Ordering::Relaxed);
                                     }
@@ -735,6 +765,9 @@ async fn main() {
                                 }
                                 nonce = nonce.wrapping_add(threads as u64);
                                 n += 1;
+                            }
+                            if failed {
+                                break;
                             }
                         }
                         hashes.fetch_add(n, Ordering::Relaxed);
@@ -761,7 +794,9 @@ async fn main() {
             })
             .collect();
         for w in workers {
-            w.join().unwrap();
+            if w.join().is_err() {
+                println!("Worker thread crashed, continuing.");
+            }
         }
 
         if found.load(Ordering::Relaxed) {
@@ -772,7 +807,13 @@ async fn main() {
             let block_height = block.header.blue_score;
             // Zethora supply ledger after this block, from the coinbase payload (ZTH-SPEC-006 §7.2):
             // bytes 16 pool, 24 burned, 32 issued, 40 visible supply, 48 private pool
-            let cb = &block.transactions[0].payload;
+            let cb = match block.transactions.first() {
+                Some(tx) => &tx.payload,
+                None => {
+                    println!("Malformed template (no transactions), skipping.");
+                    continue;
+                }
+            };
             let read = |i: usize| cb.get(i..i + 8).map(|b| u64::from_le_bytes(b.try_into().unwrap())).unwrap_or(0);
             let (pool_balance, total_burned) = (read(16), read(24));
             let (issued, visible, private) = (read(32), read(40), read(48));
