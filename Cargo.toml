@@ -82,6 +82,7 @@ members = [
     "metrics/core",
     "metrics/perf_monitor",
     "utils/alloc",
+    "protocol/mining",
 ]
 
 [workspace.package]
