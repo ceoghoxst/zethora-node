@@ -272,8 +272,8 @@ pub fn validate_block_tag(tag: &str) -> Result<(), String> {
             decode_hex(numbered).map(|_| ())?;
             Ok(())
         }
-        other => Err(format!(
-            "unknown block tag {other:?}: expected latest, earliest, pending, safe, finalized, or a hex block number"
-        )),
+        other => {
+            Err(format!("unknown block tag {other:?}: expected latest, earliest, pending, safe, finalized, or a hex block number"))
+        }
     }
 }

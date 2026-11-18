@@ -16,8 +16,8 @@ use zethora_evm::BLOCK_GAS_LIMIT;
 
 use crate::chain::{L2BlockHeader, L2Error, L2Rpc, TransactionReceipt};
 use crate::types::{
-    INTERNAL_ERROR, JSONRPC_VERSION, RpcError, RpcRequest, RpcResponse, address, data, data_bytes, decode_hex,
-    parse_address, quantity, quantity_u64, validate_block_tag,
+    INTERNAL_ERROR, JSONRPC_VERSION, RpcError, RpcRequest, RpcResponse, address, data, data_bytes, decode_hex, parse_address,
+    quantity, quantity_u64, validate_block_tag,
 };
 
 /// The axum handler mounted at [`crate::RPC_PATH`].
@@ -48,10 +48,7 @@ pub fn dispatch(rpc: &L2Rpc, payload: &[u8]) -> Value {
     match payload {
         Value::Array(batch) => {
             if batch.is_empty() {
-                return to_json(RpcResponse::failure(
-                    Value::Null,
-                    RpcError::invalid_request("an empty batch contains no requests"),
-                ));
+                return to_json(RpcResponse::failure(Value::Null, RpcError::invalid_request("an empty batch contains no requests")));
             }
             Value::Array(batch.into_iter().map(|request| to_json(answer(rpc, request))).collect())
         }
@@ -125,6 +122,16 @@ fn call(rpc: &L2Rpc, request: &RpcRequest) -> Result<Value, RpcError> {
             let balance = rpc.with_chain(|chain| chain.balance(address)).map_err(RpcError::internal)?;
             Ok(Value::String(quantity(balance)))
         }
+        "eth_getTransactionCount" => {
+            let params = Params::new(request)?;
+            let address = params.address(0)?;
+            // Validated but not honoured, exactly like `eth_getBalance`: only
+            // current state exists here, so a pending count and a latest count are
+            // the same number.
+            params.block_tag(1)?;
+            let nonce = rpc.with_chain(|chain| chain.nonce(address)).map_err(RpcError::internal)?;
+            Ok(Value::String(quantity_u64(nonce)))
+        }
         "eth_sendRawTransaction" => {
             let params = Params::new(request)?;
             let raw = params.data(0)?;
@@ -140,9 +147,7 @@ fn call(rpc: &L2Rpc, request: &RpcRequest) -> Result<Value, RpcError> {
         "eth_getTransactionReceipt" => {
             let params = Params::new(request)?;
             let hash = params.hash(0)?;
-            let receipt = rpc
-                .with_chain(|chain| chain.receipt(hash).cloned())
-                .map_err(RpcError::internal)?;
+            let receipt = rpc.with_chain(|chain| chain.receipt(hash).cloned()).map_err(RpcError::internal)?;
             // `null`, not an error, for a transaction this node does not know: that
             // is the JSON-RPC answer for "not found", and a wallet polls until the
             // receipt appears.
@@ -207,10 +212,8 @@ fn resolve_block(rpc: &L2Rpc, tag: Option<&str>) -> Result<u64, RpcError> {
     match tag {
         None | Some("latest") | Some("pending") | Some("safe") | Some("finalized") => Ok(head),
         Some("earliest") => Ok(0),
-        Some(numbered) if numbered.starts_with("0x") || numbered.starts_with("0X") => {
-            u64::from_str_radix(&numbered[2..], 16)
-                .map_err(|_| RpcError::invalid_params(format!("block number {numbered:?} is not a hex number")))
-        }
+        Some(numbered) if numbered.starts_with("0x") || numbered.starts_with("0X") => u64::from_str_radix(&numbered[2..], 16)
+            .map_err(|_| RpcError::invalid_params(format!("block number {numbered:?} is not a hex number"))),
         Some(other) => Err(RpcError::invalid_params(format!(
             "unknown block tag {other:?}: expected latest, earliest, pending, safe, finalized, or a hex block number"
         ))),
@@ -225,8 +228,7 @@ fn resolve_block(rpc: &L2Rpc, tag: Option<&str>) -> Result<u64, RpcError> {
 /// honoured: this node remembers only the transaction hashes, not the transactions
 /// themselves, so hashes are returned in both cases.
 fn block_object(header: &L2BlockHeader, _full_transactions: bool) -> Value {
-    let transactions: Vec<Value> =
-        header.transactions.iter().map(|hash| Value::String(data(*hash))).collect();
+    let transactions: Vec<Value> = header.transactions.iter().map(|hash| Value::String(data(*hash))).collect();
     serde_json::json!({
         "number": quantity_u64(header.number),
         "hash": data(header.hash),
@@ -237,7 +239,7 @@ fn block_object(header: &L2BlockHeader, _full_transactions: bool) -> Value {
         "transactionsRoot": data(B256::ZERO),
         "stateRoot": data(header.state_root),
         "receiptsRoot": data(B256::ZERO),
-        "miner": address(Address::ZERO),
+        "miner": address(header.beneficiary),
         "difficulty": "0x0",
         "totalDifficulty": "0x0",
         "extraData": "0x",
@@ -319,19 +321,14 @@ impl<'a> Params<'a> {
 
     /// The parameter at `index`, which must be present.
     fn value(&self, index: usize) -> Result<&'a Value, RpcError> {
-        self.values
-            .get(index)
-            .ok_or_else(|| RpcError::invalid_params(format!("{} requires parameter {index}", self.method)))
+        self.values.get(index).ok_or_else(|| RpcError::invalid_params(format!("{} requires parameter {index}", self.method)))
     }
 
     /// The parameter at `index`, which must be a string.
     fn string(&self, index: usize) -> Result<&'a str, RpcError> {
         match self.value(index)? {
             Value::String(value) => Ok(value.as_str()),
-            other => Err(RpcError::invalid_params(format!(
-                "parameter {index} of {} must be a string, got {other}",
-                self.method
-            ))),
+            other => Err(RpcError::invalid_params(format!("parameter {index} of {} must be a string, got {other}", self.method))),
         }
     }
 
@@ -353,10 +350,9 @@ impl<'a> Params<'a> {
         match self.values.get(index) {
             None | Some(Value::Null) => Ok(None),
             Some(Value::String(value)) => Ok(Some(value.as_str())),
-            Some(other) => Err(RpcError::invalid_params(format!(
-                "parameter {index} of {} must be a string, got {other}",
-                self.method
-            ))),
+            Some(other) => {
+                Err(RpcError::invalid_params(format!("parameter {index} of {} must be a string, got {other}", self.method)))
+            }
         }
     }
 
@@ -365,10 +361,9 @@ impl<'a> Params<'a> {
         match self.values.get(index) {
             None | Some(Value::Null) => Ok(false),
             Some(Value::Bool(value)) => Ok(*value),
-            Some(other) => Err(RpcError::invalid_params(format!(
-                "parameter {index} of {} must be a boolean, got {other}",
-                self.method
-            ))),
+            Some(other) => {
+                Err(RpcError::invalid_params(format!("parameter {index} of {} must be a boolean, got {other}", self.method)))
+            }
         }
     }
 

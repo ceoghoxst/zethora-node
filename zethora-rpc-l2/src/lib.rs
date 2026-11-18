@@ -24,6 +24,7 @@
 //! | `eth_chainId` | [`L2_CHAIN_ID`], i.e. `0xa28` |
 //! | `eth_blockNumber` | the number of the newest sealed block |
 //! | `eth_getBalance` | an account's balance, in wei |
+//! | `eth_getTransactionCount` | an account's next nonce, which revm enforces |
 //! | `eth_sendRawTransaction` | the hash of a transaction that is already in a block |
 //! | `eth_getTransactionReceipt` | the receipt of an accepted transaction |
 //! | `eth_getBlockByNumber` | a sealed block header, from bounded history |
@@ -67,13 +68,36 @@
 //! Anything not listed above answers with JSON-RPC error `-32601`, which is the
 //! correct answer for a method this node does not implement, rather than a
 //! plausible-looking lie.
+//!
+//! # Where the fees go
+//!
+//! [`MINER_TREASURY_ADDRESS_ENV`] (`MINER_TREASURY_ADDRESS`) names the account
+//! that receives the treasury slice of every gas fee — normally the `ZefTreasury`
+//! contract that redistributes it. Set it to a 20-byte EVM address before starting
+//! the node:
+//!
+//! ```text
+//! MINER_TREASURY_ADDRESS=0x1111111111111111111111111111111111111111 zethora-rpc-l2
+//! ```
+//!
+//! Left unset, the node behaves as it always has: the slice that
+//! [`zethora_evm::MINER_TREASURY_FEE_BPS`] reserves is routed to the zero address,
+//! i.e. burned, and no treasury is paid. A value that is not an address — or that
+//! is the zero address, which would burn the revenue while looking configured — is
+//! a startup error rather than a warning, because a node that cannot pay its
+//! treasury is not the node the operator asked for.
+//!
+//! Parsing happens once, at construction: see [`L2ChainConfig`] and
+//! [`L2Chain::with_config`].
 
 mod chain;
+mod config;
 mod persist;
 mod rpc;
 mod types;
 
 pub use chain::{L2Chain, L2Error, L2Rpc, SubmittedTransaction};
+pub use config::{L2ChainConfig, MINER_TREASURY_ADDRESS_ENV};
 pub use rpc::{dispatch, handle};
 pub use types::{RpcError, RpcRequest, RpcResponse};
 

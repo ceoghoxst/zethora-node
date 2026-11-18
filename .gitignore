@@ -1,56 +1,103 @@
-target
-web-root
-**/.idea/
-/rust-toolchain
-/.vscode/
-.zed
-**/db-*
-/testing/integration/testdata/dags_for_json_tests/goref-mainnet
-/testing/integration/testdata/dags_for_json_tests/goref-1.6M-tx-10K-blocks
-analyzer-target
-.DS_Store
-*.code-workspace
-/setup
-testing/integration/perflogs*
-Servers.toml
-release
-package-sizes.js
-rustbridge_*.log
-# Zethora working files - not part of the source tree
-*.patch
-apply-*.ps1
-CLAUDE.md.bak
-zethora-miner-key.txt
-zethora_*_genesis_values.txt
-consensus/core/zethora_*_genesis_values.txt
-ZETHORA-WINDOWS.txt
-# Overnight test logs
-overnight-test-*.log
-# Backup files from editing
-*.bak
-# Genesis scratch file
-consensus/core/zethora_genesis_values.txt
-
-# Script backup files
-*.bak*
-
-# Local log files
-*.log
-zethora-miner-key-testnet.txt
-bin/
-Zethora-Setup-*.exe
-*.log.err
-error.txt
-
-# OPSEC: Keep the brain local
+﻿# Ignore all Master Contexts and Kortana files
 Master Context.txt
+Kortana_Master_Context.txt
+*_Master_Context.txt
+
+# Ignore environment variables and secrets
+.env
+*.key
+*key.txt
+
+# Ignore test outputs and logs
+*.log
+relayer_test_output.txt
+
+# Standard Rust ignores
+/target
+
+# =====================================================================
+# KORTANA/ZETHORA SECURITY - ADDED 2026-11-17
+# Never commit proprietary, secret, or binary files
+# =====================================================================
+
+# Master Contexts (proprietary architecture)
+Master Context*.txt
 Master Context*.bak
-MasterContext_DIAGNOSTIC.txt
+Master_Context*.txt
+Master_Context*.bak
+Kortana_Master_Context.txt
+kortana_ui_inventory.txt
 
-# Encrypted backup vault (Section 489)
-Vault/
+# Internal session state
+SESSION_STATE.md
 
-# Compiled binaries
-*.tar.gz
-*.zip
+# Wallets and keys (PRIVATE KEY MATERIAL)
 wallet_*.txt
+*wallet*.txt
+*zethora-miner-key*.txt
+*miner-key*.txt
+*.key
+*.pem
+*.pfx
+zethora-l2-state.json
+
+# Binaries and archives (bloat)
+*.zip
+*.tar.gz
+*.tgz
+*.7z
+*.rar
+*.tar
+
+# Rust build artifacts
+target/
+**/target/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Stray build/debug output
+build.*
+cal-out.txt
+cb-*.txt
+cd-*.txt
+l1_devnet.err
+l2_devnet.err
+
+# =====================================================================
+# KORTANA/ZETHORA SECURITY - ADDED 2026-11-17
+# Never commit proprietary, secret, or binary files
+# =====================================================================
+Master Context*.txt
+Master Context*.bak
+Master_Context*.txt
+Master_Context*.bak
+Kortana_Master_Context.txt
+kortana_ui_inventory.txt
+SESSION_STATE.md
+wallet_*.txt
+*wallet*.txt
+*zethora-miner-key*.txt
+*miner-key*.txt
+*.key
+*.pem
+*.pfx
+zethora-l2-state.json
+*.zip
+*.tar.gz
+*.tgz
+*.7z
+*.rar
+target/
+**/target/
+*.exe
+*.dll
+*.so
+*.dylib
+build.*
+cal-out.txt
+cb-*.txt
+cd-*.txt
+l1_devnet.err
+l2_devnet.err

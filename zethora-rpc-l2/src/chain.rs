@@ -22,11 +22,13 @@ use std::sync::{Arc, Mutex};
 
 use alloy_primitives::{Address, B256, TxKind, U256, keccak256};
 use revm::context::BlockEnv;
+use revm::primitives::hardfork::SpecId;
 use revm::state::AccountInfo;
 use zethora_evm::{BLOCK_GAS_LIMIT, EvmExecutor, LEGACY_TX_TYPE, decode_transaction};
 
 use crate::L2_CHAIN_ID;
-use crate::persist::{load, save, PersistedAccount, PersistedState, STATE_FILE_VERSION};
+use crate::config::L2ChainConfig;
+use crate::persist::{PersistedAccount, PersistedState, STATE_FILE_VERSION, load, save};
 use crate::types::{address as format_address, quantity};
 
 /// Why a chain refused to include a transaction.
@@ -80,6 +82,15 @@ pub struct SubmittedTransaction {
 /// waiting for a receipt from is always one of the newest.
 pub const MAX_TRACKED_BLOCKS: usize = 4096;
 
+/// The hardfork the executor executes under.
+///
+/// The same spec [`EvmExecutor::new`] selects. It is spelled out here because
+/// [`EvmExecutor::with_miner_treasury`] takes the spec explicitly, and the two
+/// constructors must not drift: a node that configured a treasury would otherwise
+/// also change hardfork, and the state root it produces would stop matching an
+/// unconfigured node's.
+const SPEC: SpecId = SpecId::PRAGUE;
+
 /// A sealed block header, as far as this node remembers it.
 ///
 /// `hash` is a commitment to the parent, the number, the timestamp and the
@@ -101,6 +112,14 @@ pub struct L2BlockHeader {
     pub gas_used: u64,
     /// The state root after the block was sealed.
     pub state_root: B256,
+    /// The account the block's producer share of the gas fees was paid to.
+    ///
+    /// This is `block.coinbase`: revm credits it with the fee that the treasury
+    /// split does not take. It is [`Address::ZERO`] on a node with no treasury
+    /// configured (there is no producer to pay, and the fee is effectively burned),
+    /// and the treasury itself once one is — see [`L2Chain::with_config`] for why a
+    /// sequencer node names that account here.
+    pub beneficiary: Address,
     /// The hashes of the block's transactions, in execution order.
     pub transactions: Vec<B256>,
 }
@@ -152,6 +171,10 @@ pub struct L2Chain {
     head: u64,
     /// Hash of the newest sealed block.
     head_hash: B256,
+    /// `block.coinbase` for every block this chain seals: the account revm credits
+    /// with the gas fee the treasury split does not take. [`Address::ZERO`] when no
+    /// treasury is configured.
+    beneficiary: Address,
     /// The headers this node still remembers, by number. Genesis is always present.
     blocks: BTreeMap<u64, L2BlockHeader>,
     /// Receipts by transaction hash, for the transactions in `blocks`.
@@ -166,16 +189,61 @@ impl Default for L2Chain {
 
 impl L2Chain {
     /// A chain with an empty database that validates transactions against
-    /// `chain_id`.
+    /// `chain_id`, and no miner treasury.
     ///
     /// The executor is re-pointed at `chain_id` here, before anything can be
     /// executed: [`L2_CHAIN_ID`] is what `eth_chainId` reports, and a transaction
     /// signed for another chain has to be refused rather than replayed.
+    ///
+    /// This is the configuration [`L2ChainConfig::new`] describes, and it keeps the
+    /// behaviour a node had before a treasury could be configured at all. A node
+    /// that has been told where its fees go is built with [`L2Chain::with_config`].
     pub fn new(chain_id: u64) -> Self {
-        let mut executor = EvmExecutor::new();
+        Self::with_config(L2ChainConfig::new(chain_id))
+    }
+
+    /// A chain built from `config`: the chain id it validates against and the
+    /// account that receives the treasury slice of every gas fee.
+    ///
+    /// The treasury is a construction-time decision rather than a setter, because a
+    /// fee stream that can be redirected after the fact is a fee stream an
+    /// unauthenticated caller could redirect: `zethora-evm` offers no
+    /// `set_miner_treasury` for exactly that reason, and this constructor is where
+    /// its one-shot form is used.
+    ///
+    /// # Why the treasury is also the block beneficiary
+    ///
+    /// `zethora-evm` moves the treasury slice *out of the block beneficiary*, which
+    /// is the account revm has just credited with the producer's share of the fee.
+    /// When the block names no beneficiary — the zero address, which is what this
+    /// node used before it had a treasury — that slice has nowhere to come from and
+    /// the executor deliberately routes nothing, so wiring a treasury without
+    /// naming a beneficiary would collect exactly zero wei.
+    ///
+    /// A sequencer node has one address to pay, and that is the treasury, so it
+    /// names it as the beneficiary too. With `basefee` at zero — this L2 has no fee
+    /// market — the whole gas price is tip, so revm credits the treasury with it
+    /// directly and the 5%/95% split has nothing left to move between two accounts
+    /// (the executor reports that case as "the producer *is* the treasury" rather
+    /// than double-counting). The split takes over again the moment a block names a
+    /// beneficiary distinct from the treasury, at which point the treasury receives
+    /// exactly `MINER_TREASURY_FEE_BPS` of the tip.
+    pub fn with_config(config: L2ChainConfig) -> Self {
+        let L2ChainConfig { chain_id, miner_treasury } = config;
+
+        // `SPEC` is the hardfork `EvmExecutor::new()` would have selected, so
+        // configuring a treasury changes where the fee goes and nothing else.
+        let mut executor = match miner_treasury {
+            Some(treasury) => EvmExecutor::with_miner_treasury(SPEC, treasury),
+            None => EvmExecutor::new(),
+        };
+        // Re-pointed at the chain this endpoint serves: the executor's own default
+        // is `zethora-evm`'s chain id, which is not the one wallets sign for here.
         executor.set_chain_id(chain_id);
+
+        let beneficiary = miner_treasury.unwrap_or(Address::ZERO);
         let timestamp = unix_timestamp();
-        executor.set_block(block_env(0, timestamp));
+        executor.set_block(block_env(0, timestamp, beneficiary));
 
         // The genesis header is the anchor every later parent hash points at. It is
         // derived from the chain id rather than from the (still empty) database, so
@@ -188,6 +256,7 @@ impl L2Chain {
             timestamp,
             gas_used: 0,
             state_root: executor.state_root(),
+            beneficiary,
             transactions: Vec::new(),
         };
         let head_hash = genesis.hash;
@@ -195,7 +264,7 @@ impl L2Chain {
         let mut blocks = BTreeMap::new();
         blocks.insert(0, genesis);
 
-        Self { executor, head: 0, head_hash, blocks, receipts: HashMap::new() }
+        Self { executor, head: 0, head_hash, beneficiary, blocks, receipts: HashMap::new() }
     }
 
     /// The chain id transactions are validated against.
@@ -274,7 +343,10 @@ impl L2Chain {
         let number = self.head.saturating_add(1);
         let parent_hash = self.head_hash;
         let timestamp = unix_timestamp();
-        self.executor.set_block(block_env(number, timestamp));
+        // The beneficiary is the account the fee split pays; the executor routes the
+        // treasury slice out of it. Both are fixed at construction, so every block
+        // this chain seals pays the same producer — see [`L2Chain::with_config`].
+        self.executor.set_block(block_env(number, timestamp, self.beneficiary));
 
         let outcome = match self.executor.execute(&transaction) {
             Ok(outcome) => outcome,
@@ -282,7 +354,7 @@ impl L2Chain {
                 // Leave the executor pointed at the head it actually has. The block
                 // that was being prepared does not exist, and no later request may
                 // observe a height this chain never reached.
-                self.executor.set_block(block_env(self.head, timestamp));
+                self.executor.set_block(block_env(self.head, timestamp, self.beneficiary));
                 return Err(L2Error::Rejected(reason));
             }
         };
@@ -302,6 +374,7 @@ impl L2Chain {
             timestamp,
             gas_used,
             state_root,
+            beneficiary: self.beneficiary,
             transactions: vec![hash],
         };
         let receipt = TransactionReceipt {
@@ -453,23 +526,25 @@ fn transaction_hash(raw: &[u8]) -> B256 {
 
 /// The block environment a transaction executes in.
 ///
-/// `beneficiary` is the zero address and `basefee` is zero: the L2 has no fee
-/// market yet, so there is no burned base fee to deduct and nobody to credit a
-/// block reward to. What is left of a gas price is pure tip, and the executor's
-/// own split still applies to it — see `zethora_evm::MINER_TREASURY_FEE_BPS`; the
-/// RPC does not configure a treasury, so that slice goes to the zero address until
-/// a node wires one in.
+/// `basefee` is zero: the L2 has no fee market, so there is no burned base fee and
+/// what is left of a gas price is pure tip. The executor splits that tip — see
+/// `zethora_evm::MINER_TREASURY_FEE_BPS` — by moving the treasury slice out of the
+/// block's `beneficiary`, which is why the beneficiary is a parameter here rather
+/// than the zero address this function used to hard-code: a block with no
+/// beneficiary gives the split nothing to take the slice from, and a configured
+/// treasury would silently receive nothing. [`L2Chain::with_config`] explains which
+/// address is named and why.
 ///
 /// `gas_limit` is the same budget `zethora-evm` enforces for a batch, so a
 /// transaction here is priced against exactly the block size the engine
 /// documents.
-fn block_env(number: u64, timestamp: u64) -> BlockEnv {
+fn block_env(number: u64, timestamp: u64, beneficiary: Address) -> BlockEnv {
     BlockEnv {
         number: U256::from(number),
         gas_limit: BLOCK_GAS_LIMIT,
         basefee: 0,
         timestamp: U256::from(timestamp),
-        beneficiary: Address::ZERO,
+        beneficiary,
         difficulty: U256::ZERO,
         prevrandao: Some(B256::ZERO),
         // The remaining fields (blob prices and the EIP-4844 excess) are zero,
@@ -484,10 +559,7 @@ fn block_env(number: u64, timestamp: u64) -> BlockEnv {
 /// clock should make `block.timestamp` wrong, not make the node stop accepting
 /// transactions.
 fn unix_timestamp() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|since_epoch| since_epoch.as_secs())
-        .unwrap_or_default()
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|since_epoch| since_epoch.as_secs()).unwrap_or_default()
 }
 
 /// The handle the HTTP layer holds: the chain behind a mutex.
@@ -507,6 +579,9 @@ impl Default for L2Rpc {
 
 impl L2Rpc {
     /// A handle to a fresh, empty chain using [`L2_CHAIN_ID`].
+    ///
+    /// No treasury is configured, so this is the configuration a test wants: it
+    /// cannot be changed by the environment a test happens to run in.
     pub fn new() -> Self {
         Self::from_chain(L2Chain::default())
     }
@@ -515,6 +590,23 @@ impl L2Rpc {
     /// `chain_id`.
     pub fn with_chain_id(chain_id: u64) -> Self {
         Self::from_chain(L2Chain::new(chain_id))
+    }
+
+    /// A handle to a chain built from `config`.
+    ///
+    /// This is how a node that has been told where its fees go is built; see
+    /// [`L2Chain::with_config`] for what the configuration decides.
+    pub fn from_config(config: L2ChainConfig) -> Self {
+        Self::from_chain(L2Chain::with_config(config))
+    }
+
+    /// A handle whose chain is configured from the process environment.
+    ///
+    /// Reads [`crate::MINER_TREASURY_ADDRESS_ENV`] and returns the error, rather
+    /// than starting with a treasury it could not read, when the value is not an
+    /// address. `main` turns that into a non-zero exit code.
+    pub fn from_env() -> Result<Self, String> {
+        Ok(Self::from_config(L2ChainConfig::from_env()?))
     }
 
     /// A handle to an already-built chain.

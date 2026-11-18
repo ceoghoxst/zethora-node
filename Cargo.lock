@@ -13653,13 +13653,22 @@ dependencies = [
 name = "zethora-miner"
 version = "2.1.0"
 dependencies = [
+ "alloy-consensus 2.5.0",
+ "alloy-eips 2.5.0",
+ "alloy-primitives",
+ "alloy-signer 2.5.0",
+ "alloy-signer-local 2.5.0",
+ "alloy-sol-types",
  "blake2b_simd",
  "kaspa-addresses",
  "kaspa-consensus-core",
  "kaspa-grpc-client",
  "kaspa-pow",
  "kaspa-rpc-core",
+ "kaspa-txscript",
+ "reqwest",
  "secp256k1 0.29.1",
+ "serde_json",
  "sysinfo 0.31.4",
  "tokio",
 ]

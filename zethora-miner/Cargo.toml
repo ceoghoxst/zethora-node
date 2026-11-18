@@ -15,3 +15,32 @@ kaspa-rpc-core.workspace = true
 secp256k1.workspace = true
 sysinfo.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+# The `relayer` binary signs and submits `ZefTreasury.oracleUpdateShares` on the
+# L2, so it needs the same transaction codec the L2 node and its tests use: the
+# bytes it produces are decoded by `zethora-evm` with exactly this format, and a
+# second, hand-rolled encoder could drift from it silently. These are the versions
+# `zethora-rpc-l2` already builds its money-path tests with, so nothing new is
+# pulled into the dependency graph.
+alloy-consensus = { version = "2.5.0", default-features = false, features = ["k256"] }
+alloy-eips = { version = "2.5.0", default-features = false }
+# Address, U256, B256, `keccak256` and the hex codec: the same crate the L2's own
+# types come from, so the identity the relayer derives is the type the node takes.
+alloy-primitives = "1"
+alloy-signer = { version = "2.5.0", default-features = false }
+# `PrivateKeySigner` only: the relayer key is handed over as 32 hex bytes, so the
+# `mnemonic` feature the wallet side enables would be dead weight here.
+alloy-signer-local = { version = "2.5.0", default-features = false }
+# The Solidity ABI of the two treasury calls. A workspace dependency because
+# `zethora-bridge` already mocks its L2 contract with it.
+alloy-sol-types = { workspace = true }
+# The L2 is spoken to over plain HTTP/JSON (`zethora-rpc-l2` listens on 8545 with
+# no TLS listener), so no TLS feature is requested and no TLS stack is linked in.
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+# The relayer recognises a coinbase output's script by its opcodes, which it spells
+# itself so that the binary does not link the whole script engine. The unit tests
+# compare those spellings and the accepted script shapes against the node's own
+# classifier, so the two cannot drift apart unnoticed.
+kaspa-txscript.workspace = true

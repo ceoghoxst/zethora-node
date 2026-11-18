@@ -8,7 +8,7 @@
 
 use std::{net::SocketAddr, path::PathBuf, process::ExitCode};
 
-use zethora_rpc_l2::{DEFAULT_RPC_PORT, L2Rpc, router};
+use zethora_rpc_l2::{DEFAULT_RPC_PORT, L2ChainConfig, L2Rpc, MINER_TREASURY_ADDRESS_ENV, router};
 
 /// The file the account state is dumped to and restored from.
 ///
@@ -21,10 +21,22 @@ const STATE_FILE: &str = "zethora-l2-state.json";
 async fn main() -> ExitCode {
     let state_path = PathBuf::from(STATE_FILE);
 
+    // Where the treasury slice of every gas fee goes: read once, before the chain
+    // exists, because the executor's treasury is a construction-time decision and a
+    // fee stream must not be redirectable later. A value that is not an address
+    // fails the start instead of quietly burning the revenue it was meant to pay.
+    let config = match L2ChainConfig::from_env() {
+        Ok(config) => config,
+        Err(err) => {
+            eprintln!("zethora-rpc-l2: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
     // Restore the balances and nonces a previous run left behind, so a wallet that
     // funded itself yesterday still holds its balance today. A missing file is the
     // ordinary first start and restores nothing.
-    let rpc = L2Rpc::new();
+    let rpc = L2Rpc::from_config(config.clone());
     match rpc.restore_from(&state_path) {
         Ok(restored) => {
             if restored != 0 {
@@ -58,6 +70,10 @@ async fn main() -> ExitCode {
     println!("zethora-rpc-l2: JSON-RPC listening on http://{address}");
     println!("  chain id : {}", zethora_rpc_l2::L2_CHAIN_ID);
     println!("  state    : {}", state_path.display());
+    match config.miner_treasury {
+        Some(treasury) => println!("  treasury : {treasury:#x}"),
+        None => println!("  treasury : none ({MINER_TREASURY_ADDRESS_ENV} is unset, so the fee slice is not paid to an account)"),
+    }
 
     // Serve until the process is told to stop, then fall through to the shutdown
     // dump. `with_graceful_shutdown` is what guarantees the dump below runs: the

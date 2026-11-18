@@ -104,13 +104,17 @@ impl PersistedAccount {
     /// both read as one wei; anything wider than a `U256` is refused instead of
     /// being truncated into a different amount.
     pub fn balance(&self) -> Result<U256, String> {
-        let raw = decode_hex(&self.balance).map_err(|reason| format!("account {}: balance: {reason}", self.address))?;
+        // A balance is an integer, and `crate::types::quantity` writes it the way
+        // JSON-RPC wants it: with the leading zero nibble dropped, so one ether is
+        // `0xde0b6b3a7640000` — fifteen digits, an odd number. `decode_hex` refuses
+        // odd digit counts on purpose, because half a byte of *data* is a
+        // guess, but here the missing nibble is only a leading zero. Putting it back
+        // restores the value the writer meant instead of making `decode_hex` guess.
+        let digits = self.balance.strip_prefix("0x").or_else(|| self.balance.strip_prefix("0X")).unwrap_or(&self.balance);
+        let padded = if digits.len() % 2 == 1 { format!("0{digits}") } else { digits.to_owned() };
+        let raw = decode_hex(&padded).map_err(|reason| format!("account {}: balance: {reason}", self.address))?;
         if raw.len() > U256_BYTES {
-            return Err(format!(
-                "account {}: balance is {} bytes, a U256 holds at most {U256_BYTES}",
-                self.address,
-                raw.len()
-            ));
+            return Err(format!("account {}: balance is {} bytes, a U256 holds at most {U256_BYTES}", self.address, raw.len()));
         }
         let mut padded = [0u8; U256_BYTES];
         // `raw` fits in `padded` because the width was checked above.
@@ -150,8 +154,7 @@ pub fn load(path: &Path) -> Result<Option<PersistedState>, PersistError> {
 
 /// Writes `state` to `path`, atomically.
 pub fn save(path: &Path, state: &PersistedState) -> Result<(), PersistError> {
-    let encoded =
-        serde_json::to_vec_pretty(state).map_err(|source| PersistError::Format { path: path.to_path_buf(), source })?;
+    let encoded = serde_json::to_vec_pretty(state).map_err(|source| PersistError::Format { path: path.to_path_buf(), source })?;
 
     // A sibling path, so the rename below stays inside one directory and cannot
     // cross a filesystem boundary (where `rename` is not atomic and may not even
@@ -183,6 +186,20 @@ mod tests {
         assert_eq!(restored, state);
         assert_eq!(restored.accounts[0].balance().expect("balance parses"), U256::from(1_000_000_000_000_000_000u64));
         assert_eq!(restored.accounts[0].nonce, 7);
+    }
+
+    #[test]
+    fn a_quantity_with_an_odd_number_of_digits_is_the_integer_it_spells() {
+        // The exact shape `crate::types::quantity` writes for one ether, chosen
+        // because fifteen digits is what an odd nibble count looks like. A node
+        // that saved this balance must be able to load it back, or the fees it
+        // collected disappear on the next restart.
+        let account = PersistedAccount {
+            address: crate::types::address(Address::ZERO),
+            balance: crate::types::quantity(U256::from(1_000_000_000_000_000_000u64)),
+            nonce: 0,
+        };
+        assert_eq!(account.balance(), Ok(U256::from(1_000_000_000_000_000_000u64)));
     }
 
     #[test]
