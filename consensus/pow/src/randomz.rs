@@ -401,6 +401,25 @@ impl FastHasher {
     }
 }
 
+/// A light-mode hasher for one mining thread on low-memory machines.
+///
+/// It uses only the 256 MiB cache (no dataset), the same construction `pow_value_light` uses to verify a block. That
+/// keeps RAM use small (about 256 MiB instead of the fast mode's ~2 GiB) at the cost of hashing speed. Meant for old
+/// PCs and for miners that cannot spare the memory; fast mode stays the default. Create it on the thread that uses it.
+pub struct LightHasher(RandomXVM);
+
+impl LightHasher {
+    pub fn new(epoch: u64) -> Self {
+        let vm = RandomXVM::new(flags(), Some(new_cache(epoch).0), None).expect("RandomX light VM init failed");
+        Self(vm)
+    }
+
+    #[inline]
+    pub fn pow_value(&self, input: &[u8]) -> Uint256 {
+        to_value(self.0.calculate_hash(input).expect("RandomX hash failed"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

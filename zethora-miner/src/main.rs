@@ -6,9 +6,13 @@
 //! scores (about 12 days); the miner then rebuilds its dataset (about half a minute).
 //!
 //! Usage:
-//!   zethora-miner             devnet (node must run with: --devnet --enable-unsynced-mining)
-//!   zethora-miner --testnet   testnet (node must run with: --testnet --enable-unsynced-mining)
-//!   zethora-miner bench       RandomZ speed test; no node needed, stop the real miner first
+//!   zethora-miner                        devnet (node must run with: --devnet --enable-unsynced-mining)
+//!   zethora-miner --testnet              testnet (node must run with: --testnet --enable-unsynced-mining)
+//!   zethora-miner --node grpc://host:port  connect to a remote node instead of localhost
+//!   zethora-miner --light                Light Mode: 2 threads, 256 MiB cache only (for older PCs)
+//!   zethora-miner bench                  RandomZ speed test; no node needed, stop the real miner first
+//!
+//! Fast Mode is the default: all CPU threads over a ~2 GiB dataset (highest hash rate).
 //!
 //! Key files: zethora-miner-key.txt (devnet) and zethora-miner-key-testnet.txt (testnet).
 //! Keys are never shared between networks.
@@ -31,7 +35,7 @@ const TESTNET_NODE_URL: &str = "grpc://127.0.0.1:26210";
 const DEVNET_KEY_FILE: &str = "zethora-miner-key.txt";
 const TESTNET_KEY_FILE: &str = "zethora-miner-key-testnet.txt";
 /// Get a fresh template this often, so we always build on the newest blocks.
-const TEMPLATE_REFRESH: Duration = Duration::from_millis(1000);
+const TEMPLATE_REFRESH: Duration = Duration::from_secs(30);
 const ZETS_PER_ZTHR: f64 = 10_000_000_000.0;
 
 /// Seam review P4-10: reads a key file's 64 hex characters, with a clear error instead of a crash on a short or damaged
@@ -165,32 +169,65 @@ fn bench() {
     println!("\nSend Claude this RESULT block.");
 }
 
+
+
+enum LocalHasher { Fast(kaspa_pow::randomz::FastHasher), Light(kaspa_pow::randomz::LightHasher) }
+
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let usage = "Usage:\n  zethora-miner             devnet (node: --devnet --enable-unsynced-mining)\n  zethora-miner --testnet   testnet (node: --testnet --enable-unsynced-mining)\n  zethora-miner bench       RandomZ speed test (no node)\n  zethora-miner balance     devnet balance of your mining address (node needs --utxoindex)\n  zethora-miner --testnet balance   testnet balance (node needs --testnet --utxoindex)";
+    let usage = "Usage:\n  zethora-miner [--node <url>] [--light]             devnet (node: --devnet --enable-unsynced-mining)\n  zethora-miner --testnet [--node <url>] [--light]   testnet (node: --testnet --enable-unsynced-mining)\n  zethora-miner bench                                RandomZ speed test (no node)\n  zethora-miner balance                              devnet balance of your mining address (node needs --utxoindex)\n  zethora-miner --testnet balance                    testnet balance (node needs --testnet --utxoindex)\n\n  --node <url>   connect to this node (e.g. grpc://95.216.185.137:26210) instead of localhost.\n  --light        Light Mode: mine on 2 threads with the 256 MiB cache only (for older PCs);\n                 slower than Fast Mode but needs far less RAM. Default is Fast Mode (all threads, ~2 GiB).";
     #[derive(PartialEq)]
     enum Mode {
         Mine,
         Bench,
         Balance,
     }
-    let (testnet, mode) = match args.as_slice() {
-        [] => (false, Mode::Mine),
-        [a] if a == "--testnet" => (true, Mode::Mine),
-        [a] if a == "bench" => (false, Mode::Bench),
-        [a] if a == "balance" => (false, Mode::Balance),
-        [a, b] if a == "--testnet" && b == "balance" => (true, Mode::Balance),
-        _ => {
-            eprintln!("{usage}");
-            std::process::exit(2);
+
+    // Flexible argument parser: accepts --testnet / --devnet, --node <url>, --light, and the bench/balance subcommands,
+    // in any order. Unknown flags are an error (exit 2) instead of being silently ignored.
+    let mut testnet = false;
+    let mut light = false;
+    let mut custom_node: Option<String> = None;
+    let mut want_bench = false;
+    let mut want_balance = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--testnet" => testnet = true,
+            "--devnet" => testnet = false,
+            "--light" => light = true,
+            "--node" => {
+                i += 1;
+                match args.get(i) {
+                    Some(url) if !url.is_empty() => custom_node = Some(url.clone()),
+                    _ => {
+                        eprintln!("--node needs a URL, for example: --node grpc://95.216.185.137:26210");
+                        std::process::exit(2);
+                    }
+                }
+            }
+            "bench" => want_bench = true,
+            "balance" => want_balance = true,
+            other => {
+                eprintln!("Unknown argument: {other}\n\n{usage}");
+                std::process::exit(2);
+            }
         }
+        i += 1;
+    }
+    let mode = if want_bench {
+        Mode::Bench
+    } else if want_balance {
+        Mode::Balance
+    } else {
+        Mode::Mine
     };
     if mode == Mode::Bench {
         return tokio::task::spawn_blocking(bench).await.expect("speed test");
     }
     let network = if testnet { NetworkType::Testnet } else { NetworkType::Devnet };
-    let node_url = if testnet { TESTNET_NODE_URL } else { DEVNET_NODE_URL };
+    let node_url = if let Some(url) = custom_node { url } else if testnet { TESTNET_NODE_URL.to_string() } else { DEVNET_NODE_URL.to_string() };
     let key_file = if testnet { TESTNET_KEY_FILE } else { DEVNET_KEY_FILE };
     let network_name = if testnet { "testnet" } else { "devnet" };
     // G13: never create a key just to show a balance
@@ -215,7 +252,7 @@ async fn main() {
         std::process::exit(3);
     }
 
-    let client = GrpcClient::connect(node_url.to_string())
+    let client = GrpcClient::connect(node_url)
         .await
         .expect("Cannot reach the node. Is it running with the matching network flag (--devnet or --testnet)?");
     // G13: show the balance of the mining address and exit
@@ -233,8 +270,16 @@ async fn main() {
         }
         return;
     }
-    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
-    println!("Mining on {threads} threads. Press Ctrl+C to stop.\n");
+    // Fast Mode (default): every logical core, ~2 GiB dataset. Light Mode (--light): 2 threads, 256 MiB cache only.
+    let all_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    let threads = if light { 2.min(all_threads) } else { all_threads };
+    if light {
+        println!("Light Mode: mining on {threads} thread(s) with the 256 MiB cache only (for older PCs).");
+        println!("Slower than Fast Mode; run without --light on a capable PC for full speed.");
+    } else {
+        println!("Fast Mode: mining on {threads} threads with the ~2 GiB dataset.");
+    }
+    println!("Press Ctrl+C to stop.\n");
 
     let mut mined: u64 = 0;
     let mut total_reward: u64 = 0;
@@ -242,6 +287,8 @@ async fn main() {
     let start = Instant::now();
     // The fast-mode dataset and the key epoch it was built for (rebuilt when the key changes)
     let mut dataset: Option<(u64, kaspa_pow::randomz::SharedDataset)> = None;
+    // Light Mode: the epoch the cache-only hashers were built for (there is no shared dataset in this mode).
+    let mut light_epoch: Option<u64> = None;
     let mut next_dataset: Option<(u64, kaspa_pow::randomz::SharedDataset)> = None;
     let mut prebuild_task: Option<tokio::task::JoinHandle<(u64, Option<kaspa_pow::randomz::SharedDataset>)>> = None;
 
@@ -294,7 +341,7 @@ async fn main() {
             }
         }
 
-        if dataset.as_ref().is_none_or(|(built_for, _)| *built_for != epoch) {
+        if !light && dataset.as_ref().is_none_or(|(built_for, _)| *built_for != epoch) {
             // Try to swap in the prebuilt one first
             if let Some((built_epoch, built_dataset)) = next_dataset.take() {
                 if built_epoch == epoch {
@@ -306,6 +353,13 @@ async fn main() {
                 }
             }
 
+            // Light Mode never builds the ~2 GiB dataset: each thread makes a 256 MiB cache-only hasher instead, so
+            // there is nothing to prepare here. We still track the epoch so the hashers follow key changes.
+            if light {
+                println!("Light Mode: key is epoch {epoch}; using the 256 MiB cache (no dataset build).");
+                light_epoch = Some(epoch);
+                continue; // the template is old by now; the next one uses the new epoch
+            }
             // Fallback: build it synchronously
             let first = dataset.is_none();
             drop(dataset.take()); // free the old 2 GB first
@@ -320,7 +374,10 @@ async fn main() {
             dataset = Some((epoch, built));
             continue; // the template is old by now
         }
-        let mining_dataset = dataset.as_ref().map(|(_, d)| d.clone()).expect("built above");
+        // Fast mode mines against the shared dataset; light mode has none (threads build cache-only hashers).
+        let mining_dataset = if light { None } else { Some(dataset.as_ref().map(|(_, d)| d.clone()).expect("built above")) };
+        // Light mode has no dataset to wait on; its hashers are ready as soon as the epoch is known.
+        let _light_ready = light_epoch;
 
         // Search nonces on all threads until one wins or the template gets old.
         let found = Arc::new(AtomicBool::new(false));
@@ -331,14 +388,22 @@ async fn main() {
             .map(|t| {
                 let (state, found, winner, hashes, dataset) =
                     (state.clone(), found.clone(), winner.clone(), hashes.clone(), mining_dataset.clone());
+                let worker_epoch = epoch;
                 std::thread::spawn(move || {
-                    let hasher = kaspa_pow::randomz::FastHasher::new(&dataset);
+                    // Fast Mode: a hasher over the shared ~2 GiB dataset. Light Mode: a 256 MiB cache-only hasher for
+                    // this thread (built once per epoch; the cache itself is shared by the library).
+                    let hasher = match &dataset {
+                        Some(d) => LocalHasher::Fast(kaspa_pow::randomz::FastHasher::new(d)),
+                        None => LocalHasher::Light(kaspa_pow::randomz::LightHasher::new(worker_epoch)),
+                    };
                     let target = state.target();
                     let mut nonce = base.wrapping_add(t);
                     let mut n = 0u64;
                     while !found.load(Ordering::Relaxed) && Instant::now() < deadline {
                         for _ in 0..16 {
-                            if hasher.pow_value(&state.pow_input(nonce)) <= target {
+                            let h = &state.pow_input(nonce);
+                            let hv = match &hasher { LocalHasher::Fast(hs) => hs.pow_value(h), LocalHasher::Light(hs) => hs.pow_value(h) };
+                            if hv <= target {
                                 if !found.swap(true, Ordering::Relaxed) {
                                     winner.store(nonce, Ordering::Relaxed);
                                 }

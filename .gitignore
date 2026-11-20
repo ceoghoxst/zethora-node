@@ -37,3 +37,19 @@ consensus/core/zethora_genesis_values.txt
 # Local log files
 *.log
 zethora-miner-key-testnet.txt
+
+# PyInstaller build artifacts
+build/
+dist/
+*.spec
+# node data/peer files
+p2p/
+
+# PyInstaller build artifacts
+build/
+dist/
+*.spec
+# node data/peer files
+p2p/
+test-install/
+test-install/

@@ -1,46 +1,139 @@
-//! Zethora (seam review P3-1): serving the pruning point's private state must be cheap and bounded.
+﻿//! Zethora (seam review P3-1): serving the pruning point's private state must be cheap and bounded.
 //!
 //! Building the state scans every coin tag and snapshot record ever stored, so it is built once per pruning point and
-//! kept (`SingleEntryCache`); concurrent requests wait for the one build instead of each starting their own. Each
+//! kept (`SingleEntryCache`); concurrent requests share the one build instead of each starting their own. Each
 //! connection may ask for the same pruning point's state only a few times (`RequestLimiter`): an honest joiner asks once
 //! per sync attempt.
+//!
+//! DoS fix (P2P): the expensive build must never run while the cache's lock is held. Holding the lock across the
+//! O(chain-history) scan let one peer stall the private-state flow for every other peer on the node (the cache is a
+//! single global `Arc`, shared by all connections). The cache now uses a single-flight pattern: the lock guards only
+//! short state transitions with no `.await` under it, exactly one task is elected to run the heavy build with the
+//! lock released, and the rest wait on a `watch` channel and reuse its result.
 
-use std::{collections::HashMap, future::Future, hash::Hash, sync::Arc};
-use tokio::sync::Mutex;
+use std::{
+    collections::HashMap,
+    future::Future,
+    hash::Hash,
+    sync::{Arc, Mutex as StdMutex},
+};
+use tokio::sync::watch;
+
+/// What the cache is currently doing for its one key.
+enum Slot<V> {
+    /// Nothing built yet, or the last build failed: the next caller may build.
+    Empty,
+    /// A build is in flight; waiters observe the completion through `done`.
+    Building { done: watch::Sender<u64> },
+    /// The kept value.
+    Ready(Arc<V>),
+}
+
+struct Inner<K, V> {
+    slot: Slot<V>,
+    /// The key the current `slot` refers to (meaningful once `slot` is not `Empty`).
+    key: Option<K>,
+}
 
 /// Keeps the value for one key (the current pruning point). A request for another key rebuilds it.
+///
+/// The lock is a *synchronous* `StdMutex` guarding only short state transitions; the value itself is built
+/// with the lock released so a slow build cannot block unrelated callers.
 pub struct SingleEntryCache<K, V> {
-    entry: Mutex<Option<(K, Arc<V>)>>,
+    inner: StdMutex<Inner<K, V>>,
 }
 
 impl<K: Copy + Eq, V> Default for SingleEntryCache<K, V> {
     fn default() -> Self {
-        Self { entry: Mutex::new(None) }
+        Self { inner: StdMutex::new(Inner { slot: Slot::Empty, key: None }) }
     }
 }
 
+/// What a caller should do after inspecting the slot.
+enum Step<V> {
+    /// The value is already kept.
+    Ready(Arc<V>),
+    /// Another build is in flight; wait for `done` to change, then re-check.
+    Wait(watch::Receiver<u64>),
+    /// This caller is the elected builder.
+    Build { done: watch::Sender<u64> },
+}
+
 impl<K: Copy + Eq, V> SingleEntryCache<K, V> {
-    /// The value for `key`, built with `build` only if it is not the kept one. The lock is held while building, so
-    /// concurrent callers for the same key share one build. A failed build keeps nothing.
+    /// The value for `key`, built with `build` only if it is not the kept one.
+    ///
+    /// Exactly one caller builds for a given key at a time; concurrent callers for the same key wait for
+    /// that build and share its result. The expensive `build` future runs with the lock released, so it never
+    /// blocks callers of other keys or other parts of the node. A failed build keeps nothing, and the next
+    /// caller builds again.
     pub async fn get_or_build<E, F, Fut>(&self, key: K, build: F) -> Result<Arc<V>, E>
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<V, E>>,
     {
-        let mut entry = self.entry.lock().await;
-        if let Some((kept, value)) = entry.as_ref()
-            && *kept == key
-        {
-            return Ok(value.clone());
+        let mut build = Some(build);
+        loop {
+            // Phase 1: cheap fast-path / election. The lock is held only for a few instructions and no
+            // `.await` occurs while it is held.
+            let step = {
+                let mut inner = self.inner.lock().expect("private state cache poisoned");
+                let same_key = inner.key.as_ref().is_some_and(|k| *k == key);
+                match &inner.slot {
+                    Slot::Ready(value) if same_key => Step::Ready(value.clone()),
+                    Slot::Building { done } if same_key => Step::Wait(done.subscribe()),
+                    _ => {
+                        // Nothing built, the previous build failed, or the pruning point moved: elect this
+                        // caller as the sole builder.
+                        let (done, _rx) = watch::channel(0u64);
+                        inner.slot = Slot::Building { done: done.clone() };
+                        inner.key = Some(key);
+                        Step::Build { done }
+                    }
+                }
+            };
+
+            match step {
+                Step::Ready(value) => return Ok(value),
+                Step::Wait(mut done) => {
+                    // A build for this key is already in flight. Wait for the completion signal, then
+                    // re-check the slot (it is `Ready` on success or `Empty` on failure, in which case we
+                    // build). `changed()` resolves only after the sender ticks, so the wakeup cannot be lost.
+                    let _ = done.changed().await;
+                    continue;
+                }
+                Step::Build { done } => {
+                    // We are the elected builder. Run the heavy build with NO lock held.
+                    let result = build.take().expect("builder runs exactly once")().await;
+                    match result {
+                        Ok(value) => {
+                            let value = Arc::new(value);
+                            // Publish under the lock (still no `.await` held), then wake the waiters.
+                            {
+                                let mut inner = self.inner.lock().expect("private state cache poisoned");
+                                inner.slot = Slot::Ready(value.clone());
+                            }
+                            let _ = done.send(*done.borrow() + 1);
+                            return Ok(value);
+                        }
+                        Err(e) => {
+                            // A failed build keeps nothing, so the next caller builds again.
+                            {
+                                let mut inner = self.inner.lock().expect("private state cache poisoned");
+                                inner.key = None;
+                                inner.slot = Slot::Empty;
+                            }
+                            let _ = done.send(*done.borrow() + 1);
+                            return Err(e);
+                        }
+                    }
+                }
+            }
         }
-        let value = Arc::new(build().await?);
-        *entry = Some((key, value.clone()));
-        Ok(value)
     }
 }
 
-/// Counts one connection's requests per key and refuses past `max_per_key`. Only the last few keys are remembered (a
-/// connection only ever asks about the current pruning point).
+/// Counts one connection's requests per key and refuses past `max_per_key`. Only the last few keys are
+/// remembered (a connection only ever asks about the current pruning point).
 pub struct RequestLimiter<K> {
     max_per_key: usize,
     counts: HashMap<K, usize>,
@@ -66,7 +159,7 @@ impl<K: Copy + Eq + Hash> RequestLimiter<K> {
 #[cfg(test)]
 mod tests {
     use super::{RequestLimiter, SingleEntryCache};
-    use std::sync::{
+    use std::sync::
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
@@ -118,4 +211,3 @@ mod tests {
             assert!(limiter.counts.len() <= 8);
         }
     }
-}
