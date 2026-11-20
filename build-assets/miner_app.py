@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Zethora One-Click Miner - tkinter GUI (local-node fixed)."""
-import os, time, socket, threading, subprocess
+import os, sys, time, socket, threading, subprocess
 import tkinter as tk
 from tkinter import ttk
 from tkinter.scrolledtext import ScrolledText
 
-WORKDIR = os.path.dirname(os.path.abspath(__file__))
+if getattr(sys, "frozen", False):
+    WORKDIR = os.path.dirname(sys.executable)
+else:
+    WORKDIR = os.path.dirname(os.path.abspath(__file__))
 MINER = os.path.join(WORKDIR, "zethora-miner.exe" if os.name == "nt" else "zethora-miner")
 KASPAD = os.path.join(WORKDIR, "zethora-node.exe" if os.name == "nt" else "zethora-node")
 PORT = 26411
@@ -134,7 +137,7 @@ class MinerApp:
             return
         self.append_log("[info] Starting local node...\n")
         args = ["--testnet", "--rpclisten=127.0.0.1:%d" % PORT,
-                "--enable-unsynced-mining", "--utxoindex"]
+                "--enable-unsynced-mining", "--utxoindex", "--yes", "--addpeer", "95.216.185.137:26211"]
         try:
             self.node_proc = subprocess.Popen(
                 [KASPAD] + args, cwd=os.path.dirname(KASPAD),

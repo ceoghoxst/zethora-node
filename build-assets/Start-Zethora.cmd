@@ -15,7 +15,7 @@ echo.
 echo  ZETHORA TESTNET
 echo  ---------------
 echo  Step 1 of 3: starting the node (window "Zethora node")...
-start "Zethora node" zethora-node.exe --testnet --utxoindex --enable-unsynced-mining
+start "Zethora node" zethora-node.exe --testnet --utxoindex --enable-unsynced-mining --yes --addpeer 95.216.185.137:26211
 
 echo  Step 2 of 3: waiting 20 seconds for the node to get ready...
 timeout /t 20 /nobreak >nul
