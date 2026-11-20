@@ -44,6 +44,9 @@ jobs:
           mkdir -p bin
           cp target/release/kaspad.exe bin/zethora-node.exe
           cp target/release/zethora-miner.exe bin/
+          pip install pyinstaller
+          pyinstaller --onefile --noconsole --name ZethoraMiner --distpath dist build-assets/miner_app.py
+          cp dist/ZethoraMiner.exe bin/
           cp build-assets/README.txt bin/
           cp build-assets/LICENSE.txt bin/
           cp build-assets/THIRD-PARTY-NOTICES.txt bin/
@@ -53,7 +56,7 @@ jobs:
           cp build-assets/Zethora.cmd bin/
           cp build-assets/Zethora.ps1 bin/
           cd bin
-          sha256sum zethora-node.exe zethora-miner.exe README.txt LICENSE.txt THIRD-PARTY-NOTICES.txt THIRD-PARTY-CRATES.txt Start-Zethora.cmd Stop-Zethora.cmd Zethora.cmd Zethora.ps1 > SHA256SUMS.txt
+          sha256sum zethora-node.exe zethora-miner.exe ZethoraMiner.exe README.txt LICENSE.txt THIRD-PARTY-NOTICES.txt THIRD-PARTY-CRATES.txt Start-Zethora.cmd Stop-Zethora.cmd Zethora.cmd Zethora.ps1 > SHA256SUMS.txt
           cd ..
           archive="zethora-windows-x64-${{ github.ref_name }}.zip"
           (cd bin && 7z a -tzip "../${archive}" *)
@@ -79,5 +82,48 @@ jobs:
             ./${{ env.archive }}
             ./${{ env.setup }}
             ./${{ env.setup }}.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-linux:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Set up Rust cache
+        uses: Swatinem/rust-cache@v2
+      - name: Build binaries
+        run: |
+          cargo build --bin kaspad --release
+          cargo build --release -p zethora-miner
+      - name: Build GUI
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk
+          python3 -m pip install --upgrade pip pyinstaller
+          pyinstaller --onefile --name ZethoraMiner --distpath dist build-assets/miner_app.py
+      - name: Assemble package
+        run: |
+          mkdir -p pkg
+          cp target/release/kaspad pkg/zethora-node
+          cp target/release/zethora-miner pkg/
+          cp dist/ZethoraMiner pkg/
+          cp build-assets/README.txt pkg/ 2>/dev/null || true
+          cp build-assets/LICENSE.txt pkg/ 2>/dev/null || true
+          printf '[Desktop Entry]\nType=Application\nName=Zethora\nExec=./ZethoraMiner\nTerminal=false\nCategories=Network;\n' > pkg/zethora.desktop
+          chmod +x pkg/zethora-node pkg/zethora-miner pkg/ZethoraMiner
+          cd pkg && tar czf "../zethora-linux-x64-${{ github.ref_name }}.tar.gz" *
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ./zethora-linux-x64-${{ github.ref_name }}.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
