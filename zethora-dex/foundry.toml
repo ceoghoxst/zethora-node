@@ -1,0 +1,13 @@
+[profile.default]
+# The Solidity contracts this crate mirrors live in `src/`, and the Foundry
+# suite that exercises them lives in `test/`; imports such as
+# `../src/ZefTreasury.sol` are written against exactly this layout.
+src = "src"
+test = "test"
+out = "out"
+libs = ["lib"]
+# `ZefTreasury.sol` declares `pragma solidity ^0.8.24`; pin the compiler and the
+# hardfork it was written for so a build does not drift onto a newer EVM version
+# than the Zethora L2 executes.
+solc = "0.8.24"
+evm_version = "cancun"

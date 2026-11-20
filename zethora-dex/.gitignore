@@ -1,0 +1,4 @@
+# Foundry build artifacts (see foundry.toml)
+out/
+cache/
+broadcast/
