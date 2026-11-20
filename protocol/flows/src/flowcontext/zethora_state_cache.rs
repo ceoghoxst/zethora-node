@@ -159,7 +159,7 @@ impl<K: Copy + Eq + Hash> RequestLimiter<K> {
 #[cfg(test)]
 mod tests {
     use super::{RequestLimiter, SingleEntryCache};
-    use std::sync::
+    use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
