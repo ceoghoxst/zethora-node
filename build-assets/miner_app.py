@@ -11,7 +11,7 @@ else:
     WORKDIR = os.path.dirname(os.path.abspath(__file__))
 MINER = os.path.join(WORKDIR, "zethora-miner.exe" if os.name == "nt" else "zethora-miner")
 KASPAD = os.path.join(WORKDIR, "zethora-node.exe" if os.name == "nt" else "zethora-node")
-PORT = 26411
+PORT = 26210
 NODE = "grpc://127.0.0.1:%d" % PORT
 
 BG="#1e1e1e"; FG="#f0f0f0"; SUB="#cccccc"; LOGBG="#0f0f0f"; LOGFG="#b8e986"
@@ -121,7 +121,7 @@ class MinerApp:
 
     def build_command(self):
         net = "--testnet" if self.network_var.get() == "Testnet" else "--devnet"
-        cmd = [MINER, net, "--node", self.node_var.get().strip()]
+        cmd = [MINER, net]
         if self.light_var.get():
             cmd.append("--light")
         return cmd
