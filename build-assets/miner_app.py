@@ -137,7 +137,7 @@ class MinerApp:
             return
         self.append_log("[info] Starting local node...\n")
         args = ["--testnet", "--rpclisten=127.0.0.1:%d" % PORT,
-                "--enable-unsynced-mining", "--utxoindex", "--yes", "--addpeer", "95.216.185.137:26211"]
+                "--enable-unsynced-mining", "--utxoindex", "--yes", "--addpeer=95.216.185.137:26211"]
         try:
             self.node_proc = subprocess.Popen(
                 [KASPAD] + args, cwd=os.path.dirname(KASPAD),
