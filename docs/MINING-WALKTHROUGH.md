@@ -13,7 +13,6 @@ Once your node is running, you can start mining. The miner connects to your loca
 
 Open a new PowerShell window and run:
 
-    cd $env:USERPROFILE\zethora-node
     .\target\release\zethora-miner.exe
 
 You should see output every time a block is found. The most important line is the supply check:
@@ -22,7 +21,23 @@ You should see output every time a block is found. The most important line is th
 
 If you see `BALANCED`, the miner has successfully mined a block, and the supply ledger correctly accounted for the reward.
 
-## How fast will I mine?
+## Fast Mode and Light Mode
+
+Fast Mode is the default. It uses every CPU thread and builds a roughly 2 GiB dataset for the highest hash rate. It is the right choice on a capable desktop.
+
+Light Mode uses only the 256 MiB cache and runs on two threads, so it needs far less RAM. It is slower, but it lets old PCs and small VPS machines mine without running out of memory. Turn it on with `--light`:
+
+    .\target\release\zethora-miner.exe --light
+
+## Mining against a remote node
+
+By default the miner connects to a node on your own machine. To point it at a node elsewhere, for example a VPS you run, pass `--node` with the node's address:
+
+    .\target\release\zethora-miner.exe --node grpc://YOUR.NODE.IP:26210
+
+You can combine the two, for example a light miner on a laptop pointed at a remote node:
+
+    .\target\release\zethora-miner.exe --node grpc://YOUR.NODE.IP:26210 --light
 
 Zethora uses RandomZ, a CPU-friendly proof-of-work algorithm.
 On a modern desktop CPU, you can expect roughly 1,000 to 1,500 hashes per second.

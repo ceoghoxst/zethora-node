@@ -77,3 +77,4 @@ promise. The code is the truth; the paper is the map.
 If you are a cryptographer, a privacy researcher, or a home miner, and you
 want to help test this, we want to talk to you. The protocol is open. The
 review is welcome. The chain belongs to whoever runs it.
+The L2 and its EVM execution environment come after mainnet, once the L1 is tested and audited. This paper describes the L1 only, and the L1 is what ships first.
