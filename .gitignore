@@ -53,3 +53,15 @@ dist/
 p2p/
 test-install/
 test-install/
+Master Context.txt
+Master_Context_Archive.txt
+SESSION_STATE.md
+kortana_ui_inventory.txt
+l1_devnet.err
+l2_devnet.err
+relayer_test_output.txt
+zethora-l2-state.json
+zethora-miner-*.tar.gz
+zethora-miner-windows*.zip
+zethora-source-*.zip
+zethora-wallet-windows.zip
