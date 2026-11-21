@@ -65,3 +65,8 @@ zethora-miner-*.tar.gz
 zethora-miner-windows*.zip
 zethora-source-*.zip
 zethora-wallet-windows.zip
+AUDIT-KNOWLEDGE.md
+Master Context*
+*.key
+*.pem
+miner-key*
