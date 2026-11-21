@@ -322,7 +322,9 @@ async fn main() {
             let private_wallet = PrivateWallet::from_seed(&m.seed);
             let fvk = private_wallet.full_viewing_key();
             println!("Your Private View Key: {:02x?}", fvk.to_bytes());
-            println!("Give this to an exchange to verify your private deposits. It CANNOT spend your funds.");
+            println!("Give this to an exchange to verify your private deposits. It CANNOT spend your funds,");
+            println!("but it DOES reveal this wallet's full private history (every coin received and every payment sent)");
+            println!("to whoever holds it. Share it only with parties you trust.");
         }
         Some("faucet") => {
             let dest_str = args.get(1).expect("Usage: faucet <address>");
@@ -818,14 +820,33 @@ fn finish_attack(blocked: usize, tried: usize) {
 async fn faucet(n: &Nodes, m: &Miner, dest: Address) {
     let amount = 1_000_000_000; // 1 ZTHR
     println!("Faucet: Preparing to send 1.0 ZTHR to {}...", dest);
-    let (outpoint, entry) = visible_coins(&n.reader, &m.address).await.into_iter().next().expect("No mature coins to send");
-    let change = entry.amount.checked_sub(amount + FEE).expect("Not enough visible coins for faucet");
+    let coins = visible_coins(&n.reader, &m.address).await;
+    if coins.is_empty() {
+        eprintln!("Error: No mature coins to send. Keep mining and try again later.");
+        std::process::exit(1);
+    }
+    let largest = coins.iter().map(|(_, e)| e.amount).max().unwrap_or(0);
+    let (outpoint, entry) = match coins.into_iter().find(|(_, e)| e.amount >= amount + FEE + MIN_CHANGE) {
+        Some(c) => c,
+        None => {
+            eprintln!(
+                "Error: No single mature coin can cover {} + fee {}. Largest mature coin is {}.",
+                zthr(amount),
+                zthr(FEE),
+                zthr(largest)
+            );
+            std::process::exit(1);
+        }
+    };
+    let change = entry.amount - amount - FEE;
     let mut tx = visible_part(m, outpoint, change);
     let dest_script = kaspa_txscript::pay_to_address_script(&dest);
     tx.outputs.push(kaspa_consensus_core::tx::TransactionOutput { value: amount, script_public_key: dest_script, covenant: None });
     let tx = finish(m, tx, entry, Vec::new());
-    let _ = n.sender.submit_transaction((&tx).into(), false).await;
-    println!("Faucet sent 1.0 ZTHR to {}", dest);
+    match submit(&n.sender, &tx).await {
+        Ok(id) => println!("Faucet sent 1.0 ZTHR to {} (transaction {id})", dest),
+        Err(e) => println!("Faucet transaction was refused: {e}"),
+    }
 }
 async fn autoshield(n: &Nodes, m: &Miner) {
     println!("Auto-Shield active. Watching for mature transparent coins...");
@@ -857,7 +878,7 @@ async fn autoshield(n: &Nodes, m: &Miner) {
             let (outpoint, entry) = coins.into_iter().next().unwrap();
             let outpoint_tracked = outpoint;
 
-            let change = MIN_CHANGE.max(1);
+            let change = MIN_CHANGE;
             if entry.amount <= FEE + change {
                 break;
             }
@@ -878,19 +899,19 @@ async fn autoshield(n: &Nodes, m: &Miner) {
                 Ok(_) => {
                     println!("Auto-shielded {}", zthr(amount));
                     in_flight.insert(outpoint_tracked, tick);
-                    // Continue to next coin without sleeping.
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 }
                 Err(e) => {
                     let err_str = format!("{}", e);
                     if err_str.contains("already spent") || err_str.contains("mempool") {
                         // Coin is being spent by another tx (often one of ours
-                        // from a previous run). Skip it for TTL — it will be
+                        // from a previous run). Skip it for TTL - it will be
                         // pruned from visible_coins when the tx confirms.
                         eprintln!("Auto-shield: skipping coin ({}), will retry after {}s", err_str, IN_FLIGHT_TTL_TICKS * 10);
                         in_flight.insert(outpoint_tracked, tick);
                         continue;
                     } else {
-                        // Unknown error — might be transient. Retry after sleep.
+                        // Unknown error - might be transient. Retry after sleep.
                         eprintln!("Auto-shield: submit failed ({}), retrying next tick", e);
                         break;
                     }

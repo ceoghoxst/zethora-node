@@ -11,7 +11,7 @@
 
 use crate::{
     NoteCommitmentTree, SupportedPool, codec, sighash,
-    wallet::{PrivateWallet, proving_key},
+    wallet::{MAX_NOTE_VALUE, PrivateWallet, proving_key},
 };
 use incrementalmerkletree::{Position, Retention};
 use orchard::{
@@ -108,6 +108,11 @@ impl Scanner {
     }
 
     /// Reads one accepted private payment (encoded, without the "ZSHP" marker), in consensus order.
+    ///
+    /// INVARIANT: `encoded` MUST be a payment that consensus has already validated and accepted in a block. This
+    /// trusts the bundle's contents (e.g. `decrypt_output_with_key`) without re-checking its proof or signatures, so
+    /// feeding it bytes from the mempool, a peer, or a test vector would add phantom coins to the coin list. Only
+    /// call this on payments read from accepted chain blocks (as `try_scan` does).
     pub fn add_payment(&mut self, encoded: &[u8]) -> Result<(), String> {
         let (bundle, _pool) = codec::decode(encoded).map_err(|e| format!("bad private payment on chain: {e}"))?;
         for (index, action) in bundle.actions().iter().enumerate() {
@@ -242,6 +247,11 @@ pub fn spend_payment_with(
     #[allow(non_upper_case_globals)]
     const OsRng: UnwrapErr<SysRng> = UnwrapErr(SysRng);
     let mut rng = OsRng;
+    for (_, value) in outputs {
+        if *value > MAX_NOTE_VALUE {
+            return Err(format!("output value {value} zets is more than the maximum a private note can hold ({MAX_NOTE_VALUE} zets)"));
+        }
+    }
 
     let fvk = wallet.full_viewing_key();
     let version = BundleVersion::orchard_v2();

@@ -171,7 +171,10 @@ pub fn verify_payments_batch(payments: &[(Bundle<Authorized, i64>, [u8; 32])], v
     use rand::{rand_core::UnwrapErr, rngs::SysRng};
     let mut batch = orchard::bundle::BatchValidator::new(vk);
     for (bundle, tx_digest) in payments {
-        let commitment = bundle.commitment(TxVersion::V5).expect("pool 1 bundles are always committable as v5");
+        let commitment = match bundle.commitment(TxVersion::V5) {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
         if batch.add_bundle(bundle, sighash(tx_digest, commitment.into())).is_err() {
             return false;
         }
@@ -259,7 +262,7 @@ impl NoteCommitmentTree {
         }
     }
 
-    /// Reads bytes written by [`Self::to_bytes`].
+    /// Reads bytes written by `Self::to_bytes`.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, TreeBytesError> {
         let hash_at = |at: usize| -> Result<MerkleHashOrchard, TreeBytesError> {
             let b: [u8; 32] = bytes.get(at..at + 32).ok_or(TreeBytesError)?.try_into().map_err(|_| TreeBytesError)?;

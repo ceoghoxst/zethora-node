@@ -14,6 +14,11 @@ use orchard::{
 use rand::{rand_core::UnwrapErr, rngs::SysRng};
 use std::sync::OnceLock;
 
+/// The most value a single private note (or a payment) may carry: mirrors
+/// `kaspa_consensus_core::constants::MAX_ZETS` (= `CAP_UNITS` = 100_000_000 ZTHR in zets). `zethora-shielded`
+/// deliberately does not depend on consensus, so the value is mirrored here; consensus rejects anything above it
+/// (see consensus `zethora_mint_attacks.rs`).
+pub const MAX_NOTE_VALUE: u64 = 100_000_000 * 10_000_000_000;
 /// The proving key for making private payments, built once (a few seconds) on first use.
 pub fn proving_key() -> &'static ProvingKey {
     static PK: OnceLock<ProvingKey> = OnceLock::new();
@@ -45,6 +50,9 @@ impl PrivateWallet {
     }
 
     /// A second, independent wallet derived from the same seed (devnet: the "friend" you send private coins to).
+    ///
+    /// DEVNET ONLY: both wallets are derived from one seed, so whoever holds the seed holds both. On mainnet a
+    /// "friend" must be a genuinely separate seed - never a sibling derived from the user's own.
     pub fn friend_of(seed: &[u8; 32]) -> Self {
         let friend_seed = blake2b_simd::Params::new().hash_length(32).personal(b"ZethoraFriendSd").to_state().update(seed).finalize();
         Self::from_seed(friend_seed.as_bytes().try_into().expect("32-byte hash"))
@@ -68,6 +76,9 @@ impl PrivateWallet {
 /// private coin to `to`. `tx_digest` is the digest of the Zethora transaction that will carry it.
 /// Spending is switched off on the network for now, so this payment has spends disabled.
 pub fn shielding_payment(to: Address, value: u64, tx_digest: &[u8; 32]) -> Result<Vec<u8>, String> {
+    if value > MAX_NOTE_VALUE {
+        return Err(format!("amount {value} zets is more than the maximum a private note can hold ({MAX_NOTE_VALUE} zets)"));
+    }
     #[allow(non_upper_case_globals)]
     const OsRng: UnwrapErr<SysRng> = UnwrapErr(SysRng);
     let mut rng = OsRng;
