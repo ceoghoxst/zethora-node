@@ -211,3 +211,4 @@ mod tests {
             assert!(limiter.counts.len() <= 8);
         }
     }
+}
